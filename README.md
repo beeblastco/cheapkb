@@ -16,7 +16,7 @@ flowchart LR
         Upload["POST /upload"]
         Ingest["POST /ingest"]
         Query["POST /query"]
-        Admin["GET /documents\nGET /documents/:id\nDELETE /documents/:id\nPOST /documents/:id/reindex\nGET /jobs/:id"]
+        Admin["GET/DELETE /documents\nPOST /documents/:id/reindex"]
     end
 
     subgraph IngestPipeline["Ingest Pipeline"]
@@ -33,7 +33,8 @@ flowchart LR
     SQS3[["SQS\nEmbed"]]
 
     Client --> Upload --> S3
-    Client --> Ingest --> SQS1 --> Parse --> SQS2 --> Chunk --> SQS3 --> Embed
+    S3 -->|auto-ingest| SQS1 --> Parse --> SQS2 --> Chunk --> SQS3 --> Embed
+    Client --> Ingest --> SQS1
     Parse --> S3
     Parse --> DynamoDB
     Chunk --> S3
@@ -42,6 +43,8 @@ flowchart LR
     Embed --> S3Vectors
     Client --> Query --> S3Vectors --> S3
     Client --> Admin --> DynamoDB
+    S3 -->|auto-cleanup| DynamoDB
+    S3 -->|auto-cleanup| S3Vectors
 ```
 
 ## Stack
@@ -54,6 +57,62 @@ flowchart LR
 - **Database:** Amazon DynamoDB (document + chunk metadata)
 - **Vectors:** Amazon S3 Vectors (cosine similarity search)
 - **IaC:** [SST](https://sst.dev) v3 (Pulumi under the hood)
+
+## How It Works
+
+### Ingestion Flow
+
+1. **Upload:** `POST /upload` returns a presigned URL. PUT your file to S3.
+2. **Auto-Ingest:** S3 PutObject event automatically triggers the ingest pipeline.
+3. **Manual Ingest:** `POST /ingest` also triggers the pipeline (for re-processing).
+4. **Pipeline:** Parse → Chunk → Embed (sequential, with parallelism within each step).
+
+### Status Flow
+
+```
+UPLOADED → QUEUED → PARSING → PARSED → CHUNKING → CHUNKED → EMBEDDING → EMBEDDED
+                 ↓ (fail)         ↓ (fail)         ↓ (fail)
+               FAILED            FAILED            FAILED
+                 ↓ (retry<3)      ↓ (retry<3)      ↓ (retry<3)
+               back to queue     back to queue     back to queue
+                 ↓ (retry>=3)     ↓ (retry>=3)     ↓ (retry>=3)
+               STOP (manual)     STOP (manual)     STOP (manual)
+```
+
+### Error Tracking
+
+Each document tracks:
+- `lastError`: Error message from last failure (cleared on success)
+- `retryCount`: Number of retries attempted (0 on success)
+- `failedStep`: Which step failed (`PARSING`, `CHUNKING`, `EMBEDDING`)
+
+### Auto-Retry
+
+- Each failure increments `retryCount` and sets `lastError`
+- If `retryCount < 3`: automatically retry
+- If `retryCount >= 3`: mark as `FAILED`, require manual reindex
+
+### Partial Re-Indexing
+
+`POST /documents/:id/reindex` restarts from the failed step:
+
+| Current Status | Restart From |
+|----------------|--------------|
+| `UPLOADED`, `QUEUED`, `FAILED` at parsing | Parse |
+| `PARSED`, `FAILED` at chunking | Chunk |
+| `CHUNKED`, `FAILED` at embedding | Embed |
+| `EMBEDDED` | No-op |
+
+### Delete Cleanup
+
+`DELETE /documents/:id` performs immediate full cleanup:
+1. Delete all vectors from S3 Vectors
+2. Delete all chunks from S3
+3. Delete parsed file from S3
+4. Delete source file from S3
+5. Delete DynamoDB record
+
+S3 DeleteObject events also trigger cleanup for direct console deletions.
 
 ## API Reference
 
@@ -76,7 +135,6 @@ Content-Type: application/json
 ```
 
 **Response:**
-
 ```json
 {
   "documentId": "doc_abc123",
@@ -85,7 +143,7 @@ Content-Type: application/json
 }
 ```
 
-Upload your file to `uploadUrl` using a PUT request. The `sourceKey` is stored in DynamoDB for tracking.
+Upload your file to `uploadUrl` using a PUT request. The ingest pipeline triggers automatically after upload.
 
 ### Ingest
 
@@ -98,7 +156,7 @@ Content-Type: application/json
 }
 ```
 
-Triggers the full pipeline: Parse → Chunk → Embed. Document status changes: `UPLOADED` → `QUEUED` → `PARSED` → `CHUNKED` → `EMBEDDED`.
+Triggers the full pipeline. Use this for manual re-processing after errors.
 
 ### Query
 
@@ -117,7 +175,6 @@ Content-Type: application/json
 ```
 
 **Response:**
-
 ```json
 {
   "query": "What is retrieval-augmented generation?",
@@ -146,22 +203,32 @@ Content-Type: application/json
 ### Documents
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|--------|----------|-------------|
 | `GET` | `/documents` | List all documents |
 | `GET` | `/documents/:id` | Get document details + chunks |
-| `POST` | `/documents/:id/reindex` | Re-run ingest pipeline |
+| `POST` | `/documents/:id/reindex` | Re-run pipeline from failed step |
 | `DELETE` | `/documents/:id` | Delete document, chunks, and vectors |
+
+### Document Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `documentId` | `string` | Unique document identifier |
+| `status` | `string` | Current status (`UPLOADED`, `QUEUED`, `PARSING`, `PARSED`, `CHUNKING`, `CHUNKED`, `EMBEDDING`, `EMBEDDED`, `FAILED`) |
+| `lastError` | `string \| null` | Error message from last failure |
+| `retryCount` | `number` | Number of retries attempted |
+| `failedStep` | `string \| null` | Which step failed |
 
 ### Jobs
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|--------|----------|-------------|
 | `GET` | `/jobs/:id` | Check ingest job status |
 
 ## Environment Variables
 
 | Variable | Required | Description |
-| --- | --- | --- |
+|----------|----------|-------------|
 | `EMBEDDING_PROVIDER_URL` | Yes | OpenAI-compatible embedding endpoint |
 | `EMBEDDING_API_KEY` | Yes | API key for the embedding provider |
 | `EMBEDDING_MODEL` | Yes | Model name (e.g., `text-embedding-3-small`) |
@@ -173,10 +240,7 @@ Content-Type: application/json
 ## Setup
 
 ```bash
-# Install dependencies
 npm install
-
-# Configure environment
 cp .env.example .env
 # Edit .env with your embedding provider details
 ```
@@ -184,13 +248,8 @@ cp .env.example .env
 ## Deploy
 
 ```bash
-# Deploy to dev
 npx sst deploy --stage dev
-
-# Deploy to production
 npx sst deploy --stage production
-
-# Remove dev deployment
 npx sst remove --stage dev
 ```
 
@@ -211,8 +270,8 @@ All AWS resources follow the pattern:
 Production stage omits the `<stage>` prefix:
 
 ```text
-cheapkb-storage-954475336309-us-east-1
-cheapkb-vecs-954475336309-us-east-1
+cheapkb-storage-<ACCOUNT_ID>-<REGION>
+cheapkb-vecs-<ACCOUNT_ID>-<REGION>
 ```
 
 ## Cost
