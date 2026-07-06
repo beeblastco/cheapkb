@@ -1,0 +1,29 @@
+{
+  "name": "cheapkb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "sst dev",
+    "deploy": "sst deploy",
+    "remove": "sst remove",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/client-s3vectors": "^3",
+    "@aws-sdk/client-sqs": "^3",
+    "@aws-sdk/lib-dynamodb": "^3",
+    "@aws-sdk/s3-request-presigner": "^3",
+    "@langchain/textsplitters": "^1.0.1",
+    "@pulumi/aws": "^6",
+    "gpt-tokenizer": "^3.4.0",
+    "sst": "^3",
+    "unpdf": "^1.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5"
+  }
+}
