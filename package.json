@@ -16,7 +16,6 @@
     "@aws-sdk/client-sqs": "^3",
     "@aws-sdk/lib-dynamodb": "^3",
     "@aws-sdk/s3-request-presigner": "^3",
-    "@langchain/textsplitters": "^1.0.1",
     "@pulumi/aws": "^6",
     "gpt-tokenizer": "^3.4.0",
     "sst": "^3",

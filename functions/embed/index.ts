@@ -1,235 +1,259 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { S3VectorsClient, PutVectorsCommand } from "@aws-sdk/client-s3vectors";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { PutVectorsCommand, S3VectorsClient } from "@aws-sdk/client-s3vectors";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
 
 const s3 = new S3Client({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const vectors = new S3VectorsClient({});
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = Resource.Meta.name;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-const VECTOR_BATCH = process.env.VECTOR_BATCH
-  ? parseInt(process.env.VECTOR_BATCH)
-  : 100;
-const EMBED_BATCH = process.env.EMBED_BATCH
-  ? parseInt(process.env.EMBED_BATCH)
-  : 25;
 
 export async function handler(event: any) {
-  for (const record of event.Records ?? []) {
+  const records = event.Records ?? [];
+  const chunks: Array<{ documentId: string; s3ChunkKey: string }> = [];
+
+  for (const record of records) {
     let body: any;
     try {
       body = JSON.parse(record.body);
     } catch {
       console.error("[embed] Invalid JSON in record:", record.messageId);
-      throw new Error("Invalid JSON in SQS record");
+      continue;
     }
-    const { documentId, chunkKeys } = body;
+    const { documentId, s3ChunkKey } = body;
+    if (!documentId || !s3ChunkKey) {
+      console.error("[embed] Missing required fields:", record.messageId);
+      continue;
+    }
+    chunks.push({ documentId, s3ChunkKey });
+  }
+
+  if (chunks.length === 0) return;
+
+  const batchSize = parseInt(process.env.EMBED_BATCH ?? "25");
+  for (let i = 0; i < chunks.length; i += batchSize) {
+    const batch = chunks.slice(i, i + batchSize);
     try {
-      await embedDocument(documentId, chunkKeys);
-    } catch (err) {
-      console.error(`[embed] Failed for ${documentId}:`, err);
-      await updateStatus(documentId, "FAILED");
-      throw err;
+      await processBatch(batch);
+    } catch (err: any) {
+      console.error(`[embed] Batch failed:`, err);
+      for (const chunk of batch) {
+        await handleError(chunk.documentId, err);
+      }
     }
   }
 }
 
-async function embedDocument(documentId: string, chunkKeys: string[]) {
-  console.log(`[embed] Embedding ${chunkKeys.length} chunks for ${documentId}`);
-  await updateStatus(documentId, "EMBEDDING");
+async function processBatch(
+  batch: Array<{ documentId: string; s3ChunkKey: string }>,
+) {
+  const texts: string[] = [];
+  const metadata: any[] = [];
 
-  const chunks: Array<{ chunkId: string; text: string; metadata: any }> = [];
-  for (const key of chunkKeys) {
+  for (const chunk of batch) {
     const resp = await s3.send(
-      new GetObjectCommand({ Bucket: Resource.Storage.name, Key: key }),
+      new GetObjectCommand({
+        Bucket: Resource.Storage.name,
+        Key: chunk.s3ChunkKey,
+      }),
     );
-    const data = JSON.parse(await resp.Body!.transformToString());
-    chunks.push({
-      chunkId: data.chunkId,
-      text: data.text,
+    const chunkData = JSON.parse(await resp.Body!.transformToString());
+    if (!chunkData.text) {
+      texts.push("");
+      metadata.push({ documentId: chunk.documentId, skipped: true });
+      continue;
+    }
+    texts.push(chunkData.text);
+    metadata.push({
+      documentId: chunk.documentId,
+      chunkId: chunkData.chunkId,
+      title: chunkData.title ?? null,
+      pageStart: chunkData.pageStart,
+      pageEnd: chunkData.pageEnd,
+      s3ChunkKey: chunk.s3ChunkKey,
+    });
+  }
+
+  const embeddings = await embedBatch(texts);
+
+  const vectorBatch: Array<{ key: string; data: number[]; metadata: any }> = [];
+  for (let i = 0; i < embeddings.length; i++) {
+    if (metadata[i].skipped) continue;
+    vectorBatch.push({
+      key: metadata[i].chunkId,
+      data: embeddings[i],
       metadata: {
-        documentId: data.documentId,
-        chunkId: data.chunkId,
-        title: data.metadata?.title ?? "",
-        year: data.metadata?.year ?? null,
-        tags: data.metadata?.tags ?? [],
-        authors: data.metadata?.authors ?? [],
-        pageStart: data.pageStart,
-        pageEnd: data.pageEnd,
-        s3ChunkKey: key,
+        ...metadata[i],
+        text: texts[i].substring(0, 500),
+        chunkPreview: texts[i].substring(0, 200),
       },
     });
   }
 
-  const texts = chunks.map((c) => c.text);
-  const embeddings = await getEmbeddings(texts);
+  if (vectorBatch.length === 0) return;
 
-  const entries = chunks.map((chunk, i) => ({
-    key: chunk.chunkId,
-    data: { float32: Array.from(embeddings[i]) },
-    metadata: sanitizeMetadata({
-      ...chunk.metadata,
-      text: chunk.text.substring(0, 200),
-      chunkPreview: chunk.text.substring(0, 100),
-    }),
-  }));
-
-  let successCount = 0;
-  for (let i = 0; i < entries.length; i += VECTOR_BATCH) {
-    const batch = entries.slice(i, i + VECTOR_BATCH);
-    try {
-      await vectors.send(
-        new PutVectorsCommand({
-          vectorBucketName: VectorBucketName,
-          indexName: VectorIndexName,
-          vectors: batch,
-        }),
-      );
-      successCount += batch.length;
-    } catch (err: any) {
-      console.error(
-        `[embed] batch ${i}-${i + batch.length} failed:`,
-        err.message,
-      );
-      for (const entry of batch) {
-        try {
-          await vectors.send(
-            new PutVectorsCommand({
-              vectorBucketName: VectorBucketName,
-              indexName: VectorIndexName,
-              vectors: [entry],
-            }),
-          );
-          successCount++;
-        } catch (singleErr: any) {
-          console.error(`[embed] ${entry.key} failed:`, singleErr.message);
-        }
-      }
-    }
-  }
-  if (successCount === 0) {
-    throw new Error(
-      `All ${entries.length} vector writes failed for ${documentId}`,
-    );
-  }
-
-  for (const chunk of chunks) {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: {
-          pk: `DOC#${documentId}`,
-          sk: `CHUNK#${chunk.chunkId.split("#")[1]}`,
-        },
-        UpdateExpression: "SET #s = :s, updatedAt = :t",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":s": "EMBEDDED",
-          ":t": new Date().toISOString(),
-        },
+  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "100");
+  for (let i = 0; i < vectorBatch.length; i += vectorBatchSize) {
+    const chunk = vectorBatch.slice(i, i + vectorBatchSize);
+    await vectors.send(
+      new PutVectorsCommand({
+        vectorBucketName: VectorBucketName,
+        indexName: VectorIndexName,
+        vectors: chunk.map((v) => ({
+          key: v.key,
+          data: { float32: v.data },
+          metadata: v.metadata,
+        })),
       }),
     );
   }
 
-  await updateStatus(documentId, "EMBEDDED");
-  console.log(
-    `[embed] Done: ${chunks.length} vectors written for ${documentId}`,
-  );
+  const docIds = [...new Set(batch.map((c) => c.documentId))];
+  for (const documentId of docIds) {
+    await markEmbedded(documentId);
+  }
+
+  console.log(`[embed] OK: ${vectorBatch.length} vectors written`);
 }
 
-async function getEmbeddings(texts: string[]): Promise<number[][]> {
+async function embedBatch(texts: string[]): Promise<number[][]> {
   const providerUrl = process.env.EMBEDDING_PROVIDER_URL;
   const model = process.env.EMBEDDING_MODEL;
-  if (!providerUrl) {
-    throw new Error("EMBEDDING_PROVIDER_URL not set");
+  if (!providerUrl) throw new Error("EMBEDDING_PROVIDER_URL not set");
+
+  const resp = await fetch(`${providerUrl}/v1/embeddings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.EMBEDDING_API_KEY}`,
+    },
+    body: JSON.stringify({ model, input: texts }),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Embedding provider error ${resp.status}: ${errText}`);
   }
-  const all: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBED_BATCH) {
-    const batch = texts.slice(i, i + EMBED_BATCH);
-    const resp = await fetch(`${providerUrl}/v1/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.EMBEDDING_API_KEY}`,
-      },
-      body: JSON.stringify({ model, input: batch }),
-    });
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Embedding provider error ${resp.status}: ${errText}`);
-    }
-    const data = (await resp.json()) as {
-      data: Array<{ embedding: number[]; index?: number }>;
-    };
-    const sorted = data.data.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-    all.push(...sorted.map((d) => d.embedding));
-  }
-  return all;
+  const data = (await resp.json()) as { data: Array<{ embedding: number[] }> };
+  return data.data.map((d) => d.embedding);
 }
 
-function sanitizeMetadata(meta: Record<string, any>): Record<string, any> {
-  const MAX = 1800;
-  const clean: Record<string, any> = {};
-  for (const [key, value] of Object.entries(meta)) {
-    if (value === null || value === undefined) continue;
-    if (Array.isArray(value)) {
-      const arr = value.filter((v) => v !== null && v !== undefined);
-      if (arr.length > 0) clean[key] = arr;
-    } else if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      clean[key] = value;
-    } else {
-      clean[key] = String(value);
-    }
-  }
-  if (JSON.stringify(clean).length > MAX) {
-    const strings = Object.entries(clean)
-      .filter(([, v]) => typeof v === "string" && v.length > 50)
-      .sort((a, b) => (b[1] as string).length - (a[1] as string).length);
-    for (const [key, val] of strings) {
-      if (JSON.stringify(clean).length <= MAX) break;
-      const excess = JSON.stringify(clean).length - MAX;
-      const newLen = Math.max(50, (val as string).length - excess - 10);
-      clean[key] = (val as string).substring(0, newLen) + "...";
-    }
-    if (JSON.stringify(clean).length > MAX) {
-      const arrays = Object.entries(clean)
-        .filter(([, v]) => Array.isArray(v))
-        .sort(
-          (a, b) => JSON.stringify(b[1]).length - JSON.stringify(a[1]).length,
-        );
-      for (const [key, val] of arrays) {
-        if (JSON.stringify(clean).length <= MAX) break;
-        clean[key] = (val as any[]).slice(
-          0,
-          Math.max(1, Math.floor((val as any[]).length / 2)),
-        );
-      }
-    }
-  }
-  return clean;
-}
-
-async function updateStatus(documentId: string, status: string) {
+async function markEmbedded(documentId: string) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
       TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #s = :s, embeddedCount = if_not_exists(embeddedCount, :z) + :one, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
-        ":s": status,
+        ":s": "EMBEDDING",
         ":t": now,
-        ":gsi1pk": `STATUS#${status}`,
+        ":z": 0,
+        ":one": 1,
+        ":gsi1pk": "STATUS#EMBEDDING",
         ":gsi1sk": now,
+      },
+    }),
+  );
+
+  const result = await dynamo.send(
+    new GetCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  const doc = result.Item;
+  const expected = doc?.chunkCount ?? 0;
+  const done = doc?.embeddedCount ?? 0;
+  if (expected > 0 && done >= expected) {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "EMBEDDED",
+          ":t": now,
+          ":gsi1pk": "STATUS#EMBEDDED",
+          ":gsi1sk": now,
+        },
+      }),
+    );
+    await clearError(documentId, now);
+  }
+}
+
+async function handleError(documentId: string, err: any) {
+  const now = new Date().toISOString();
+  const result = await dynamo.send(
+    new GetCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  const doc = result.Item;
+  const retryCount = (doc?.retryCount ?? 0) + 1;
+  const lastError = err.message ?? String(err);
+
+  if (retryCount >= 3) {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "FAILED",
+          ":e": lastError,
+          ":r": retryCount,
+          ":f": "EMBEDDING",
+          ":t": now,
+          ":gsi1pk": "STATUS#FAILED",
+          ":gsi1sk": now,
+        },
+      }),
+    );
+    return;
+  }
+
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
+      ExpressionAttributeValues: {
+        ":e": lastError,
+        ":r": retryCount,
+        ":f": "EMBEDDING",
+        ":t": now,
+      },
+    }),
+  );
+}
+
+async function clearError(documentId: string, now: string) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
+      ExpressionAttributeValues: {
+        ":null": null,
+        ":zero": 0,
+        ":t": now,
       },
     }),
   );

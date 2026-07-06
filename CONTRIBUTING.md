@@ -13,12 +13,14 @@ Thanks for your interest in contributing! This document provides guidelines for 
 ## Development Setup
 
 1. Clone the repo:
+
    ```bash
    git clone https://github.com/your-username/cheapkb.git
    cd cheapkb
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
@@ -26,6 +28,7 @@ Thanks for your interest in contributing! This document provides guidelines for 
 3. Copy `.env.example` to `.env` and configure your environment variables.
 
 4. Start the dev server:
+
    ```bash
    npx sst dev
    ```
