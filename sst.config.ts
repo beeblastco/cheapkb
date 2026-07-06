@@ -93,7 +93,6 @@ export default $config({
         },
       },
     });
-
     const ingestQueue = new sst.aws.Queue("Ingest", {
       visibilityTimeout: "900 seconds",
       dlq: { queue: ingestDlq.arn, retry: 3 },
@@ -376,6 +375,84 @@ export default $config({
           a.name = name("admin-job");
         },
       },
+    });
+
+    storage.notify({
+      notifications: [
+        {
+          name: "ingest-adapter",
+          function: {
+            handler: "./functions/s3/ingest-adapter.handler",
+            runtime: "nodejs22.x",
+            timeout: "30 seconds",
+            memory: "128 MB",
+            link: [table, ingestQueue],
+            environment: baseEnv,
+            permissions: [
+              {
+                actions: [
+                  "dynamodb:GetItem",
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                ],
+                resources: [table.arn],
+              },
+              { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
+            ],
+            transform: {
+              function: (a) => {
+                a.name = name("ingest-adapter");
+              },
+            },
+          },
+          events: ["s3:ObjectCreated:Put", "s3:ObjectCreated:Post"],
+          filterPrefix: "raw/",
+        },
+        {
+          name: "cleanup-adapter",
+          function: {
+            handler: "./functions/s3/cleanup-adapter.handler",
+            runtime: "nodejs22.x",
+            timeout: "300 seconds",
+            memory: "512 MB",
+            link: [storage, table],
+            environment: baseEnv,
+            permissions: [
+              {
+                actions: [
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:ListBucket",
+                  "s3:DeleteObject",
+                ],
+                resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
+              },
+              {
+                actions: ["dynamodb:DeleteItem", "dynamodb:GetItem"],
+                resources: [table.arn],
+              },
+              {
+                actions: [
+                  "s3vectors:DeleteVectors",
+                  "s3vectors:ListVectors",
+                  "s3vectors:GetVectors",
+                ],
+                resources: ["*"],
+              },
+            ],
+            transform: {
+              function: (a) => {
+                a.name = name("cleanup-adapter");
+              },
+            },
+          },
+          events: [
+            "s3:ObjectRemoved:Delete",
+            "s3:ObjectRemoved:DeleteMarkerCreated",
+          ],
+          filterPrefix: "raw/",
+        },
+      ],
     });
 
     const api = new sst.aws.ApiGatewayV2("Api", {

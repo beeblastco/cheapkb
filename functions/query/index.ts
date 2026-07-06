@@ -54,13 +54,11 @@ export async function handler(event: any) {
     );
 
     const matches = (searchResp as any).vectors ?? [];
-    const results: any[] = [];
-
-    for (const match of matches) {
-      const metadata = match.metadata ?? {};
-      const chunkKey = metadata.s3ChunkKey;
-      let text = "";
-      if (chunkKey) {
+    const texts = await Promise.all(
+      matches.map(async (match: any) => {
+        const metadata = match.metadata ?? {};
+        const chunkKey = metadata.s3ChunkKey;
+        if (!chunkKey) return "";
         try {
           const resp = await s3.send(
             new GetObjectCommand({
@@ -69,25 +67,29 @@ export async function handler(event: any) {
             }),
           );
           const chunkData = JSON.parse(await resp.Body!.transformToString());
-          text = chunkData.text ?? "";
+          return chunkData.text ?? "";
         } catch {
-          text = metadata.text ?? "";
+          return metadata.text ?? "";
         }
-      }
-      results.push({
+      }),
+    );
+
+    const results = matches.map((match: any, i: number) => {
+      const metadata = match.metadata ?? {};
+      return {
         documentId: metadata.documentId ?? "",
         chunkId: match.key ?? "",
         score: match.distance ?? 0,
         title: metadata.title,
         pageStart: metadata.pageStart,
         pageEnd: metadata.pageEnd,
-        text,
+        text: texts[i],
         source: {
           bucket: Resource.Storage.name,
           key: `raw/${metadata.documentId}/`,
         },
-      });
-    }
+      };
+    });
 
     return {
       statusCode: 200,

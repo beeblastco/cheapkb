@@ -9,11 +9,7 @@ import {
   DeleteVectorsCommand,
 } from "@aws-sdk/client-s3vectors";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  DeleteCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
 
 const s3 = new S3Client({});
@@ -24,92 +20,50 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
 export async function handler(event: any) {
-  const documentId = event.pathParameters?.id;
-  if (!documentId) {
-    return {
-      statusCode: 400,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document ID is required" }),
-    };
+  for (const record of event.Records ?? []) {
+    const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
+    const parts = key.split("/");
+    if (parts.length < 3 || parts[0] !== "raw") {
+      console.log(`[cleanup-adapter] Skipping non-raw object: ${key}`);
+      continue;
+    }
+    const documentId = parts[1];
+    console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
+
+    const errors: string[] = [];
+    try {
+      await deleteVectors(documentId);
+    } catch (err: any) {
+      errors.push(`vectors: ${err.message}`);
+      console.error(`[cleanup-adapter] vector delete failed:`, err);
+    }
+    try {
+      await deleteS3Prefix(`chunks/${documentId}/`);
+    } catch (err: any) {
+      errors.push(`chunks: ${err.message}`);
+      console.error(`[cleanup-adapter] chunk delete failed:`, err);
+    }
+    try {
+      await deleteS3Prefix(`parsed/${documentId}/`);
+    } catch (err: any) {
+      errors.push(`parsed: ${err.message}`);
+      console.error(`[cleanup-adapter] parsed delete failed:`, err);
+    }
+    try {
+      await deleteDynamoRecord(documentId);
+    } catch (err: any) {
+      errors.push(`dynamo: ${err.message}`);
+      console.error(`[cleanup-adapter] dynamo delete failed:`, err);
+    }
+
+    if (errors.length > 0) {
+      console.log(
+        `[cleanup-adapter] Completed ${documentId} with errors: ${errors.join("; ")}`,
+      );
+    } else {
+      console.log(`[cleanup-adapter] Completed cleanup for ${documentId}`);
+    }
   }
-
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  if (!result.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  const doc = result.Item;
-  const errors: string[] = [];
-
-  try {
-    await deleteVectors(documentId);
-  } catch (err: any) {
-    errors.push(`vectors: ${err.message}`);
-  }
-
-  try {
-    await deleteS3Prefix(`chunks/${documentId}/`);
-  } catch (err: any) {
-    errors.push(`chunks: ${err.message}`);
-  }
-
-  try {
-    await deleteS3Prefix(`parsed/${documentId}/`);
-  } catch (err: any) {
-    errors.push(`parsed: ${err.message}`);
-  }
-
-  try {
-    await s3.send(
-      new DeleteObjectsCommand({
-        Bucket: Resource.Storage.name,
-        Delete: {
-          Objects: [{ Key: doc.sourceKey }],
-          Quiet: true,
-        },
-      }),
-    );
-  } catch (err: any) {
-    errors.push(`source: ${err.message}`);
-  }
-
-  try {
-    await dynamo.send(
-      new DeleteCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-      }),
-    );
-  } catch (err: any) {
-    errors.push(`dynamo: ${err.message}`);
-  }
-
-  if (errors.length > 0) {
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        documentId,
-        deleted: true,
-        warnings: errors,
-      }),
-    };
-  }
-
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentId, deleted: true }),
-  };
 }
 
 async function deleteVectors(documentId: string) {
@@ -147,10 +101,12 @@ async function deleteVectors(documentId: string) {
       }),
     );
   }
+  console.log(`[cleanup-adapter] Deleted ${vectorKeys.length} vectors`);
 }
 
 async function deleteS3Prefix(prefix: string) {
   let continuationToken: string | undefined;
+  let count = 0;
   do {
     const list = await s3.send(
       new ListObjectsV2Command({
@@ -171,8 +127,20 @@ async function deleteS3Prefix(prefix: string) {
         },
       }),
     );
+    count += objects.length;
     continuationToken = list.IsTruncated
       ? list.NextContinuationToken
       : undefined;
   } while (continuationToken);
+  console.log(`[cleanup-adapter] Deleted ${count} objects from ${prefix}`);
+}
+
+async function deleteDynamoRecord(documentId: string) {
+  await dynamo.send(
+    new DeleteCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  console.log(`[cleanup-adapter] Deleted DynamoDB record for ${documentId}`);
 }

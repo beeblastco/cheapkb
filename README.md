@@ -1,289 +1,88 @@
 # cheapkb
 
-A cost-effective, serverless knowledge base built on AWS. Ingest documents, chunk them intelligently, generate embeddings, and perform vector search with metadata filtering — all within the AWS Free Tier.
-
-## Why?
-
-AWS Managed Knowledge Base is expensive for personal or small-team use. **cheapkb** uses the same primitives (S3 Vectors, Lambda, SQS, DynamoDB) but assembles them manually at a fraction of the cost.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    Client([Client])
-
-    subgraph API["API Gateway"]
-        Upload["POST /upload"]
-        Ingest["POST /ingest"]
-        Query["POST /query"]
-        Admin["GET/DELETE /documents\nPOST /documents/:id/reindex"]
-    end
-
-    subgraph IngestPipeline["Ingest Pipeline"]
-        Parse["Parse\n(Lambda)"]
-        Chunk["Chunk\n(Lambda)"]
-        Embed["Embed\n(Lambda)"]
-    end
-
-    S3[("S3\nraw/ parsed/ chunks/")]
-    DynamoDB[("DynamoDB\nDocuments + Chunks")]
-    S3Vectors[("S3 Vectors\nVector Index")]
-    SQS1[["SQS\nIngest"]]
-    SQS2[["SQS\nChunk"]]
-    SQS3[["SQS\nEmbed"]]
-
-    Client --> Upload --> S3
-    S3 -->|auto-ingest| SQS1 --> Parse --> SQS2 --> Chunk --> SQS3 --> Embed
-    Client --> Ingest --> SQS1
-    Parse --> S3
-    Parse --> DynamoDB
-    Chunk --> S3
-    Chunk --> DynamoDB
-    Embed --> DynamoDB
-    Embed --> S3Vectors
-    Client --> Query --> S3Vectors --> S3
-    Client --> Admin --> DynamoDB
-    S3 -->|auto-cleanup| DynamoDB
-    S3 -->|auto-cleanup| S3Vectors
-```
+Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed, and search vectors within the AWS Free Tier.
 
 ## Stack
 
-- **Runtime:** Node.js 22.x (no Docker)
-- **API:** AWS API Gateway HTTP API (v2)
-- **Compute:** AWS Lambda
-- **Queue:** Amazon SQS with dead-letter queues
-- **Storage:** Amazon S3 (raw files, parsed text, chunks)
-- **Database:** Amazon DynamoDB (document + chunk metadata)
-- **Vectors:** Amazon S3 Vectors (cosine similarity search)
-- **IaC:** [SST](https://sst.dev) v3 (Pulumi under the hood)
+- Node.js 22.x, TypeScript
+- API Gateway HTTP API, Lambda
+- S3 (raw / parsed / chunks), S3 Vectors
+- DynamoDB (document metadata)
+- SQS (parse / chunk / embed queues with DLQ)
+- [SST v3](https://sst.dev) for IaC
 
-## How It Works
-
-### Ingestion Flow
-
-1. **Upload:** `POST /upload` returns a presigned URL. PUT your file to S3.
-2. **Auto-Ingest:** S3 PutObject event automatically triggers the ingest pipeline.
-3. **Manual Ingest:** `POST /ingest` also triggers the pipeline (for re-processing).
-4. **Pipeline:** Parse → Chunk → Embed (sequential, with parallelism within each step).
-
-### Status Flow
+## Pipeline
 
 ```
-UPLOADED → QUEUED → PARSING → PARSED → CHUNKING → CHUNKED → EMBEDDING → EMBEDDED
-                 ↓ (fail)         ↓ (fail)         ↓ (fail)
-               FAILED            FAILED            FAILED
-                 ↓ (retry<3)      ↓ (retry<3)      ↓ (retry<3)
-               back to queue     back to queue     back to queue
-                 ↓ (retry>=3)     ↓ (retry>=3)     ↓ (retry>=3)
-               STOP (manual)     STOP (manual)     STOP (manual)
+Upload ──► S3 (raw/)
+   │            │
+   │            └─ S3 event ──► IngestAdapter ──► Ingest queue
+   │                                                  │
+   ▼                                                  ▼
+POST /upload                              Parse ──► Chunk ──► Embed ──► S3 Vectors
 ```
 
-### Error Tracking
+| Status     | Meaning                              |
+| ---------- | ------------------------------------ |
+| UPLOADED   | File in S3, awaiting ingest          |
+| QUEUED     | Queued for parsing                   |
+| PARSING    | Extracting text                      |
+| PARSED     | Text extracted                       |
+| CHUNKING   | Splitting text                       |
+| CHUNKED    | Chunks written to S3                 |
+| EMBEDDING  | Generating vectors                   |
+| EMBEDDED   | Vectors stored in S3 Vectors         |
+| FAILED     | Pipeline failed; `failedStep` set    |
 
-Each document tracks:
-- `lastError`: Error message from last failure (cleared on success)
-- `retryCount`: Number of retries attempted (0 on success)
-- `failedStep`: Which step failed (`PARSING`, `CHUNKING`, `EMBEDDING`)
+## API
 
-### Auto-Retry
+| Method | Path                              | Description                  |
+| ------ | --------------------------------- | ---------------------------- |
+| POST   | `/upload`                         | Presigned URL + doc record   |
+| POST   | `/ingest`                         | Manually trigger pipeline    |
+| POST   | `/query`                          | Vector search with filters   |
+| GET    | `/documents`                      | List all documents           |
+| GET    | `/documents/:id`                  | Document + chunk details     |
+| POST   | `/documents/:id/reindex`          | Restart from failed step     |
+| DELETE | `/documents/:id`                  | Full cleanup                 |
+| GET    | `/jobs/:id`                       | Job status                   |
 
-- Each failure increments `retryCount` and sets `lastError`
-- If `retryCount < 3`: automatically retry
-- If `retryCount >= 3`: mark as `FAILED`, require manual reindex
+Full reference: [docs/API.md](docs/API.md). Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-### Partial Re-Indexing
+## Auto Cleanup
 
-`POST /documents/:id/reindex` restarts from the failed step:
+Two paths delete a document and all of its derived data (vectors, parsed text, chunks, source file, DynamoDB record):
 
-| Current Status | Restart From |
-|----------------|--------------|
-| `UPLOADED`, `QUEUED`, `FAILED` at parsing | Parse |
-| `PARSED`, `FAILED` at chunking | Chunk |
-| `CHUNKED`, `FAILED` at embedding | Embed |
-| `EMBEDDED` | No-op |
+- **API** — `DELETE /documents/:id`
+- **S3** — Deleting the original file in `raw/<documentId>/` fires an S3 `ObjectRemoved` event that invokes the cleanup Lambda.
 
-### Delete Cleanup
+## Environment
 
-`DELETE /documents/:id` performs immediate full cleanup:
-1. Delete all vectors from S3 Vectors
-2. Delete all chunks from S3
-3. Delete parsed file from S3
-4. Delete source file from S3
-5. Delete DynamoDB record
-
-S3 DeleteObject events also trigger cleanup for direct console deletions.
-
-## API Reference
-
-All endpoints are served through a single API Gateway. The base URL is printed after deployment.
-
-### Upload
-
-```bash
-POST /upload
-Content-Type: application/json
-
-{
-  "filename": "paper.pdf",
-  "mimeType": "application/pdf",
-  "title": "Optional title",
-  "tags": ["research", "ai"],
-  "authors": ["Author Name"],
-  "year": 2024
-}
+```
+EMBEDDING_PROVIDER_URL=...
+EMBEDDING_API_KEY=...
+EMBEDDING_MODEL=text-embedding-3-small
+CHUNK_MAX_TOKENS=700
+CHUNK_OVERLAP_TOKENS=100
+VECTOR_BATCH=100
+EMBED_BATCH=25
 ```
 
-**Response:**
-```json
-{
-  "documentId": "doc_abc123",
-  "uploadUrl": "https://s3...presigned-url",
-  "sourceKey": "raw/doc_abc123/paper.pdf"
-}
-```
-
-Upload your file to `uploadUrl` using a PUT request. The ingest pipeline triggers automatically after upload.
-
-### Ingest
-
-```bash
-POST /ingest
-Content-Type: application/json
-
-{
-  "documentId": "doc_abc123"
-}
-```
-
-Triggers the full pipeline. Use this for manual re-processing after errors.
-
-### Query
-
-```bash
-POST /query
-Content-Type: application/json
-
-{
-  "query": "What is retrieval-augmented generation?",
-  "topK": 10,
-  "filters": {
-    "year": { "$gte": 2023 },
-    "tags": "research"
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "query": "What is retrieval-augmented generation?",
-  "topK": 10,
-  "resultCount": 3,
-  "results": [
-    {
-      "documentId": "doc_abc123",
-      "chunkId": "chunk_xyz",
-      "score": 0.89,
-      "title": "RAG Paper",
-      "pageStart": 1,
-      "pageEnd": 3,
-      "text": "Retrieval-augmented generation (RAG) is a technique...",
-      "source": {
-        "bucket": "cheapkb-storage-...",
-        "key": "raw/doc_abc123/"
-      }
-    }
-  ]
-}
-```
-
-**Filters:** Supports `$eq`, `$gte`, `$lte`, `$in` operators on metadata fields.
-
-### Documents
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/documents` | List all documents |
-| `GET` | `/documents/:id` | Get document details + chunks |
-| `POST` | `/documents/:id/reindex` | Re-run pipeline from failed step |
-| `DELETE` | `/documents/:id` | Delete document, chunks, and vectors |
-
-### Document Response Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `documentId` | `string` | Unique document identifier |
-| `status` | `string` | Current status (`UPLOADED`, `QUEUED`, `PARSING`, `PARSED`, `CHUNKING`, `CHUNKED`, `EMBEDDING`, `EMBEDDED`, `FAILED`) |
-| `lastError` | `string \| null` | Error message from last failure |
-| `retryCount` | `number` | Number of retries attempted |
-| `failedStep` | `string \| null` | Which step failed |
-
-### Jobs
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/jobs/:id` | Check ingest job status |
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `EMBEDDING_PROVIDER_URL` | Yes | OpenAI-compatible embedding endpoint |
-| `EMBEDDING_API_KEY` | Yes | API key for the embedding provider |
-| `EMBEDDING_MODEL` | Yes | Model name (e.g., `text-embedding-3-small`) |
-| `CHUNK_MAX_TOKENS` | No | Max tokens per chunk (default: `700`) |
-| `CHUNK_OVERLAP_TOKENS` | No | Overlap between chunks (default: `100`) |
-| `VECTOR_BATCH` | No | Vectors per batch write (default: `100`) |
-| `EMBED_BATCH` | No | Embeddings per API call (default: `25`) |
-
-## Setup
-
-```bash
-npm install
-cp .env.example .env
-# Edit .env with your embedding provider details
-```
+Vector dimension is **1024** with cosine distance. The provider must return 1024-dim embeddings.
 
 ## Deploy
 
 ```bash
+npm install
+cp .env.example .env
 npx sst deploy --stage dev
 npx sst deploy --stage production
 npx sst remove --stage dev
 ```
 
-After deployment, SST outputs the API Gateway URL:
-
-```text
-Api: https://xxxx.execute-api.us-east-1.amazonaws.com
-```
-
 ## Resource Naming
 
-All AWS resources follow the pattern:
-
-```text
-<project>-<stage>-<service>-<account_id>-<region>
-```
-
-Production stage omits the `<stage>` prefix:
-
-```text
-cheapkb-storage-<ACCOUNT_ID>-<REGION>
-cheapkb-vecs-<ACCOUNT_ID>-<REGION>
-```
-
-## Cost
-
-Designed to stay within AWS Free Tier:
-
-- **Lambda:** 1M free requests/month
-- **DynamoDB:** 25 GB storage, 25 RCU/WCU on-demand
-- **S3:** 5 GB storage, 20K GET, 2K PUT requests
-- **S3 Vectors:** New service, pricing TBD
-- **SQS:** 1M free requests/month
-- **API Gateway:** 1M free requests/month
+`<project>-<stage>-<service>-<account-id>-<region>`. Production omits the stage prefix.
 
 ## License
 
