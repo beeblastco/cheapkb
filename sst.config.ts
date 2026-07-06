@@ -244,7 +244,7 @@ export default $config({
       handler: "./functions/embed/index.handler",
       runtime: "nodejs22.x",
       timeout: "300 seconds",
-      memory: "1024 MB",
+      memory: "128 MB",
       link: [storage, table],
       environment: {
         ...embedEnv,
