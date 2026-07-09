@@ -38,6 +38,10 @@ declare module "sst" {
       "type": "sst.aws.Queue"
       "url": string
     }
+    "CleanupAdapter": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "Embed": {
       "type": "sst.aws.Queue"
       "url": string
@@ -49,6 +53,10 @@ declare module "sst" {
     "Ingest": {
       "type": "sst.aws.Queue"
       "url": string
+    }
+    "IngestAdapter": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "IngestDLQ": {
       "type": "sst.aws.Queue"
@@ -76,7 +84,6 @@ declare module "sst" {
     }
   }
 }
-/// <reference path="sst-env.d.ts" />
 
 import "sst"
 export {}

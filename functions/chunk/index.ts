@@ -1,16 +1,17 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { encode, decode } from "gpt-tokenizer";
+import { decode, encode } from "gpt-tokenizer";
 import { Resource } from "sst";
 
 const s3 = new S3Client({});
@@ -53,6 +54,9 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   );
   const doc = docResult.Item ?? {};
   const title = doc.title ?? null;
+  const tags = doc.tags ?? null;
+  const authors = doc.authors ?? null;
+  const year = doc.year ?? null;
 
   const resp = await s3.send(
     new GetObjectCommand({ Bucket: Resource.Storage.name, Key: parsedKey }),
@@ -83,10 +87,26 @@ async function chunkDocument(documentId: string, parsedKey: string) {
           chunkId,
           text: chunk.text,
           title,
+          tags,
+          authors,
+          year,
           pageStart: chunk.pageStart,
           pageEnd: chunk.pageEnd,
         }),
         ContentType: "application/json",
+      }),
+    );
+    await dynamo.send(
+      new PutCommand({
+        TableName,
+        Item: {
+          pk: `DOC#${documentId}`,
+          sk: `CHUNK#${chunkId}`,
+          entityType: "Chunk",
+          chunkId,
+          s3ChunkKey,
+          createdAt: now,
+        },
       }),
     );
     chunkKeys.push(s3ChunkKey);

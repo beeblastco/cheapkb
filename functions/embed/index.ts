@@ -1,6 +1,6 @@
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { S3VectorsClient, PutVectorsCommand } from "@aws-sdk/client-s3vectors";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { PutVectorsCommand, S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -74,7 +74,10 @@ async function processBatch(
     metadata.push({
       documentId: chunk.documentId,
       chunkId: chunkData.chunkId,
-      title: chunkData.title ?? null,
+      ...(chunkData.title ? { title: chunkData.title } : {}),
+      ...(chunkData.tags ? { tags: chunkData.tags } : {}),
+      ...(chunkData.authors ? { authors: chunkData.authors } : {}),
+      ...(chunkData.year ? { year: chunkData.year } : {}),
       pageStart: chunkData.pageStart,
       pageEnd: chunkData.pageEnd,
       s3ChunkKey: chunk.s3ChunkKey,
@@ -99,7 +102,7 @@ async function processBatch(
 
   if (vectorBatch.length === 0) return;
 
-  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "100");
+  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "500");
   for (let i = 0; i < vectorBatch.length; i += vectorBatchSize) {
     const chunk = vectorBatch.slice(i, i + vectorBatchSize);
     await vectors.send(

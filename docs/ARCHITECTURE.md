@@ -41,7 +41,7 @@ flowchart LR
 | ------ | --------------- | ------- | ------------------------- |
 | Parse  | 1024 MB         | 300 s   | `parsed/{id}/v1/pages.json` |
 | Chunk  | 1024 MB         | 300 s   | `chunks/{id}/*.json`        |
-| Embed  | 1024 MB         | 300 s   | S3 Vectors                  |
+| Embed  | 128 MB          | 300 s   | S3 Vectors                  |
 
 Each stage writes to DynamoDB before queueing the next stage. On error, `lastError` is set and the message is re-queued up to 3 times via SQS. After 3 failures the document is marked `FAILED` with `failedStep` set to the failing stage.
 
