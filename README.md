@@ -30,6 +30,8 @@ Full pipeline details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## API
 
+Base URL: `https://<api-id>.execute-api.us-east-1.amazonaws.com/v1`
+
 | Method | Path                     | Description                |
 | ------ | ------------------------ | -------------------------- |
 | POST   | `/upload`                | Presigned URL + doc record |
