@@ -64,7 +64,7 @@ Vector dimension is **1024** with cosine distance.
 ```bash
 npm install && cp .env.example .env
 npx sst deploy --stage dev
-AWS_PROFILE=954475336309 npx sst deploy --stage production
+AWS_PROFILE=<your-prod-profile> npx sst deploy --stage production
 npx sst remove --stage dev
 ```
 

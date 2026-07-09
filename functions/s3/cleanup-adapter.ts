@@ -70,18 +70,26 @@ export async function handler(event: any) {
 }
 
 async function deleteVectors(documentId: string) {
-  const chunkRecords = await dynamo.send(
-    new QueryCommand({
-      TableName,
-      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-      ExpressionAttributeValues: {
-        ":pk": `DOC#${documentId}`,
-        ":prefix": "CHUNK#",
-      },
-    }),
-  );
+  const allChunkItems: any[] = [];
+  let lastKey: Record<string, any> | undefined;
 
-  const vectorKeys = (chunkRecords.Items ?? [])
+  do {
+    const chunkRecords = await dynamo.send(
+      new QueryCommand({
+        TableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": `DOC#${documentId}`,
+          ":prefix": "CHUNK#",
+        },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    allChunkItems.push(...(chunkRecords.Items ?? []));
+    lastKey = chunkRecords.LastEvaluatedKey;
+  } while (lastKey);
+
+  const vectorKeys = allChunkItems
     .map((item) => item.chunkId)
     .filter(Boolean);
   if (vectorKeys.length === 0) return;
@@ -97,7 +105,7 @@ async function deleteVectors(documentId: string) {
     );
   }
 
-  for (const item of chunkRecords.Items ?? []) {
+  for (const item of allChunkItems) {
     await dynamo.send(
       new DeleteCommand({
         TableName,
