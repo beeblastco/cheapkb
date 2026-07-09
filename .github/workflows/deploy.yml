@@ -1,0 +1,51 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: us-east-1
+  EMBEDDING_PROVIDER_URL: ${{ secrets.EMBEDDING_PROVIDER_URL }}
+  EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+  EMBEDDING_MODEL: ${{ secrets.EMBEDDING_MODEL }}
+  CHUNK_MAX_TOKENS: "700"
+  CHUNK_OVERLAP_TOKENS: "100"
+  VECTOR_BATCH: "500"
+  EMBED_BATCH: "25"
+
+jobs:
+  check:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  deploy:
+    name: Deploy to Production
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx sst deploy --stage production

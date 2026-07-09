@@ -1,13 +1,21 @@
 /// <reference path="./.sst/platform/config.d.ts" />
 
 const PROJECT = "cheapkb";
+// Stage name "prod" is poisoned in SST Ion cloud state from failed prior deploys; using "production" as standard alias
+const PROD_STAGE = "production";
 
 export default $config({
   app(input) {
     return {
       name: PROJECT,
-      removal: input?.stage === "production" ? "retain" : "remove",
-      protect: ["production"].includes(input?.stage),
+      // Hardcoded profile: SST's Go bootstrap daemon doesn't honor AWS_ACCESS_KEY_ID env vars alone
+      providers: {
+        aws: {
+          profile: "954475336309",
+        },
+      },
+      removal: input?.stage === PROD_STAGE ? "retain" : "remove",
+      protect: [PROD_STAGE].includes(input?.stage),
       home: "aws",
     };
   },
@@ -17,11 +25,11 @@ export default $config({
     const ACCOUNT_ID = (await pulumiAws.getCallerIdentity({})).accountId;
     const REGION = (await pulumiAws.getRegion({})).name;
     const STAGE = $app.stage;
-    const stagePrefix = STAGE === "production" ? "" : `${STAGE}-`;
+    const stagePrefix = STAGE === PROD_STAGE ? "" : `${STAGE}-`;
     const name = (service: string) =>
       `${PROJECT}-${stagePrefix}${service}-${ACCOUNT_ID}-${REGION}`;
     const vectorBucketName = name("vecs");
-    const vectorIndexName = STAGE === "production" ? "default" : STAGE;
+    const vectorIndexName = STAGE === PROD_STAGE ? "default" : STAGE;
 
     // Base environment variables for all functions
     const baseEnv = {
@@ -56,14 +64,11 @@ export default $config({
         gsi1sk: "string",
         gsi2pk: "string",
         gsi2sk: "string",
-        gsi3pk: "string",
-        gsi3sk: "string",
       },
       primaryIndex: { hashKey: "pk", rangeKey: "sk" },
       globalIndexes: {
         GSI1: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
         GSI2: { hashKey: "gsi2pk", rangeKey: "gsi2sk" },
-        GSI3: { hashKey: "gsi3pk", rangeKey: "gsi3sk" },
       },
       transform: {
         table: (a) => {
@@ -157,6 +162,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "Generate presigned upload URL and create document record",
       link: [storage, table],
       environment: baseEnv,
       transform: {
@@ -171,6 +177,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "Manually trigger the ingest pipeline for an existing document",
       link: [table, ingestQueue],
       environment: baseEnv,
       transform: {
@@ -185,7 +192,8 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "300 seconds",
       memory: "1024 MB",
-      link: [storage, table, chunkQueue],
+      description: "Extract text from raw document files using pdf-parse",
+      link: [storage, table, chunkQueue, ingestQueue],
       environment: baseEnv,
       permissions: [
         {
@@ -201,7 +209,7 @@ export default $config({
           ],
           resources: [table.arn],
         },
-        { actions: ["sqs:SendMessage"], resources: [chunkQueue.arn] },
+        { actions: ["sqs:SendMessage"], resources: [chunkQueue.arn, ingestQueue.arn] },
       ],
       transform: {
         function: (a) => {
@@ -215,6 +223,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "300 seconds",
       memory: "1024 MB",
+      description: "Split parsed text into embeddable chunks",
       link: [storage, table, embedQueue],
       environment: baseEnv,
       permissions: [
@@ -245,6 +254,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "300 seconds",
       memory: "128 MB",
+      description: "Generate vectors from chunks and store in S3 Vectors",
       link: [storage, table],
       environment: {
         ...embedEnv,
@@ -275,6 +285,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "30 seconds",
       memory: "256 MB",
+      description: "Vector similarity search with metadata filters",
       link: [storage, table],
       environment: embedEnv,
       permissions: [
@@ -301,6 +312,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "List all documents with status and metadata",
       link: [table],
       environment: baseEnv,
       transform: {
@@ -315,6 +327,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "Get a single document with its chunk details",
       link: [table],
       environment: baseEnv,
       transform: {
@@ -329,6 +342,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "Restart a failed document from its failed pipeline step",
       link: [table, ingestQueue],
       environment: baseEnv,
       transform: {
@@ -343,6 +357,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "30 seconds",
       memory: "128 MB",
+      description: "Delete a document and all derived data (vectors, chunks, parsed, source)",
       link: [storage, table],
       environment: baseEnv,
       permissions: [
@@ -368,6 +383,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
+      description: "Get the status and details of an ingest job",
       link: [table],
       environment: baseEnv,
       transform: {
@@ -377,75 +393,81 @@ export default $config({
       },
     });
 
+    const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
+      handler: "./functions/s3/ingest-adapter.handler",
+      runtime: "nodejs22.x",
+      timeout: "30 seconds",
+      memory: "128 MB",
+      description: "Bridge S3 ObjectCreated events to the ingest queue",
+      link: [table, ingestQueue],
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [table.arn],
+        },
+        { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("ingest-adapter");
+        },
+      },
+    });
+
+    const cleanupAdapterFn = new sst.aws.Function("CleanupAdapter", {
+      handler: "./functions/s3/cleanup-adapter.handler",
+      runtime: "nodejs22.x",
+      timeout: "300 seconds",
+      memory: "512 MB",
+      description: "Delete all derived data when a source file is removed from S3",
+      link: [storage, table],
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:ListBucket",
+            "s3:DeleteObject",
+          ],
+          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
+        },
+        {
+          actions: ["dynamodb:DeleteItem", "dynamodb:GetItem"],
+          resources: [table.arn],
+        },
+        {
+          actions: [
+            "s3vectors:DeleteVectors",
+            "s3vectors:ListVectors",
+            "s3vectors:GetVectors",
+          ],
+          resources: ["*"],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("cleanup-adapter");
+        },
+      },
+    });
+
     storage.notify({
       notifications: [
         {
           name: "ingest-adapter",
-          function: {
-            handler: "./functions/s3/ingest-adapter.handler",
-            runtime: "nodejs22.x",
-            timeout: "30 seconds",
-            memory: "128 MB",
-            link: [table, ingestQueue],
-            environment: baseEnv,
-            permissions: [
-              {
-                actions: [
-                  "dynamodb:GetItem",
-                  "dynamodb:PutItem",
-                  "dynamodb:UpdateItem",
-                ],
-                resources: [table.arn],
-              },
-              { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
-            ],
-            transform: {
-              function: (a) => {
-                a.name = name("ingest-adapter");
-              },
-            },
-          },
+          function: ingestAdapterFn.arn,
           events: ["s3:ObjectCreated:Put", "s3:ObjectCreated:Post"],
           filterPrefix: "raw/",
         },
         {
           name: "cleanup-adapter",
-          function: {
-            handler: "./functions/s3/cleanup-adapter.handler",
-            runtime: "nodejs22.x",
-            timeout: "300 seconds",
-            memory: "512 MB",
-            link: [storage, table],
-            environment: baseEnv,
-            permissions: [
-              {
-                actions: [
-                  "s3:GetObject",
-                  "s3:PutObject",
-                  "s3:ListBucket",
-                  "s3:DeleteObject",
-                ],
-                resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
-              },
-              {
-                actions: ["dynamodb:DeleteItem", "dynamodb:GetItem"],
-                resources: [table.arn],
-              },
-              {
-                actions: [
-                  "s3vectors:DeleteVectors",
-                  "s3vectors:ListVectors",
-                  "s3vectors:GetVectors",
-                ],
-                resources: ["*"],
-              },
-            ],
-            transform: {
-              function: (a) => {
-                a.name = name("cleanup-adapter");
-              },
-            },
-          },
+          function: cleanupAdapterFn.arn,
           events: [
             "s3:ObjectRemoved:Delete",
             "s3:ObjectRemoved:DeleteMarkerCreated",
@@ -459,6 +481,9 @@ export default $config({
       transform: {
         api: (a) => {
           a.name = name("api");
+        },
+        stage: (s) => {
+          s.name = "v1";
         },
       },
     });

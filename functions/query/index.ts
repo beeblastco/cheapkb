@@ -1,7 +1,7 @@
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
-  S3VectorsClient,
   QueryVectorsCommand,
+  S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import { Resource } from "sst";
 
