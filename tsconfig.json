@@ -15,6 +15,6 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["functions/**/*.ts", "functions/**/*.d.ts", "sst-env.d.ts", "sst.config.ts"],
+  "include": ["functions/**/*.ts", "functions/**/*.d.ts", "sst-env.d.ts"],
   "exclude": ["node_modules", "dist", ".sst"]
 }
