@@ -1,64 +1,51 @@
 # cheapkb
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![SST v4](https://img.shields.io/badge/SST-v4-purple.svg)](https://sst.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22.x-green.svg)](https://nodejs.org/)
+
 Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed, and search vectors within the AWS Free Tier.
+
+**Tags:** `aws` `serverless` `rag` `vector-search` `knowledge-base` `s3-vectors` `lambda` `sst` `typescript` `free-tier`
 
 ## Stack
 
-- Node.js 22.x, TypeScript
-- API Gateway HTTP API, Lambda
-- S3 (raw / parsed / chunks), S3 Vectors
-- DynamoDB (document metadata)
-- SQS (parse / chunk / embed queues with DLQ)
-- [SST v3](https://sst.dev) for IaC
+Node.js 22.x, TypeScript 7, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3 Vectors, DynamoDB, SQS.
 
 ## Pipeline
 
-```
-Upload ──► S3 (raw/)
-   │            │
-   │            └─ S3 event ──► IngestAdapter ──► Ingest queue
-   │                                                  │
-   ▼                                                  ▼
-POST /upload                              Parse ──► Chunk ──► Embed ──► S3 Vectors
+```mermaid
+flowchart LR
+    Client([Client]) -->|POST /upload| API["API Gateway"]
+    API --> S3raw[("S3 raw/")]
+    S3raw -->|ObjectCreated| IngestAdapter["IngestAdapter"] --> IngestQ[["Ingest queue"]]
+    Client -->|POST /ingest| API --> IngestQ
+    IngestQ --> Parse["Parse"] --> ChunkQ[["Chunk queue"]]
+    ChunkQ --> Chunk["Chunk"] --> EmbedQ[["Embed queue"]]
+    EmbedQ --> Embed["Embed"] --> Vectors[("S3 Vectors")]
 ```
 
-| Status     | Meaning                              |
-| ---------- | ------------------------------------ |
-| UPLOADED   | File in S3, awaiting ingest          |
-| QUEUED     | Queued for parsing                   |
-| PARSING    | Extracting text                      |
-| PARSED     | Text extracted                       |
-| CHUNKING   | Splitting text                       |
-| CHUNKED    | Chunks written to S3                 |
-| EMBEDDING  | Generating vectors                   |
-| EMBEDDED   | Vectors stored in S3 Vectors         |
-| FAILED     | Pipeline failed; `failedStep` set    |
+Full pipeline details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## API
 
-| Method | Path                              | Description                  |
-| ------ | --------------------------------- | ---------------------------- |
-| POST   | `/upload`                         | Presigned URL + doc record   |
-| POST   | `/ingest`                         | Manually trigger pipeline    |
-| POST   | `/query`                          | Vector search with filters   |
-| GET    | `/documents`                      | List all documents           |
-| GET    | `/documents/:id`                  | Document + chunk details     |
-| POST   | `/documents/:id/reindex`          | Restart from failed step     |
-| DELETE | `/documents/:id`                  | Full cleanup                 |
-| GET    | `/jobs/:id`                       | Job status                   |
+| Method | Path                     | Description                |
+| ------ | ------------------------ | -------------------------- |
+| POST   | `/upload`                | Presigned URL + doc record |
+| POST   | `/ingest`                | Manually trigger pipeline  |
+| POST   | `/query`                 | Vector search with filters |
+| GET    | `/documents`             | List all documents         |
+| GET    | `/documents/:id`         | Document + chunk details   |
+| POST   | `/documents/:id/reindex` | Restart from failed step   |
+| DELETE | `/documents/:id`         | Full cleanup               |
+| GET    | `/jobs/:id`              | Job status                 |
 
-Full reference: [docs/API.md](docs/API.md). Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Full API reference: [docs/API.md](docs/API.md)
 
-## Auto Cleanup
+## Configuration
 
-Two paths delete a document and all of its derived data (vectors, parsed text, chunks, source file, DynamoDB record):
-
-- **API** — `DELETE /documents/:id`
-- **S3** — Deleting the original file in `raw/<documentId>/` fires an S3 `ObjectRemoved` event that invokes the cleanup Lambda.
-
-## Environment
-
-```
+```bash
 EMBEDDING_PROVIDER_URL=...
 EMBEDDING_API_KEY=...
 EMBEDDING_MODEL=text-embedding-3-small
@@ -68,22 +55,21 @@ VECTOR_BATCH=100
 EMBED_BATCH=25
 ```
 
-Vector dimension is **1024** with cosine distance. The provider must return 1024-dim embeddings.
+Vector dimension is **1024** with cosine distance.
 
 ## Deploy
 
 ```bash
-npm install
-cp .env.example .env
+npm install && cp .env.example .env
 npx sst deploy --stage dev
-npx sst deploy --stage production
+AWS_PROFILE=REDACTED_ACCOUNT_ID npx sst deploy --stage production
 npx sst remove --stage dev
 ```
 
-## Resource Naming
+## Contributing
 
-`<project>-<stage>-<service>-<account-id>-<region>`. Production omits the stage prefix.
+See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)
