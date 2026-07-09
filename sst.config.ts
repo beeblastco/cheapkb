@@ -482,6 +482,9 @@ export default $config({
         api: (a) => {
           a.name = name("api");
         },
+        stage: (s) => {
+          s.name = "v1";
+        },
       },
     });
 
