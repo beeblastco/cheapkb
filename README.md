@@ -7,8 +7,6 @@
 
 Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed, and search vectors within the AWS Free Tier.
 
-**Tags:** `aws` `serverless` `rag` `vector-search` `knowledge-base` `s3-vectors` `lambda` `sst` `typescript` `free-tier`
-
 ## Stack
 
 Node.js 22.x, TypeScript 7, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3 Vectors, DynamoDB, SQS.
