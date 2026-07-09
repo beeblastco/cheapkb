@@ -1,6 +1,6 @@
 # API Reference
 
-Base URL is printed by SST after deploy.
+Base URL: `https://<api-id>.execute-api.us-east-1.amazonaws.com/v1`
 
 All requests and responses are JSON. Errors return `{ "error": "message" }` with status 400/404/500.
 
