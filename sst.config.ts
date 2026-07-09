@@ -8,10 +8,10 @@ export default $config({
   app(input) {
     return {
       name: PROJECT,
-      // Hardcoded profile: SST's Go bootstrap daemon doesn't honor AWS_ACCESS_KEY_ID env vars alone
       providers: {
         aws: {
-          profile: "954475336309",
+          // Use profile locally; CI uses AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars
+          ...(!process.env.AWS_ACCESS_KEY_ID && { profile: "954475336309" }),
         },
       },
       removal: input?.stage === PROD_STAGE ? "retain" : "remove",
