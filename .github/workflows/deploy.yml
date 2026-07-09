@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
       - run: npx tsc --noEmit
 
   deploy:
@@ -47,5 +47,5 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
       - run: npx sst deploy --stage production
