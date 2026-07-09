@@ -16,13 +16,14 @@
     "@aws-sdk/client-sqs": "^3",
     "@aws-sdk/lib-dynamodb": "^3",
     "@aws-sdk/s3-request-presigner": "^3",
-    "@pulumi/aws": "^6",
+    "@pulumi/aws": "^6.83.4",
+    "@pulumi/pulumi": "^3.251.0",
     "gpt-tokenizer": "^3.4.0",
-    "sst": "^3",
+    "sst": "^4",
     "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
-    "typescript": "^5"
+    "typescript": "^7"
   }
 }

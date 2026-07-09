@@ -1,20 +1,21 @@
-import {
-  S3Client,
-  ListObjectsV2Command,
-  DeleteObjectsCommand,
-} from "@aws-sdk/client-s3";
-import {
-  S3VectorsClient,
-  ListVectorsCommand,
-  DeleteVectorsCommand,
-} from "@aws-sdk/client-s3vectors";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import {
+  DeleteVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
+import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
-  DeleteCommand,
+  QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
+;
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -113,37 +114,38 @@ export async function handler(event: any) {
 }
 
 async function deleteVectors(documentId: string) {
-  let nextToken: string | undefined;
-  const vectorKeys: string[] = [];
-  do {
-    const resp = await vectors.send(
-      new ListVectorsCommand({
-        vectorBucketName: VectorBucketName,
-        indexName: VectorIndexName,
-        nextToken,
-        returnMetadata: true,
-      }),
-    );
-    for (const v of resp.vectors ?? []) {
-      if (v.key) {
-        const meta = v.metadata as Record<string, any> | undefined;
-        if (meta?.documentId === documentId) {
-          vectorKeys.push(v.key);
-        }
-      }
-    }
-    nextToken = resp.nextToken;
-  } while (nextToken);
+  const chunkRecords = await dynamo.send(
+    new QueryCommand({
+      TableName,
+      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: {
+        ":pk": `DOC#${documentId}`,
+        ":prefix": "CHUNK#",
+      },
+    }),
+  );
 
+  const vectorKeys = (chunkRecords.Items ?? [])
+    .map((item) => item.chunkId)
+    .filter(Boolean);
   if (vectorKeys.length === 0) return;
 
-  for (let i = 0; i < vectorKeys.length; i += 100) {
-    const batch = vectorKeys.slice(i, i + 100);
+  for (let i = 0; i < vectorKeys.length; i += 500) {
+    const batch = vectorKeys.slice(i, i + 500);
     await vectors.send(
       new DeleteVectorsCommand({
         vectorBucketName: VectorBucketName,
         indexName: VectorIndexName,
         keys: batch,
+      }),
+    );
+  }
+
+  for (const item of chunkRecords.Items ?? []) {
+    await dynamo.send(
+      new DeleteCommand({
+        TableName,
+        Key: { pk: item.pk, sk: item.sk },
       }),
     );
   }
