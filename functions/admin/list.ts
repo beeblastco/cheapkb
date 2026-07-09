@@ -19,20 +19,30 @@ const STATUSES = [
 
 export async function handler() {
   const results = await Promise.all(
-    STATUSES.map((status) =>
-      dynamo.send(
-        new QueryCommand({
-          TableName,
-          IndexName: "GSI1",
-          KeyConditionExpression: "gsi1pk = :pk",
-          ExpressionAttributeValues: { ":pk": `STATUS#${status}` },
-        }),
-      ),
-    ),
+    STATUSES.map(async (status) => {
+      const allItems: any[] = [];
+      let lastKey: Record<string, any> | undefined;
+
+      do {
+        const res = await dynamo.send(
+          new QueryCommand({
+            TableName,
+            IndexName: "GSI1",
+            KeyConditionExpression: "gsi1pk = :pk",
+            ExpressionAttributeValues: { ":pk": `STATUS#${status}` },
+            ExclusiveStartKey: lastKey,
+          }),
+        );
+        allItems.push(...(res.Items ?? []));
+        lastKey = res.LastEvaluatedKey;
+      } while (lastKey);
+
+      return allItems;
+    }),
   );
 
   const documents = results
-    .flatMap((res) => res.Items ?? [])
+    .flat()
     .map((doc) => ({
       documentId: doc.documentId,
       title: doc.title,
