@@ -7,7 +7,7 @@
     "dev": "sst dev",
     "deploy": "sst deploy",
     "remove": "sst remove",
-    "build": "tsc --noEmit && tsc --ignoreConfig --noEmit --skipLibCheck --module ES2022 --moduleResolution bundler --target ES2022 sst.config.ts",
+    "build": "tsc --noEmit",
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
