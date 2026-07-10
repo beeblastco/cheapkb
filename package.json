@@ -19,6 +19,7 @@
     "@pulumi/aws": "^6.83.4",
     "@pulumi/pulumi": "^3.251.0",
     "gpt-tokenizer": "^3.4.0",
+    "jose": "^6.0.0",
     "sst": "^4",
     "unpdf": "^1.6.2"
   },

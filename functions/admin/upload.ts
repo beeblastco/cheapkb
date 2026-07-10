@@ -4,12 +4,25 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "node:crypto";
 import { Resource } from "sst";
+import { checkRateLimit, extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = Resource.Meta.name;
 
 export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
+
+  const { allowed, remaining } = await checkRateLimit(userId, TableName, 50, 10);
+  if (!allowed) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
+      body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+    };
+  }
+
   if (!event.body) {
     return {
       statusCode: 400,
@@ -42,6 +55,7 @@ export async function handler(event: any) {
         sk: "META",
         entityType: "Document",
         documentId,
+        userId,
         title: body.title ?? filename,
         sourceKey,
         mimeType,
@@ -53,6 +67,8 @@ export async function handler(event: any) {
         updatedAt: now,
         gsi1pk: "STATUS#UPLOADED",
         gsi1sk: now,
+        gsi2pk: `USER#${userId}`,
+        gsi2sk: now,
       },
     }),
   );
@@ -69,7 +85,7 @@ export async function handler(event: any) {
 
   return {
     statusCode: 200,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
     body: JSON.stringify({ documentId, uploadUrl, sourceKey }),
   };
 }

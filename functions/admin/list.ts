@@ -1,48 +1,33 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
+import { extractUserId } from "../utils";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = Resource.Meta.name;
 
-const STATUSES = [
-  "UPLOADED",
-  "QUEUED",
-  "PARSING",
-  "PARSED",
-  "CHUNKING",
-  "CHUNKED",
-  "EMBEDDING",
-  "EMBEDDED",
-  "FAILED",
-];
+export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
 
-export async function handler() {
-  const results = await Promise.all(
-    STATUSES.map(async (status) => {
-      const allItems: any[] = [];
-      let lastKey: Record<string, any> | undefined;
+  const allItems: any[] = [];
+  let lastKey: Record<string, any> | undefined;
 
-      do {
-        const res = await dynamo.send(
-          new QueryCommand({
-            TableName,
-            IndexName: "GSI1",
-            KeyConditionExpression: "gsi1pk = :pk",
-            ExpressionAttributeValues: { ":pk": `STATUS#${status}` },
-            ExclusiveStartKey: lastKey,
-          }),
-        );
-        allItems.push(...(res.Items ?? []));
-        lastKey = res.LastEvaluatedKey;
-      } while (lastKey);
+  do {
+    const res = await dynamo.send(
+      new QueryCommand({
+        TableName,
+        IndexName: "GSI2",
+        KeyConditionExpression: "gsi2pk = :pk",
+        ExpressionAttributeValues: { ":pk": `USER#${userId}` },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    allItems.push(...(res.Items ?? []));
+    lastKey = res.LastEvaluatedKey;
+  } while (lastKey);
 
-      return allItems;
-    }),
-  );
-
-  const documents = results
-    .flat()
+  const documents = allItems
     .map((doc) => ({
       documentId: doc.documentId,
       title: doc.title,

@@ -11,6 +11,8 @@ Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed,
 
 Node.js 22.x, TypeScript 7, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3 Vectors, DynamoDB, SQS.
 
+**Auth:** [shoo.dev](https://shoo.dev) PKCE flow with server-side JWT verification via [jose](https://github.com/panva/jose). Identity is derived per-request from the verified `pairwise_sub` claim; documents are scoped to that user in the DynamoDB single-table design.
+
 ## Pipeline
 
 ```mermaid
@@ -30,18 +32,28 @@ Full pipeline details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 Base URL: `https://<api-id>.execute-api.us-east-1.amazonaws.com/v1`
 
-| Method | Path                     | Description                |
-| ------ | ------------------------ | -------------------------- |
-| POST   | `/upload`                | Presigned URL + doc record |
-| POST   | `/ingest`                | Manually trigger pipeline  |
-| POST   | `/query`                 | Vector search with filters |
-| GET    | `/documents`             | List all documents         |
-| GET    | `/documents/:id`         | Document + chunk details   |
-| POST   | `/documents/:id/reindex` | Restart from failed step   |
-| DELETE | `/documents/:id`         | Full cleanup               |
-| GET    | `/jobs/:id`              | Job status                 |
+All endpoints require a `Authorization: Bearer <shoo_id_token>` header.
+
+| Method | Path                     | Description                | Rate Limit |
+| ------ | ------------------------ | -------------------------- | ---------- |
+| POST   | `/upload`                | Presigned URL + doc record | 50/hr      |
+| POST   | `/ingest`                | Manually trigger pipeline  | -          |
+| POST   | `/query`                 | Vector search with filters | 100/hr     |
+| GET    | `/documents`             | List your documents        | -          |
+| GET    | `/documents/:id`         | Document + chunk details   | -          |
+| POST   | `/documents/:id/reindex` | Restart from failed step   | -          |
+| DELETE | `/documents/:id`         | Full cleanup               | -          |
+| GET    | `/jobs/:id`              | Job status                 | -          |
 
 Full API reference: [docs/API.md](docs/API.md)
+
+## Auth Flow
+
+1. User clicks "Sign in with Google" on the frontend
+2. [shoo.dev](https://shoo.dev) handles the PKCE OAuth flow with Google
+3. Frontend receives a signed `id_token` JWT stored in `localStorage`
+4. All API calls include the token in the `Authorization` header
+5. Each Lambda verifies the token server-side before processing
 
 ## Configuration
 
@@ -53,6 +65,7 @@ CHUNK_MAX_TOKENS=700
 CHUNK_OVERLAP_TOKENS=100
 VECTOR_BATCH=500
 EMBED_BATCH=25
+APP_ORIGIN=http://localhost:5173  # Your app origin for shoo JWT audience
 ```
 
 Vector dimension is **1024** with cosine distance.
