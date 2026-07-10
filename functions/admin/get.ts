@@ -5,11 +5,15 @@ import {
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
+import { extractUserId } from "../utils";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = Resource.Meta.name;
 
 export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
+
   const documentId = event.pathParameters?.id;
   if (!documentId) {
     return {
@@ -30,6 +34,14 @@ export async function handler(event: any) {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ error: "Document not found" }),
+    };
+  }
+
+  if (result.Item.userId !== userId) {
+    return {
+      statusCode: 403,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "You do not have access to this document" }),
     };
   }
 
