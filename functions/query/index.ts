@@ -3,24 +3,35 @@ import {
   QueryVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
-import { Resource } from "sst";
 import { checkRateLimit, extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const FILTER_KEYS = new Set(["documentId", "title", "tags", "authors", "year"]);
+const FILTER_OPERATORS = new Set(["$eq", "$gte", "$lte", "$in"]);
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(userId, TableName, 100, 50);
+  const { allowed, remaining } = await checkRateLimit(
+    userId,
+    TableName,
+    "QUERY",
+    100,
+    100,
+  );
   if (!allowed) {
     return {
       statusCode: 429,
-      headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(remaining),
+      },
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
     };
   }
@@ -44,16 +55,51 @@ export async function handler(event: any) {
       };
     }
     const { query, topK = 10, filters } = body;
-    if (!query) {
+    if (typeof query !== "string" || !query.trim()) {
       return {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ error: "query is required" }),
       };
     }
+    if (query.length > 4000) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: "query must be 4000 characters or fewer",
+        }),
+      };
+    }
+    if (!Number.isInteger(topK) || topK < 1 || topK > 50) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "topK must be an integer from 1 to 50" }),
+      };
+    }
+    if (
+      filters !== undefined &&
+      (!filters || typeof filters !== "object" || Array.isArray(filters))
+    ) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "filters must be an object" }),
+      };
+    }
 
-    const queryVector = await embedQuery(query);
-    const vectorFilter = filters ? buildFilter(filters) : undefined;
+    let vectorFilter: Record<string, any>;
+    try {
+      vectorFilter = buildFilter(filters, userId);
+    } catch (err: any) {
+      return {
+        statusCode: 400,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: err.message }),
+      };
+    }
+    const queryVector = await embedQuery(query.trim());
 
     const searchResp = await vectors.send(
       new QueryVectorsCommand({
@@ -76,7 +122,7 @@ export async function handler(event: any) {
         try {
           const resp = await s3.send(
             new GetObjectCommand({
-              Bucket: Resource.Storage.name,
+              Bucket: StorageBucketName,
               Key: chunkKey,
             }),
           );
@@ -93,13 +139,13 @@ export async function handler(event: any) {
       return {
         documentId: metadata.documentId ?? "",
         chunkId: match.key ?? "",
-        score: match.distance ?? 0,
+        score: 1 - (match.distance ?? 0),
         title: metadata.title,
         pageStart: metadata.pageStart,
         pageEnd: metadata.pageEnd,
         text: texts[i],
         source: {
-          bucket: Resource.Storage.name,
+          bucket: StorageBucketName,
           key: `raw/${metadata.documentId}/`,
         },
       };
@@ -107,7 +153,10 @@ export async function handler(event: any) {
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(remaining),
+      },
       body: JSON.stringify({
         query,
         topK,
@@ -120,7 +169,7 @@ export async function handler(event: any) {
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: err.message ?? "Internal error" }),
+      body: JSON.stringify({ error: "Query failed" }),
     };
   }
 }
@@ -137,28 +186,74 @@ async function embedQuery(text: string): Promise<number[]> {
       Authorization: `Bearer ${process.env.EMBEDDING_API_KEY}`,
     },
     body: JSON.stringify({ model, input: [text] }),
+    signal: AbortSignal.timeout(25000),
   });
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`Embedding provider error ${resp.status}: ${errText}`);
+    throw new Error(
+      `Embedding provider error ${resp.status}: ${errText.slice(0, 1000)}`,
+    );
   }
   const data = (await resp.json()) as { data: Array<{ embedding: number[] }> };
   return data.data[0].embedding;
 }
 
-function buildFilter(filters: Record<string, unknown>): any {
-  const result: Record<string, any> = {};
-  for (const [key, value] of Object.entries(filters)) {
+export function buildFilter(
+  filters: Record<string, unknown> | undefined,
+  userId: string,
+): Record<string, any> {
+  const result: Record<string, any> = { userId };
+  for (const [key, value] of Object.entries(filters ?? {})) {
+    if (key === "userId") continue;
+    if (!FILTER_KEYS.has(key)) throw new Error(`Unsupported filter: ${key}`);
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const op = value as Record<string, unknown>;
-      if ("$eq" in op) result[key] = op.$eq;
-      else if ("$gte" in op) result[key] = op.$gte;
-      else if ("$lte" in op) result[key] = op.$lte;
-      else if ("$in" in op) result[key] = op.$in;
+      const entries = Object.entries(op);
+      if (
+        entries.length === 0 ||
+        entries.some(
+          ([operator, operatorValue]) =>
+            !FILTER_OPERATORS.has(operator) ||
+            !isValidOperatorValue(operator, operatorValue),
+        )
+      ) {
+        throw new Error(`Unsupported operator for filter: ${key}`);
+      }
+      result[key] = Object.fromEntries(entries);
     } else {
+      if (
+        typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean"
+      ) {
+        throw new Error(`Invalid filter value: ${key}`);
+      }
       result[key] = value;
     }
   }
-  if (Object.keys(result).length === 0) return undefined;
   return result;
+}
+
+function isValidOperatorValue(operator: string, value: unknown): boolean {
+  if (operator === "$gte" || operator === "$lte") {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  if (operator === "$in") {
+    return (
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.length <= 100 &&
+      value.every(
+        (item) =>
+          typeof item === "string" ||
+          typeof item === "number" ||
+          typeof item === "boolean",
+      )
+    );
+  }
+  return (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
 }

@@ -7,7 +7,10 @@
     "dev": "sst dev",
     "deploy": "sst deploy",
     "remove": "sst remove",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3",
@@ -15,7 +18,7 @@
     "@aws-sdk/client-s3vectors": "^3",
     "@aws-sdk/client-sqs": "^3",
     "@aws-sdk/lib-dynamodb": "^3",
-    "@aws-sdk/s3-request-presigner": "^3",
+    "@aws-sdk/s3-presigned-post": "^3.1085.0",
     "@pulumi/aws": "^6.83.4",
     "@pulumi/pulumi": "^3.251.0",
     "gpt-tokenizer": "^3.4.0",
@@ -24,7 +27,14 @@
     "unpdf": "^1.6.2"
   },
   "devDependencies": {
+    "@types/aws-lambda": "^8.10.162",
     "@types/node": "^22.20.0",
-    "typescript": "^7"
+    "aws-sdk-client-mock": "^4.1.0",
+    "prettier": "^3.9.5",
+    "typescript": "^7",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "@opentelemetry/core": "^2.8.0"
   }
 }

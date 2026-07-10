@@ -1,18 +1,25 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import {
+  SendMessageBatchCommand,
+  SendMessageCommand,
+  SQSClient,
+} from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
 import { extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
+const ChunkQueueUrl = process.env.CHUNK_QUEUE_URL!;
+const EmbedQueueUrl = process.env.EMBED_QUEUE_URL!;
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -46,30 +53,24 @@ export async function handler(event: any) {
     return {
       statusCode: 403,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "You do not have access to this document" }),
+      body: JSON.stringify({
+        error: "You do not have access to this document",
+      }),
     };
   }
   const now = new Date().toISOString();
   const status = doc.status;
   const failedStep = doc.failedStep;
 
-  if (status === "EMBEDDED") {
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        documentId,
-        status,
-        message: "Document already embedded, no reindex needed",
-      }),
-    };
-  }
-
   let targetQueue: string;
   let targetStep: string;
   let messageBody: any;
 
-  if (status === "FAILED" && failedStep === "EMBEDDING") {
+  if (
+    status === "EMBEDDED" ||
+    status === "CHUNKED" ||
+    (status === "FAILED" && failedStep === "EMBEDDING")
+  ) {
     const chunkKeys = await listChunkKeys(documentId);
     if (chunkKeys.length === 0) {
       return {
@@ -80,18 +81,22 @@ export async function handler(event: any) {
         }),
       };
     }
-    targetQueue = Resource.Embed.url;
+    targetQueue = EmbedQueueUrl;
     targetStep = "EMBEDDING";
     messageBody = { documentId, chunkKeys };
-  } else if (status === "FAILED" && failedStep === "CHUNKING") {
-    targetQueue = Resource.Chunk.url;
+    await resetChunkStatuses(documentId, chunkKeys);
+  } else if (
+    status === "PARSED" ||
+    (status === "FAILED" && failedStep === "CHUNKING")
+  ) {
+    targetQueue = ChunkQueueUrl;
     targetStep = "CHUNKING";
     messageBody = {
       documentId,
       parsedKey: `parsed/${documentId}/v1/pages.json`,
     };
   } else {
-    targetQueue = Resource.Ingest.url;
+    targetQueue = IngestQueueUrl;
     targetStep = "PARSING";
     messageBody = {
       documentId,
@@ -105,7 +110,7 @@ export async function handler(event: any) {
       TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :s, lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
         ":s": "QUEUED",
@@ -119,13 +124,19 @@ export async function handler(event: any) {
   );
 
   if (targetStep === "EMBEDDING") {
-    for (const s3ChunkKey of messageBody.chunkKeys) {
-      await sqs.send(
-        new SendMessageCommand({
+    for (let i = 0; i < messageBody.chunkKeys.length; i += 10) {
+      const chunkKeys = messageBody.chunkKeys.slice(i, i + 10);
+      const response = await sqs.send(
+        new SendMessageBatchCommand({
           QueueUrl: targetQueue,
-          MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+          Entries: chunkKeys.map((s3ChunkKey: string, index: number) => ({
+            Id: String(index),
+            MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+          })),
         }),
       );
+      if (response.Failed?.length)
+        throw new Error("Failed to queue some chunks");
     }
   } else {
     await sqs.send(
@@ -154,7 +165,7 @@ async function listChunkKeys(documentId: string): Promise<string[]> {
   do {
     const list = await s3.send(
       new ListObjectsV2Command({
-        Bucket: Resource.Storage.name,
+        Bucket: StorageBucketName,
         Prefix: `chunks/${documentId}/`,
         ContinuationToken: token,
       }),
@@ -165,4 +176,21 @@ async function listChunkKeys(documentId: string): Promise<string[]> {
     token = list.IsTruncated ? list.NextContinuationToken : undefined;
   } while (token);
   return keys;
+}
+
+async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
+  for (const chunkKey of chunkKeys) {
+    const filename = chunkKey.split("/").pop();
+    const chunkId = filename?.replace(/\.json$/, "");
+    if (!chunkId) continue;
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+        UpdateExpression: "SET #s = :queued",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":queued": "QUEUED" },
+      }),
+    );
+  }
 }

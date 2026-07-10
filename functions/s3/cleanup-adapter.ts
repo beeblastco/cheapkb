@@ -1,7 +1,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DeleteObjectsCommand,
-  ListObjectsV2Command,
+  ListObjectVersionsCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import {
@@ -13,12 +13,12 @@ import {
   DynamoDBDocumentClient,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
@@ -34,8 +34,9 @@ export async function handler(event: any) {
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
 
     const errors: string[] = [];
+    let chunkItems: any[] = [];
     try {
-      await deleteVectors(documentId);
+      chunkItems = await deleteVectors(documentId);
     } catch (err: any) {
       errors.push(`vectors: ${err.message}`);
       console.error(`[cleanup-adapter] vector delete failed:`, err);
@@ -53,23 +54,30 @@ export async function handler(event: any) {
       console.error(`[cleanup-adapter] parsed delete failed:`, err);
     }
     try {
-      await deleteDynamoRecord(documentId);
+      await deleteS3Prefix(`raw/${documentId}/`);
     } catch (err: any) {
-      errors.push(`dynamo: ${err.message}`);
-      console.error(`[cleanup-adapter] dynamo delete failed:`, err);
+      errors.push(`raw: ${err.message}`);
+      console.error(`[cleanup-adapter] raw delete failed:`, err);
     }
 
     if (errors.length > 0) {
       console.log(
         `[cleanup-adapter] Completed ${documentId} with errors: ${errors.join("; ")}`,
       );
-    } else {
-      console.log(`[cleanup-adapter] Completed cleanup for ${documentId}`);
+      throw new Error(errors.join("; "));
     }
+
+    try {
+      await deleteDynamoRecords(documentId, chunkItems);
+    } catch (err: any) {
+      console.error(`[cleanup-adapter] dynamo delete failed:`, err);
+      throw err;
+    }
+    console.log(`[cleanup-adapter] Completed cleanup for ${documentId}`);
   }
 }
 
-async function deleteVectors(documentId: string) {
+async function deleteVectors(documentId: string): Promise<any[]> {
   const allChunkItems: any[] = [];
   let lastKey: Record<string, any> | undefined;
 
@@ -89,10 +97,8 @@ async function deleteVectors(documentId: string) {
     lastKey = chunkRecords.LastEvaluatedKey;
   } while (lastKey);
 
-  const vectorKeys = allChunkItems
-    .map((item) => item.chunkId)
-    .filter(Boolean);
-  if (vectorKeys.length === 0) return;
+  const vectorKeys = allChunkItems.map((item) => item.chunkId).filter(Boolean);
+  if (vectorKeys.length === 0) return allChunkItems;
 
   for (let i = 0; i < vectorKeys.length; i += 500) {
     const batch = vectorKeys.slice(i, i + 500);
@@ -105,7 +111,49 @@ async function deleteVectors(documentId: string) {
     );
   }
 
-  for (const item of allChunkItems) {
+  console.log(`[cleanup-adapter] Deleted ${vectorKeys.length} vectors`);
+  return allChunkItems;
+}
+
+async function deleteS3Prefix(prefix: string) {
+  let keyMarker: string | undefined;
+  let versionIdMarker: string | undefined;
+  let count = 0;
+  do {
+    const list = await s3.send(
+      new ListObjectVersionsCommand({
+        Bucket: StorageBucketName,
+        Prefix: prefix,
+        KeyMarker: keyMarker,
+        VersionIdMarker: versionIdMarker,
+      }),
+    );
+    const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
+    if (objects.length === 0) break;
+
+    const response = await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: StorageBucketName,
+        Delete: {
+          Objects: objects.map((object) => ({
+            Key: object.Key!,
+            VersionId: object.VersionId,
+          })),
+          Quiet: true,
+        },
+      }),
+    );
+    if (response.Errors?.length)
+      throw new Error("Failed to delete S3 versions");
+    count += objects.length;
+    keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
+    versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
+  } while (keyMarker);
+  console.log(`[cleanup-adapter] Deleted ${count} objects from ${prefix}`);
+}
+
+async function deleteDynamoRecords(documentId: string, chunkItems: any[]) {
+  for (const item of chunkItems) {
     await dynamo.send(
       new DeleteCommand({
         TableName,
@@ -113,42 +161,6 @@ async function deleteVectors(documentId: string) {
       }),
     );
   }
-
-  console.log(`[cleanup-adapter] Deleted ${vectorKeys.length} vectors`);
-}
-
-async function deleteS3Prefix(prefix: string) {
-  let continuationToken: string | undefined;
-  let count = 0;
-  do {
-    const list = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: Resource.Storage.name,
-        Prefix: prefix,
-        ContinuationToken: continuationToken,
-      }),
-    );
-    const objects = list.Contents ?? [];
-    if (objects.length === 0) break;
-
-    await s3.send(
-      new DeleteObjectsCommand({
-        Bucket: Resource.Storage.name,
-        Delete: {
-          Objects: objects.map((o) => ({ Key: o.Key! })),
-          Quiet: true,
-        },
-      }),
-    );
-    count += objects.length;
-    continuationToken = list.IsTruncated
-      ? list.NextContinuationToken
-      : undefined;
-  } while (continuationToken);
-  console.log(`[cleanup-adapter] Deleted ${count} objects from ${prefix}`);
-}
-
-async function deleteDynamoRecord(documentId: string) {
   await dynamo.send(
     new DeleteCommand({
       TableName,

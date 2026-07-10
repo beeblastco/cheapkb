@@ -1,6 +1,4 @@
-import {
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -11,7 +9,9 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const SHOO_BASE_URL = "https://shoo.dev";
 const SHOO_ISSUER = "https://shoo.dev";
-const jwks = createRemoteJWKSet(new URL("/.well-known/jwks.json", SHOO_BASE_URL));
+const jwks = createRemoteJWKSet(
+  new URL("/.well-known/jwks.json", SHOO_BASE_URL),
+);
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -32,9 +32,7 @@ export async function extractUserId(
 ): Promise<{ userId: string; response?: any }> {
   const authHeader =
     event.headers?.authorization ?? event.headers?.Authorization ?? "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   if (!token) {
     return {
       userId: "",
@@ -50,13 +48,13 @@ export async function extractUserId(
   try {
     const payload = await verifyShooToken(token, appOrigin);
     return { userId: payload.pairwise_sub as string };
-  } catch (err: any) {
+  } catch {
     return {
       userId: "",
       response: {
         statusCode: 401,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: `Invalid token: ${err.message}` }),
+        body: JSON.stringify({ error: "Invalid authorization token" }),
       },
     };
   }
@@ -65,6 +63,7 @@ export async function extractUserId(
 export async function checkRateLimit(
   userId: string,
   tableName: string,
+  operation: string,
   maxTokens: number,
   refillPerHour: number,
 ): Promise<{ allowed: boolean; remaining: number }> {
@@ -75,7 +74,7 @@ export async function checkRateLimit(
     const result = await dynamo.send(
       new GetCommand({
         TableName: tableName,
-        Key: { pk: `RATE#${userId}`, sk: "LIMIT" },
+        Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
       }),
     );
     const item = result.Item as any;
@@ -87,7 +86,7 @@ export async function checkRateLimit(
             TableName: tableName,
             Item: {
               pk: `RATE#${userId}`,
-              sk: "LIMIT",
+              sk: `LIMIT#${operation}`,
               entityType: "RateLimit",
               tokens: maxTokens - 1,
               lastRefill: now.toISOString(),
@@ -103,7 +102,8 @@ export async function checkRateLimit(
     }
 
     const lastRefill = new Date(item.lastRefill);
-    const hoursPassed = (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
+    const hoursPassed =
+      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
     let tokens = Math.min(maxTokens, item.tokens + hoursPassed * refillPerHour);
 
     if (tokens < 1) {
@@ -115,11 +115,11 @@ export async function checkRateLimit(
       await dynamo.send(
         new UpdateCommand({
           TableName: tableName,
-          Key: { pk: `RATE#${userId}`, sk: "LIMIT" },
+          Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
           UpdateExpression: "SET tokens = :t, lastRefill = :lr",
           ConditionExpression: "lastRefill = :oldLr",
           ExpressionAttributeValues: {
-            ":t": Math.floor(tokens),
+            ":t": tokens,
             ":lr": now.toISOString(),
             ":oldLr": item.lastRefill,
           },

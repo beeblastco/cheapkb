@@ -6,36 +6,55 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
+import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
-export async function handler(event: any) {
-  const records = event.Records ?? [];
-  const chunks: Array<{ documentId: string; s3ChunkKey: string }> = [];
+export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+  const chunks: Array<{
+    documentId: string;
+    s3ChunkKey: string;
+    messageId: string;
+    attempt: number;
+  }> = [];
+  const failedMessageIds = new Set<string>();
 
-  for (const record of records) {
+  for (const record of event.Records) {
     let body: any;
     try {
       body = JSON.parse(record.body);
     } catch {
       console.error("[embed] Invalid JSON in record:", record.messageId);
+      failedMessageIds.add(record.messageId);
       continue;
     }
     const { documentId, s3ChunkKey } = body;
     if (!documentId || !s3ChunkKey) {
       console.error("[embed] Missing required fields:", record.messageId);
+      failedMessageIds.add(record.messageId);
       continue;
     }
-    chunks.push({ documentId, s3ChunkKey });
+    chunks.push({
+      documentId,
+      s3ChunkKey,
+      messageId: record.messageId,
+      attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
+    });
   }
 
-  if (chunks.length === 0) return;
+  if (chunks.length === 0) {
+    return {
+      batchItemFailures: Array.from(failedMessageIds).map((itemIdentifier) => ({
+        itemIdentifier,
+      })),
+    };
+  }
 
   const batchSize = parseInt(process.env.EMBED_BATCH ?? "25");
   for (let i = 0; i < chunks.length; i += batchSize) {
@@ -44,27 +63,58 @@ export async function handler(event: any) {
       await processBatch(batch);
     } catch (err: any) {
       console.error(`[embed] Batch failed:`, err);
+      const attempts = new Map<string, number>();
       for (const chunk of batch) {
-        await handleError(chunk.documentId, err);
+        failedMessageIds.add(chunk.messageId);
+        attempts.set(
+          chunk.documentId,
+          Math.max(attempts.get(chunk.documentId) ?? 1, chunk.attempt),
+        );
+      }
+      for (const [documentId, attempt] of attempts) {
+        await handleError(documentId, err, attempt);
       }
     }
   }
+  return {
+    batchItemFailures: Array.from(failedMessageIds).map((itemIdentifier) => ({
+      itemIdentifier,
+    })),
+  };
 }
 
 async function processBatch(
-  batch: Array<{ documentId: string; s3ChunkKey: string }>,
+  batch: Array<{
+    documentId: string;
+    s3ChunkKey: string;
+    messageId: string;
+    attempt: number;
+  }>,
 ) {
   const texts: string[] = [];
   const metadata: any[] = [];
+  const owners = new Map<string, string>();
 
   for (const chunk of batch) {
     const resp = await s3.send(
       new GetObjectCommand({
-        Bucket: Resource.Storage.name,
+        Bucket: StorageBucketName,
         Key: chunk.s3ChunkKey,
       }),
     );
     const chunkData = JSON.parse(await resp.Body!.transformToString());
+    let userId = chunkData.userId ?? owners.get(chunk.documentId);
+    if (!userId) {
+      const result = await dynamo.send(
+        new GetCommand({
+          TableName,
+          Key: { pk: `DOC#${chunk.documentId}`, sk: "META" },
+        }),
+      );
+      userId = result.Item?.userId;
+      if (!userId) throw new Error("Document owner is missing");
+      owners.set(chunk.documentId, userId);
+    }
     if (!chunkData.text) {
       texts.push("");
       metadata.push({ documentId: chunk.documentId, skipped: true });
@@ -73,6 +123,7 @@ async function processBatch(
     texts.push(chunkData.text);
     metadata.push({
       documentId: chunk.documentId,
+      userId,
       chunkId: chunkData.chunkId,
       ...(chunkData.title ? { title: chunkData.title } : {}),
       ...(chunkData.tags ? { tags: chunkData.tags } : {}),
@@ -119,8 +170,15 @@ async function processBatch(
   }
 
   const docCounts: Record<string, number> = {};
-  for (const chunk of batch) {
-    docCounts[chunk.documentId] = (docCounts[chunk.documentId] ?? 0) + 1;
+  for (const vector of vectorBatch) {
+    const changed = await markChunkEmbedded(
+      vector.metadata.documentId,
+      vector.metadata.chunkId,
+    );
+    if (changed) {
+      docCounts[vector.metadata.documentId] =
+        (docCounts[vector.metadata.documentId] ?? 0) + 1;
+    }
   }
   for (const [documentId, count] of Object.entries(docCounts)) {
     await markEmbedded(documentId, count);
@@ -141,10 +199,13 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
       Authorization: `Bearer ${process.env.EMBEDDING_API_KEY}`,
     },
     body: JSON.stringify({ model, input: texts }),
+    signal: AbortSignal.timeout(240000),
   });
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`Embedding provider error ${resp.status}: ${errText}`);
+    throw new Error(
+      `Embedding provider error ${resp.status}: ${errText.slice(0, 1000)}`,
+    );
   }
   const data = (await resp.json()) as { data: Array<{ embedding: number[] }> };
   return data.data.map((d) => d.embedding);
@@ -208,19 +269,11 @@ async function markEmbedded(documentId: string, count: number) {
   }
 }
 
-async function handleError(documentId: string, err: any) {
+async function handleError(documentId: string, err: any, attempt: number) {
   const now = new Date().toISOString();
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  const doc = result.Item;
-  const retryCount = (doc?.retryCount ?? 0) + 1;
   const lastError = err.message ?? String(err);
 
-  if (retryCount >= 3) {
+  if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
         TableName,
@@ -231,7 +284,7 @@ async function handleError(documentId: string, err: any) {
         ExpressionAttributeValues: {
           ":s": "FAILED",
           ":e": lastError,
-          ":r": retryCount,
+          ":r": attempt,
           ":f": "EMBEDDING",
           ":t": now,
           ":gsi1pk": "STATUS#FAILED",
@@ -250,12 +303,34 @@ async function handleError(documentId: string, err: any) {
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
       ExpressionAttributeValues: {
         ":e": lastError,
-        ":r": retryCount,
+        ":r": attempt,
         ":f": "EMBEDDING",
         ":t": now,
       },
     }),
   );
+}
+
+async function markChunkEmbedded(
+  documentId: string,
+  chunkId: string,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+        UpdateExpression: "SET #s = :embedded",
+        ConditionExpression: "attribute_not_exists(#s) OR #s <> :embedded",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
+      }),
+    );
+    return true;
+  } catch (err: any) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    throw err;
+  }
 }
 
 async function clearError(documentId: string, now: string) {

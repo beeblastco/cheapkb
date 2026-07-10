@@ -43,7 +43,6 @@ All endpoints require a `Authorization: Bearer <shoo_id_token>` header.
 | GET    | `/documents/:id`         | Document + chunk details   | -          |
 | POST   | `/documents/:id/reindex` | Restart from failed step   | -          |
 | DELETE | `/documents/:id`         | Full cleanup               | -          |
-| GET    | `/jobs/:id`              | Job status                 | -          |
 
 Full API reference: [docs/API.md](docs/API.md)
 
@@ -76,21 +75,29 @@ CHUNK_MAX_TOKENS=700
 CHUNK_OVERLAP_TOKENS=100
 VECTOR_BATCH=500
 EMBED_BATCH=25
+MAX_UPLOAD_BYTES=10485760
+MAX_CHUNKS_PER_DOCUMENT=200
 APP_ORIGIN=http://localhost:5173  # Your app origin for shoo JWT audience
 ```
 
 Vector dimension is **1024** with cosine distance.
 
-## Deploy
+## Test
 
 ```bash
-npm install && cp .env.example .env
-npx sst deploy --stage dev
-AWS_PROFILE=<your-prod-profile> npx sst deploy --stage production
-npx sst remove --stage dev
+npm ci --legacy-peer-deps
+npm --prefix web ci --legacy-peer-deps
+npm run format:check && npm run build && npm test
+API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
 ```
 
-After deploy, SST prints both the API endpoint (`apiEndpoint`) and the web endpoint (`webEndpoint`). The API URL is baked into the frontend build, and the frontend URL is used as `APP_ORIGIN` for JWT verification.
+## Deploy
+
+Production deploys only through `.github/workflows/deploy.yml` after changes merge to `main`. The check job formats, typechecks, tests, builds the frontend, and audits production dependencies before the deploy job runs `sst deploy --stage production`.
+
+After deployment, SST prints both the API endpoint (`apiEndpoint`) and the web endpoint (`webEndpoint`). The API URL is baked into the frontend build, and the frontend URL is used as `APP_ORIGIN` for JWT verification.
+
+After the first deployment of tenant-scoped vector metadata, reindex existing embedded documents once from the UI. Old vectors without `userId` metadata are intentionally excluded from search until they are overwritten.
 
 ## Contributing
 

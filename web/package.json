@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.js",
+    "build": "node build.js && BROWSERSLIST_IGNORE_OLD_DATA=true tailwindcss -i ./input.css -o ./dist/styles.css --content ./index.html ./main.js --minify",
     "dev": "node build.js && cd dist && python3 -m http.server 5173"
   },
   "devDependencies": {
+    "pdfjs-dist": "^6.1.200",
+    "tailwindcss": "^3.4.19",
     "terser": "^5"
   }
 }

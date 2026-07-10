@@ -30,6 +30,7 @@ export default $config({
       `${PROJECT}-${stagePrefix}${service}-${ACCOUNT_ID}-${REGION}`;
     const vectorBucketName = name("vecs");
     const vectorIndexName = STAGE === PROD_STAGE ? "default" : STAGE;
+    const vectorIndexArn = `arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${vectorBucketName}/index/${vectorIndexName}`;
 
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
@@ -59,23 +60,6 @@ export default $config({
       },
     });
 
-    // Base environment variables for all functions
-    const baseEnv = {
-      VECTOR_BUCKET_NAME: vectorBucketName,
-      VECTOR_INDEX_NAME: vectorIndexName,
-      CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
-      CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
-      APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
-    };
-
-    // Environment variables for embedding functions
-    const embedEnv = {
-      ...baseEnv,
-      EMBEDDING_PROVIDER_URL: process.env.EMBEDDING_PROVIDER_URL!,
-      EMBEDDING_MODEL: process.env.EMBEDDING_MODEL!,
-      EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY!,
-    };
-
     const storage = new sst.aws.Bucket("Storage", {
       versioning: true,
       transform: {
@@ -83,6 +67,19 @@ export default $config({
           a.bucket = name("storage");
         },
       },
+    });
+
+    new pulumiAws.s3.BucketLifecycleConfigurationV2("StorageLifecycle", {
+      bucket: storage.name,
+      rules: [
+        {
+          id: "expire-noncurrent-versions",
+          status: "Enabled",
+          filter: { prefix: "" },
+          noncurrentVersionExpiration: { noncurrentDays: 7 },
+          abortIncompleteMultipartUpload: { daysAfterInitiation: 1 },
+        },
+      ],
     });
 
     const table = new sst.aws.Dynamo("Meta", {
@@ -155,6 +152,28 @@ export default $config({
       },
     });
 
+    const baseEnv = {
+      TABLE_NAME: table.name,
+      STORAGE_BUCKET_NAME: storage.name,
+      INGEST_QUEUE_URL: ingestQueue.url,
+      CHUNK_QUEUE_URL: chunkQueue.url,
+      EMBED_QUEUE_URL: embedQueue.url,
+      VECTOR_BUCKET_NAME: vectorBucketName,
+      VECTOR_INDEX_NAME: vectorIndexName,
+      CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
+      CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
+      MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "10485760",
+      MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200",
+      APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
+    };
+
+    const embedEnv = {
+      ...baseEnv,
+      EMBEDDING_PROVIDER_URL: process.env.EMBEDDING_PROVIDER_URL!,
+      EMBEDDING_MODEL: process.env.EMBEDDING_MODEL!,
+      EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY!,
+    };
+
     new pulumiAws.cloudformation.Stack("Vectors", {
       name: name("vectors"),
       templateBody: JSON.stringify({
@@ -192,8 +211,21 @@ export default $config({
       timeout: "10 seconds",
       memory: "128 MB",
       description: "Generate presigned upload URL and create document record",
-      link: [storage, table],
       environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [table.arn],
+        },
+        {
+          actions: ["s3:PutObject"],
+          resources: [pulumi.interpolate`${storage.arn}/raw/*`],
+        },
+      ],
       transform: {
         function: (a) => {
           a.name = name("upload");
@@ -208,8 +240,14 @@ export default $config({
       memory: "128 MB",
       description:
         "Manually trigger the ingest pipeline for an existing document",
-      link: [table, ingestQueue],
       environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+          resources: [table.arn],
+        },
+        { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
+      ],
       transform: {
         function: (a) => {
           a.name = name("ingest");
@@ -217,101 +255,111 @@ export default $config({
       },
     });
 
-    ingestQueue.subscribe({
-      handler: "./functions/parse/index.handler",
-      runtime: "nodejs22.x",
-      timeout: "300 seconds",
-      memory: "1024 MB",
-      description: "Extract text from raw document files using pdf-parse",
-      link: [storage, table, chunkQueue, ingestQueue],
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
-          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
-        },
-        {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:Query",
-          ],
-          resources: [table.arn],
-        },
-        {
-          actions: ["sqs:SendMessage"],
-          resources: [chunkQueue.arn, ingestQueue.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("parse");
+    ingestQueue.subscribe(
+      {
+        handler: "./functions/parse/index.handler",
+        runtime: "nodejs22.x",
+        timeout: "300 seconds",
+        memory: "1024 MB",
+        description: "Extract text from raw document files using pdf-parse",
+        environment: baseEnv,
+        permissions: [
+          {
+            actions: ["s3:GetObject"],
+            resources: [pulumi.interpolate`${storage.arn}/raw/*`],
+          },
+          {
+            actions: ["s3:PutObject"],
+            resources: [pulumi.interpolate`${storage.arn}/parsed/*`],
+          },
+          {
+            actions: ["dynamodb:UpdateItem"],
+            resources: [table.arn],
+          },
+          {
+            actions: ["sqs:SendMessage"],
+            resources: [chunkQueue.arn],
+          },
+        ],
+        transform: {
+          function: (a) => {
+            a.name = name("parse");
+          },
         },
       },
-    });
+      { batch: { partialResponses: true } },
+    );
 
-    chunkQueue.subscribe({
-      handler: "./functions/chunk/index.handler",
-      runtime: "nodejs22.x",
-      timeout: "300 seconds",
-      memory: "1024 MB",
-      description: "Split parsed text into embeddable chunks",
-      link: [storage, table, embedQueue],
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["s3:GetObject", "s3:PutObject"],
-          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
-        },
-        {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:Query",
-          ],
-          resources: [table.arn],
-        },
-        { actions: ["sqs:SendMessage"], resources: [embedQueue.arn] },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("chunk");
+    chunkQueue.subscribe(
+      {
+        handler: "./functions/chunk/index.handler",
+        runtime: "nodejs22.x",
+        timeout: "300 seconds",
+        memory: "1024 MB",
+        description: "Split parsed text into embeddable chunks",
+        environment: baseEnv,
+        permissions: [
+          {
+            actions: ["s3:GetObject"],
+            resources: [pulumi.interpolate`${storage.arn}/parsed/*`],
+          },
+          {
+            actions: ["s3:PutObject"],
+            resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+          },
+          {
+            actions: [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+            ],
+            resources: [table.arn],
+          },
+          { actions: ["sqs:SendMessage"], resources: [embedQueue.arn] },
+        ],
+        transform: {
+          function: (a) => {
+            a.name = name("chunk");
+          },
         },
       },
-    });
+      { batch: { partialResponses: true } },
+    );
 
-    embedQueue.subscribe({
-      handler: "./functions/embed/index.handler",
-      runtime: "nodejs22.x",
-      timeout: "300 seconds",
-      memory: "128 MB",
-      description: "Generate vectors from chunks and store in S3 Vectors",
-      link: [storage, table],
-      environment: {
-        ...embedEnv,
-        VECTOR_BATCH: process.env.VECTOR_BATCH!,
-        EMBED_BATCH: process.env.EMBED_BATCH!,
-      },
-      permissions: [
-        {
-          actions: [
-            "s3vectors:PutVectors",
-            "s3vectors:GetVectors",
-            "s3vectors:DeleteVectors",
-            "s3vectors:QueryVectors",
-            "s3vectors:ListVectors",
-          ],
-          resources: ["*"],
+    embedQueue.subscribe(
+      {
+        handler: "./functions/embed/index.handler",
+        runtime: "nodejs22.x",
+        timeout: "300 seconds",
+        memory: "128 MB",
+        description: "Generate vectors from chunks and store in S3 Vectors",
+        environment: {
+          ...embedEnv,
+          VECTOR_BATCH: process.env.VECTOR_BATCH!,
+          EMBED_BATCH: process.env.EMBED_BATCH!,
         },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("embed");
+        permissions: [
+          {
+            actions: ["s3:GetObject"],
+            resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+          },
+          {
+            actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+            resources: [table.arn],
+          },
+          {
+            actions: ["s3vectors:PutVectors"],
+            resources: [vectorIndexArn],
+          },
+        ],
+        transform: {
+          function: (a) => {
+            a.name = name("embed");
+          },
         },
       },
-    });
+      { batch: { partialResponses: true } },
+    );
 
     const queryFn = new sst.aws.Function("Query", {
       handler: "./functions/query/index.handler",
@@ -319,18 +367,23 @@ export default $config({
       timeout: "30 seconds",
       memory: "256 MB",
       description: "Vector similarity search with metadata filters",
-      link: [storage, table],
       environment: embedEnv,
       permissions: [
         {
+          actions: ["s3:GetObject"],
+          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+        },
+        {
           actions: [
-            "s3vectors:PutVectors",
-            "s3vectors:GetVectors",
-            "s3vectors:DeleteVectors",
-            "s3vectors:QueryVectors",
-            "s3vectors:ListVectors",
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
           ],
-          resources: ["*"],
+          resources: [table.arn],
+        },
+        {
+          actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
+          resources: [vectorIndexArn],
         },
       ],
       transform: {
@@ -346,8 +399,13 @@ export default $config({
       timeout: "10 seconds",
       memory: "128 MB",
       description: "List all documents with status and metadata",
-      link: [table],
       environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:Query"],
+          resources: [table.arn, pulumi.interpolate`${table.arn}/index/*`],
+        },
+      ],
       transform: {
         function: (a) => {
           a.name = name("admin-list");
@@ -361,8 +419,13 @@ export default $config({
       timeout: "10 seconds",
       memory: "128 MB",
       description: "Get a single document with its chunk details",
-      link: [table],
       environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [table.arn],
+        },
+      ],
       transform: {
         function: (a) => {
           a.name = name("admin-get");
@@ -376,8 +439,18 @@ export default $config({
       timeout: "10 seconds",
       memory: "128 MB",
       description: "Restart a failed document from its failed pipeline step",
-      link: [table, ingestQueue],
       environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+          resources: [table.arn],
+        },
+        { actions: ["s3:ListBucket"], resources: [storage.arn] },
+        {
+          actions: ["sqs:SendMessage"],
+          resources: [ingestQueue.arn, chunkQueue.arn, embedQueue.arn],
+        },
+      ],
       transform: {
         function: (a) => {
           a.name = name("admin-reindex");
@@ -392,37 +465,32 @@ export default $config({
       memory: "128 MB",
       description:
         "Delete a document and all derived data (vectors, chunks, parsed, source)",
-      link: [storage, table],
       environment: baseEnv,
       permissions: [
         {
           actions: [
-            "s3vectors:DeleteVectors",
-            "s3vectors:QueryVectors",
-            "s3vectors:ListVectors",
-            "s3vectors:GetVectors",
+            "s3:ListBucketVersions",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
           ],
-          resources: ["*"],
+          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
+        },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:Query",
+            "dynamodb:DeleteItem",
+          ],
+          resources: [table.arn],
+        },
+        {
+          actions: ["s3vectors:DeleteVectors"],
+          resources: [vectorIndexArn],
         },
       ],
       transform: {
         function: (a) => {
           a.name = name("admin-delete");
-        },
-      },
-    });
-
-    const adminJobFn = new sst.aws.Function("AdminJob", {
-      handler: "./functions/admin/job.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Get the status and details of an ingest job",
-      link: [table],
-      environment: baseEnv,
-      transform: {
-        function: (a) => {
-          a.name = name("admin-job");
         },
       },
     });
@@ -433,7 +501,6 @@ export default $config({
       timeout: "30 seconds",
       memory: "128 MB",
       description: "Bridge S3 ObjectCreated events to the ingest queue",
-      link: [table, ingestQueue],
       environment: baseEnv,
       permissions: [
         {
@@ -460,29 +527,23 @@ export default $config({
       memory: "512 MB",
       description:
         "Delete all derived data when a source file is removed from S3",
-      link: [storage, table],
       environment: baseEnv,
       permissions: [
         {
           actions: [
-            "s3:GetObject",
-            "s3:PutObject",
-            "s3:ListBucket",
+            "s3:ListBucketVersions",
             "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
           ],
           resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
         {
-          actions: ["dynamodb:DeleteItem", "dynamodb:GetItem"],
+          actions: ["dynamodb:DeleteItem", "dynamodb:Query"],
           resources: [table.arn],
         },
         {
-          actions: [
-            "s3vectors:DeleteVectors",
-            "s3vectors:ListVectors",
-            "s3vectors:GetVectors",
-          ],
-          resources: ["*"],
+          actions: ["s3vectors:DeleteVectors"],
+          resources: [vectorIndexArn],
         },
       ],
       transform: {
@@ -519,7 +580,6 @@ export default $config({
     api.route("GET /documents/{id}", adminGetFn.arn);
     api.route("POST /documents/{id}/reindex", adminReindexFn.arn);
     api.route("DELETE /documents/{id}", adminDeleteFn.arn);
-    api.route("GET /jobs/{id}", adminJobFn.arn);
 
     return {
       apiEndpoint: api.url,

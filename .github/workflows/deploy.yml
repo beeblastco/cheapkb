@@ -3,6 +3,8 @@ name: Deploy Production
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: production-deploy
@@ -17,35 +19,46 @@ env:
   EMBEDDING_MODEL: ${{ secrets.EMBEDDING_MODEL }}
   CHUNK_MAX_TOKENS: "700"
   CHUNK_OVERLAP_TOKENS: "100"
+  MAX_UPLOAD_BYTES: "10485760"
+  MAX_CHUNKS_PER_DOCUMENT: "200"
   VECTOR_BATCH: "500"
   EMBED_BATCH: "25"
 
 jobs:
   check:
-    name: Typecheck
+    name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: "22"
           cache: npm
       - run: npm ci --legacy-peer-deps
-      - run: npx tsc --noEmit
+      - run: npm --prefix web ci --legacy-peer-deps
+      - run: npm run format:check
+      - run: npm run build
+      - run: npm test
+      - run: API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
+      - run: npm audit --audit-level=high
+      - run: npm --prefix web audit --audit-level=high
 
   deploy:
     name: Deploy to Production
+    if: github.event_name == 'push'
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: "22"
           cache: npm
       - run: npm ci --legacy-peer-deps
+      - name: Verify AWS account
+        run: test "$(aws sts get-caller-identity --query Account --output text)" = "REDACTED_ACCOUNT_ID"
       - run: npx sst deploy --stage production
