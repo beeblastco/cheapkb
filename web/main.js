@@ -5,6 +5,7 @@ const state = {
   userId: null,
   documents: [],
   loading: false,
+  pollTimer: null,
 };
 
 const els = {
@@ -16,7 +17,10 @@ const els = {
   appState: document.getElementById("app-state"),
   uploadForm: document.getElementById("upload-form"),
   uploadFile: document.getElementById("upload-file"),
+  uploadDropZone: document.getElementById("upload-drop-zone"),
+  uploadFileName: document.getElementById("upload-file-name"),
   uploadStatus: document.getElementById("upload-status"),
+  extractStatus: document.getElementById("extract-status"),
   documentsList: document.getElementById("documents-list"),
   documentsEmpty: document.getElementById("documents-empty"),
   queryForm: document.getElementById("query-form"),
@@ -52,6 +56,10 @@ function signOut() {
   }
   state.token = null;
   state.userId = null;
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
   localStorage.removeItem("shoo_id_token");
   window.location.reload();
 }
@@ -172,8 +180,32 @@ async function loadDocuments() {
     const data = await apiCall("GET", "/documents");
     state.documents = data.documents || [];
     renderDocuments();
+    schedulePolling();
   } catch (err) {
     showToast(err.message, "error");
+  }
+}
+
+function schedulePolling() {
+  const terminal = ["EMBEDDED", "FAILED"];
+  const hasActive = state.documents.some((d) => !terminal.includes(d.status));
+  if (hasActive && !state.pollTimer) {
+    state.pollTimer = setInterval(async () => {
+      try {
+        const data = await apiCall("GET", "/documents");
+        state.documents = data.documents || [];
+        renderDocuments();
+        if (!state.documents.some((d) => !terminal.includes(d.status))) {
+          clearInterval(state.pollTimer);
+          state.pollTimer = null;
+        }
+      } catch (err) {
+        console.warn("[poll] failed to refresh documents:", err.message);
+      }
+    }, 3000);
+  } else if (!hasActive && state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
   }
 }
 
@@ -267,6 +299,10 @@ async function handleUpload(e) {
     els.uploadStatus.textContent = "Ingest queued.";
     showToast("Upload complete", "success");
     els.uploadForm.reset();
+    els.uploadFileName.classList.add("hidden");
+    els.uploadFileName.textContent = "";
+    els.extractStatus.classList.add("hidden");
+    els.extractStatus.textContent = "";
     await loadDocuments();
   } catch (err) {
     els.uploadStatus.textContent = "";
@@ -301,18 +337,59 @@ function renderQueryResults(data) {
     els.queryResults.innerHTML = `<p class="text-sm text-slate-500">No results.</p>`;
     return;
   }
-  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.resultCount} results</p>`;
+
+  const groups = new Map();
   for (const r of data.results) {
-    const item = document.createElement("div");
-    item.className = "rounded-lg border border-slate-200 bg-slate-50 p-3";
-    item.innerHTML = `
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-xs font-medium text-slate-700">${escapeHtml(r.title || r.documentId)}</span>
-        <span class="text-xs text-slate-500">score ${(r.score || 0).toFixed(3)}</span>
-      </div>
-      <p class="text-sm text-slate-800">${escapeHtml(r.text || "")}</p>
+    if (!groups.has(r.documentId)) {
+      groups.set(r.documentId, {
+        doc: r,
+        chunks: [],
+        maxScore: 0,
+      });
+    }
+    const g = groups.get(r.documentId);
+    g.chunks.push(r);
+    g.maxScore = Math.max(g.maxScore, r.score || 0);
+  }
+
+  const sortedGroups = Array.from(groups.values()).sort(
+    (a, b) => b.maxScore - a.maxScore,
+  );
+
+  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.resultCount} results across ${sortedGroups.length} documents</p>`;
+
+  for (const g of sortedGroups) {
+    g.chunks.sort((a, b) => (b.score || 0) - (a.score || 0));
+    const details = document.createElement("details");
+    details.className =
+      "rounded-lg border border-slate-200 bg-slate-50 overflow-hidden";
+    details.open = true;
+
+    const summary = document.createElement("summary");
+    summary.className =
+      "cursor-pointer list-none bg-slate-100 px-3 py-2 flex items-center justify-between hover:bg-slate-200 transition-colors";
+    summary.innerHTML = `
+      <span class="text-sm font-medium text-slate-800">${escapeHtml(g.doc.title || g.doc.documentId)}</span>
+      <span class="text-xs text-slate-500">best score ${g.maxScore.toFixed(3)} · ${g.chunks.length} chunk${g.chunks.length === 1 ? "" : "s"}</span>
     `;
-    els.queryResults.appendChild(item);
+
+    const body = document.createElement("div");
+    body.className = "divide-y divide-slate-200";
+    for (const c of g.chunks) {
+      const row = document.createElement("div");
+      row.className = "p-3";
+      row.innerHTML = `
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs text-slate-500">score ${(c.score || 0).toFixed(3)}</span>
+        </div>
+        <p class="text-sm text-slate-800">${escapeHtml(c.text || "")}</p>
+      `;
+      body.appendChild(row);
+    }
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    els.queryResults.appendChild(details);
   }
 }
 
@@ -343,6 +420,208 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
+async function extractMetadata(file) {
+  const filename = file.name.replace(/\.[^/.]+$/, "");
+  const fallback = { title: filename, year: null, authors: [] };
+
+  try {
+    if (
+      file.type === "application/pdf" ||
+      file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      return await extractPdfMetadata(file, fallback);
+    }
+
+    const text = await file.text();
+    return parseMetadata(text, fallback);
+  } catch (err) {
+    console.warn("[metadata] extraction failed:", err);
+    return fallback;
+  }
+}
+
+async function extractPdfMetadata(file, fallback) {
+  await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const meta = await pdf.getMetadata().catch(() => ({}));
+  const info = meta.info ?? {};
+
+  let title = info.Title || info.title;
+  let authors = info.Author || info.author;
+  let year = null;
+
+  const creationDate = info.CreationDate;
+  if (creationDate && typeof creationDate === "string") {
+    const match = creationDate.match(/D:(\d{4})/);
+    if (match) year = parseInt(match[1], 10);
+  }
+
+  if (!title || !authors) {
+    const pageText = await extractPdfPageText(pdf, 3);
+    const parsed = parseMetadata(pageText, fallback);
+    if (!title) title = parsed.title;
+    if (!authors) authors = parsed.authors;
+    if (!year && parsed.year) year = parsed.year;
+  }
+
+  return {
+    title: cleanTitle(title || fallback.title),
+    authors: normalizeAuthors(authors),
+    year,
+  };
+}
+
+async function extractPdfPageText(pdf, maxPages) {
+  const pages = [];
+  const count = Math.min(maxPages, pdf.numPages);
+  for (let i = 1; i <= count; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    const text = textContent.items.map((item) => item.str).join(" ");
+    pages.push(text);
+  }
+  return pages.join("\n");
+}
+
+function parseMetadata(text, fallback) {
+  const result = { title: null, authors: [], year: null };
+
+  const headingMatch = text.match(/^#\s+(.+)$/m);
+  const titleLineMatch = text.match(/(?:title|subject)\s*[:\-]\s*(.+)/i);
+  const bylineMatch = text.match(/(?:^|\n)\s*(?:by)\s+([^\n]{2,80})(?:\n|$)/i);
+
+  if (titleLineMatch) {
+    result.title = cleanTitle(titleLineMatch[1]);
+  } else if (headingMatch) {
+    result.title = cleanTitle(headingMatch[1]);
+  } else {
+    result.title = cleanTitle(fallback.title);
+  }
+
+  const authorLineMatch = text.match(/(?:author|authors)\s*[:\-]\s*(.+)/i);
+  if (authorLineMatch) {
+    result.authors = normalizeAuthors(authorLineMatch[1]);
+  } else if (bylineMatch) {
+    result.authors = normalizeAuthors(bylineMatch[1]);
+  }
+
+  const yearMatch = text.match(/(?:^|\D)(19\d{2}|20\d{2})(?:\D|$)/);
+  if (yearMatch) {
+    const y = parseInt(yearMatch[1], 10);
+    if (y >= 1900 && y <= 2030) result.year = y;
+  }
+
+  return result;
+}
+
+function cleanTitle(title) {
+  if (!title) return "";
+  return title.trim().replace(/\s+/g, " ").slice(0, 200);
+}
+
+function normalizeAuthors(input) {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.map((a) => a.trim()).filter(Boolean);
+  return input
+    .split(/[,;]|\band\b|\//i)
+    .map((a) => a.trim())
+    .filter(Boolean);
+}
+
+function applyExtractedMetadata(metadata) {
+  const titleEl = document.getElementById("upload-title");
+  const yearEl = document.getElementById("upload-year");
+  const authorsEl = document.getElementById("upload-authors");
+
+  if (metadata.title && !titleEl.value) titleEl.value = metadata.title;
+  if (metadata.year && !yearEl.value) yearEl.value = metadata.year;
+  if (metadata.authors?.length && !authorsEl.value) {
+    authorsEl.value = metadata.authors.join(", ");
+  }
+}
+
+function loadPdfJs() {
+  return new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve();
+
+    const script = document.createElement("script");
+    script.src =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      resolve();
+    };
+    script.onerror = () => reject(new Error("Failed to load PDF.js"));
+    document.head.appendChild(script);
+  });
+}
+
+async function handleFileSelect(file) {
+  if (!file) return;
+
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  els.uploadFile.files = dt.files;
+
+  els.uploadFileName.textContent = file.name;
+  els.uploadFileName.classList.remove("hidden");
+  els.extractStatus.textContent = "Extracting metadata...";
+  els.extractStatus.classList.remove("hidden");
+
+  try {
+    const metadata = await extractMetadata(file);
+    applyExtractedMetadata(metadata);
+    els.extractStatus.textContent = "Metadata extracted.";
+  } catch (err) {
+    els.extractStatus.textContent = "Could not extract metadata.";
+  }
+  setTimeout(() => {
+    els.extractStatus.classList.add("hidden");
+    els.extractStatus.textContent = "";
+  }, 3000);
+}
+
+function initUploadDropZone() {
+  const zone = els.uploadDropZone;
+  if (!zone) return;
+
+  zone.addEventListener("click", () => els.uploadFile.click());
+
+  let dragCount = 0;
+  zone.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    dragCount += 1;
+    zone.classList.add("ring-2", "ring-indigo-500", "bg-indigo-50");
+  });
+
+  zone.addEventListener("dragleave", () => {
+    dragCount -= 1;
+    if (dragCount <= 0) {
+      dragCount = 0;
+      zone.classList.remove("ring-2", "ring-indigo-500", "bg-indigo-50");
+    }
+  });
+
+  zone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+  });
+
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragCount = 0;
+    zone.classList.remove("ring-2", "ring-indigo-500", "bg-indigo-50");
+    const files = e.dataTransfer.files;
+    if (files.length) handleFileSelect(files[0]);
+  });
+
+  els.uploadFile.addEventListener("change", (e) => {
+    const files = e.target.files;
+    if (files.length) handleFileSelect(files[0]);
+  });
+}
+
 function init() {
   if (!API_URL) {
     els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check window.APP_CONFIG.</p>`;
@@ -360,6 +639,7 @@ function init() {
   els.detailModal.addEventListener("click", (e) => {
     if (e.target === els.detailModal) els.detailModal.classList.add("hidden");
   });
+  initUploadDropZone();
 
   updateAuthUI();
 }

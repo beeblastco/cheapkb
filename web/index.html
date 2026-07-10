@@ -69,20 +69,32 @@
               >
                 <h2 class="text-lg font-semibold mb-4">Upload document</h2>
                 <form id="upload-form" class="space-y-4">
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div class="sm:col-span-2">
-                      <label
-                        class="block text-sm font-medium text-slate-700 mb-1"
-                        >File</label
-                      >
-                      <input
-                        id="upload-file"
-                        type="file"
-                        accept=".pdf,.txt,.md"
-                        required
-                        class="block w-full text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-indigo-700 hover:file:bg-indigo-100"
-                      />
+                  <div
+                    id="upload-drop-zone"
+                    class="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center transition-colors"
+                  >
+                    <input
+                      id="upload-file"
+                      type="file"
+                      accept=".pdf,.txt,.md"
+                      required
+                      class="hidden"
+                    />
+                    <div class="space-y-2">
+                      <p class="text-sm font-medium text-slate-700">
+                        Drop a file here, or
+                        <span class="text-indigo-600">click to browse</span>
+                      </p>
+                      <p class="text-xs text-slate-500">
+                        PDF, Markdown, or plain text
+                      </p>
                     </div>
+                    <div
+                      id="upload-file-name"
+                      class="mt-3 hidden text-sm font-medium text-indigo-700"
+                    ></div>
+                  </div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div class="sm:col-span-2">
                       <label
                         class="block text-sm font-medium text-slate-700 mb-1"
@@ -141,6 +153,10 @@
                       Upload
                     </button>
                     <span id="upload-status" class="text-sm"></span>
+                    <span
+                      id="extract-status"
+                      class="hidden text-xs text-slate-500"
+                    ></span>
                   </div>
                 </form>
               </div>
