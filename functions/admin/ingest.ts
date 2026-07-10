@@ -6,12 +6,16 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
+import { extractUserId } from "../utils";
 
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = Resource.Meta.name;
 
 export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
+
   if (!event.body) {
     return {
       statusCode: 400,

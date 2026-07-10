@@ -15,7 +15,7 @@ import {
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { Resource } from "sst";
-;
+import { extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -25,6 +25,9 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
 export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
+
   const documentId = event.pathParameters?.id;
   if (!documentId) {
     return {
@@ -49,6 +52,13 @@ export async function handler(event: any) {
   }
 
   const doc = result.Item;
+  if (doc.userId !== userId) {
+    return {
+      statusCode: 403,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "You do not have access to this document" }),
+    };
+  }
   const errors: string[] = [];
 
   try {

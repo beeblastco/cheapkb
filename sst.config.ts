@@ -37,6 +37,7 @@ export default $config({
       VECTOR_INDEX_NAME: vectorIndexName,
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
+      APP_ORIGIN: process.env.APP_ORIGIN ?? "http://localhost:5173",
     };
 
     // Environment variables for embedding functions

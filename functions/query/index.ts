@@ -4,13 +4,27 @@ import {
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import { Resource } from "sst";
+import { checkRateLimit, extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
+const TableName = Resource.Meta.name;
 
 export async function handler(event: any) {
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
+
+  const { allowed, remaining } = await checkRateLimit(userId, TableName, 100, 50);
+  if (!allowed) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
+      body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+    };
+  }
+
   try {
     if (!event.body) {
       return {
@@ -93,7 +107,7 @@ export async function handler(event: any) {
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-RateLimit-Remaining": String(remaining) },
       body: JSON.stringify({
         query,
         topK,
