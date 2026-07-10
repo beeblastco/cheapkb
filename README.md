@@ -47,13 +47,24 @@ All endpoints require a `Authorization: Bearer <shoo_id_token>` header.
 
 Full API reference: [docs/API.md](docs/API.md)
 
-## Auth Flow
+## Frontend
+
+A vanilla JS + TailwindCSS management UI lives in `web/`. It is deployed to an **S3 bucket** and served through a **CloudFront distribution** via `sst.aws.StaticSite`.
+
+```bash
+cd web
+API_URL=https://<your-api-url>/v1 npm run dev   # builds and serves on http://localhost:5173
+```
+
+### Auth Flow
 
 1. User clicks "Sign in with Google" on the frontend
 2. [shoo.dev](https://shoo.dev) handles the PKCE OAuth flow with Google
-3. Frontend receives a signed `id_token` JWT stored in `localStorage`
+3. Frontend receives a signed `id_token` JWT stored by `shoo.js`
 4. All API calls include the token in the `Authorization` header
 5. Each Lambda verifies the token server-side before processing
+
+The deployed site URL is injected into Lambda functions as `APP_ORIGIN`, so the JWT audience always matches the frontend origin.
 
 ## Configuration
 
@@ -78,6 +89,8 @@ npx sst deploy --stage dev
 AWS_PROFILE=<your-prod-profile> npx sst deploy --stage production
 npx sst remove --stage dev
 ```
+
+After deploy, SST prints both the API endpoint (`apiEndpoint`) and the web endpoint (`webEndpoint`). The API URL is baked into the frontend build, and the frontend URL is used as `APP_ORIGIN` for JWT verification.
 
 ## Contributing
 

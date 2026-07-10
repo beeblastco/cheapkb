@@ -31,13 +31,41 @@ export default $config({
     const vectorBucketName = name("vecs");
     const vectorIndexName = STAGE === PROD_STAGE ? "default" : STAGE;
 
+    const api = new sst.aws.ApiGatewayV2("Api", {
+      cors: {
+        allowOrigins: ["*"],
+        allowHeaders: ["Content-Type", "Authorization"],
+        allowMethods: ["*"],
+      },
+      transform: {
+        api: (a) => {
+          a.name = name("api");
+        },
+        stage: (s) => {
+          s.name = "v1";
+        },
+      },
+    });
+
+    // Deploy the frontend to an S3 bucket served by a CloudFront distribution
+    const web = new sst.aws.StaticSite("Web", {
+      path: "web",
+      build: {
+        command: "npm install && npm run build",
+        output: "dist",
+      },
+      environment: {
+        API_URL: api.url,
+      },
+    });
+
     // Base environment variables for all functions
     const baseEnv = {
       VECTOR_BUCKET_NAME: vectorBucketName,
       VECTOR_INDEX_NAME: vectorIndexName,
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
-      APP_ORIGIN: process.env.APP_ORIGIN ?? "http://localhost:5173",
+      APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
     };
 
     // Environment variables for embedding functions
@@ -178,7 +206,8 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
-      description: "Manually trigger the ingest pipeline for an existing document",
+      description:
+        "Manually trigger the ingest pipeline for an existing document",
       link: [table, ingestQueue],
       environment: baseEnv,
       transform: {
@@ -210,7 +239,10 @@ export default $config({
           ],
           resources: [table.arn],
         },
-        { actions: ["sqs:SendMessage"], resources: [chunkQueue.arn, ingestQueue.arn] },
+        {
+          actions: ["sqs:SendMessage"],
+          resources: [chunkQueue.arn, ingestQueue.arn],
+        },
       ],
       transform: {
         function: (a) => {
@@ -358,7 +390,8 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "30 seconds",
       memory: "128 MB",
-      description: "Delete a document and all derived data (vectors, chunks, parsed, source)",
+      description:
+        "Delete a document and all derived data (vectors, chunks, parsed, source)",
       link: [storage, table],
       environment: baseEnv,
       permissions: [
@@ -425,7 +458,8 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "300 seconds",
       memory: "512 MB",
-      description: "Delete all derived data when a source file is removed from S3",
+      description:
+        "Delete all derived data when a source file is removed from S3",
       link: [storage, table],
       environment: baseEnv,
       permissions: [
@@ -478,17 +512,6 @@ export default $config({
       ],
     });
 
-    const api = new sst.aws.ApiGatewayV2("Api", {
-      transform: {
-        api: (a) => {
-          a.name = name("api");
-        },
-        stage: (s) => {
-          s.name = "v1";
-        },
-      },
-    });
-
     api.route("POST /upload", uploadFn.arn);
     api.route("POST /ingest", ingestFn.arn);
     api.route("POST /query", queryFn.arn);
@@ -500,6 +523,7 @@ export default $config({
 
     return {
       apiEndpoint: api.url,
+      webEndpoint: web.url,
     };
   },
 });
