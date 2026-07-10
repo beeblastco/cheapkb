@@ -118,9 +118,12 @@ async function processBatch(
     );
   }
 
-  const docIds = [...new Set(batch.map((c) => c.documentId))];
-  for (const documentId of docIds) {
-    await markEmbedded(documentId);
+  const docCounts: Record<string, number> = {};
+  for (const chunk of batch) {
+    docCounts[chunk.documentId] = (docCounts[chunk.documentId] ?? 0) + 1;
+  }
+  for (const [documentId, count] of Object.entries(docCounts)) {
+    await markEmbedded(documentId, count);
   }
 
   console.log(`[embed] OK: ${vectorBatch.length} vectors written`);
@@ -147,20 +150,20 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
   return data.data.map((d) => d.embedding);
 }
 
-async function markEmbedded(documentId: string) {
+async function markEmbedded(documentId: string, count: number) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
       TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :s, embeddedCount = if_not_exists(embeddedCount, :z) + :one, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #s = :s, embeddedCount = if_not_exists(embeddedCount, :z) + :inc, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
         ":s": "EMBEDDING",
         ":t": now,
         ":z": 0,
-        ":one": 1,
+        ":inc": count,
         ":gsi1pk": "STATUS#EMBEDDING",
         ":gsi1sk": now,
       },
@@ -177,22 +180,31 @@ async function markEmbedded(documentId: string) {
   const expected = doc?.chunkCount ?? 0;
   const done = doc?.embeddedCount ?? 0;
   if (expected > 0 && done >= expected) {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":s": "EMBEDDED",
-          ":t": now,
-          ":gsi1pk": "STATUS#EMBEDDED",
-          ":gsi1sk": now,
-        },
-      }),
-    );
-    await clearError(documentId, now);
+    try {
+      await dynamo.send(
+        new UpdateCommand({
+          TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          UpdateExpression:
+            "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+          ConditionExpression:
+            "attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: {
+            ":s": "EMBEDDED",
+            ":t": now,
+            ":expected": expected,
+            ":gsi1pk": "STATUS#EMBEDDED",
+            ":gsi1sk": now,
+          },
+        }),
+      );
+      await clearError(documentId, now);
+    } catch (err: any) {
+      if (err.name !== "ConditionalCheckFailedException") {
+        throw err;
+      }
+    }
   }
 }
 
