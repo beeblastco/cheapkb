@@ -1,5 +1,31 @@
 const API_URL = window.APP_CONFIG?.apiUrl ?? "";
 
+const STATUS_COLORS = {
+  EMBEDDED: "bg-emerald-100 text-emerald-700",
+  FAILED: "bg-rose-100 text-rose-700",
+  UPLOADED: "bg-amber-100 text-amber-700",
+  QUEUED: "bg-amber-100 text-amber-700",
+  PARSING: "bg-amber-100 text-amber-700",
+  CHUNKING: "bg-amber-100 text-amber-700",
+  EMBEDDING: "bg-amber-100 text-amber-700",
+};
+
+const BTN_BASE = "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors";
+const BTN_SECONDARY = `${BTN_BASE} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
+const BTN_DANGER = `${BTN_BASE} bg-rose-50 text-rose-700 hover:bg-rose-100`;
+const BTN_WARNING = `${BTN_BASE} bg-amber-50 text-amber-700 hover:bg-amber-100`;
+const BTN_DISABLED = "disabled:opacity-50 disabled:cursor-not-allowed";
+
+const SPINNER_SVG = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-current inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 2.042.777 3.899 2.05 5.294l1.95-2.003z"></path></svg>`;
+
+const ACTIVE_STATUSES = [
+  "UPLOADED",
+  "QUEUED",
+  "PARSING",
+  "CHUNKING",
+  "EMBEDDING",
+];
+
 const state = {
   token: null,
   userId: null,
@@ -57,12 +83,16 @@ function signOut() {
   }
   state.token = null;
   state.userId = null;
+  clearPollTimer();
+  localStorage.removeItem("shoo_id_token");
+  window.location.reload();
+}
+
+function clearPollTimer() {
   if (state.pollTimer) {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
   }
-  localStorage.removeItem("shoo_id_token");
-  window.location.reload();
 }
 
 function updateAuthUI() {
@@ -101,12 +131,14 @@ async function apiCall(method, path, body) {
     },
   };
   if (body) options.body = JSON.stringify(body);
+
   let res;
   try {
     res = await fetch(url, options);
-  } catch (err) {
+  } catch {
     throw new Error("Network error. Please check your connection.");
   }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401) {
@@ -119,20 +151,16 @@ async function apiCall(method, path, body) {
 }
 
 function statusClass(status) {
-  switch (status) {
-    case "EMBEDDED":
-      return "bg-emerald-100 text-emerald-700";
-    case "FAILED":
-      return "bg-rose-100 text-rose-700";
-    case "UPLOADED":
-    case "QUEUED":
-    case "PARSING":
-    case "CHUNKING":
-    case "EMBEDDING":
-      return "bg-amber-100 text-amber-700";
-    default:
-      return "bg-slate-100 text-slate-700";
-  }
+  return STATUS_COLORS[status] ?? "bg-slate-100 text-slate-700";
+}
+
+function isActiveStatus(status) {
+  return ACTIVE_STATUSES.includes(status);
+}
+
+function formatDate(value) {
+  if (!value) return "Just now";
+  return new Date(value).toLocaleString();
 }
 
 function renderDocuments() {
@@ -149,33 +177,49 @@ function renderDocuments() {
     card.className =
       "py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-opacity duration-200";
     card.dataset.id = doc.documentId;
-    card.innerHTML = `
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2">
-          <h3 class="font-medium text-slate-900 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
-          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${doc.status}</span>
-        </div>
-        <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${doc.createdAt ? new Date(doc.createdAt).toLocaleString() : "Just now"}</p>
-        ${doc.lastError ? `<p class="text-xs text-rose-600 mt-1 truncate">Error: ${escapeHtml(doc.lastError)}</p>` : ""}
-      </div>
-      <div class="flex items-center gap-2">
-        <button data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="view-btn rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">View</button>
-        ${doc.status === "FAILED" && !isOptimistic ? `<button data-id="${doc.documentId}" class="reindex-btn rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">Reindex</button>` : ""}
-        <button data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="delete-btn rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Delete</button>
-      </div>
-    `;
+    card.innerHTML = renderDocumentCard(doc, isOptimistic);
     els.documentsList.appendChild(card);
   }
+}
 
-  document.querySelectorAll(".view-btn").forEach((btn) => {
-    btn.addEventListener("click", () => showDetail(btn.dataset.id));
-  });
-  document.querySelectorAll(".reindex-btn").forEach((btn) => {
-    btn.addEventListener("click", () => reindexDocument(btn.dataset.id));
-  });
-  document.querySelectorAll(".delete-btn").forEach((btn) => {
-    btn.addEventListener("click", () => deleteDocument(btn.dataset.id));
-  });
+function renderDocumentCard(doc, isOptimistic) {
+  const errorHtml = doc.lastError
+    ? `<p class="text-xs text-rose-600 mt-1 truncate">Error: ${escapeHtml(doc.lastError)}</p>`
+    : "";
+
+  const reindexButton =
+    doc.status === "FAILED" && !isOptimistic
+      ? `<button data-action="reindex" data-id="${doc.documentId}" class="${BTN_WARNING}">Reindex</button>`
+      : "";
+
+  return `
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2">
+        <h3 class="font-medium text-slate-900 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${doc.status}</span>
+      </div>
+      <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${formatDate(doc.createdAt)}</p>
+      ${errorHtml}
+    </div>
+    <div class="flex items-center gap-2">
+      <button data-action="view" data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="${BTN_SECONDARY} ${BTN_DISABLED}">View</button>
+      ${reindexButton}
+      <button data-action="delete" data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="${BTN_DANGER} ${BTN_DISABLED}">Delete</button>
+    </div>
+  `;
+}
+
+function handleDocumentAction(e) {
+  const button = e.target.closest("[data-action]");
+  if (!button) return;
+
+  const action = button.dataset.action;
+  const id = button.dataset.id;
+  if (!id) return;
+
+  if (action === "view") showDetail(id);
+  if (action === "reindex") reindexDocument(id);
+  if (action === "delete") deleteDocument(id);
 }
 
 function renderDocumentsSkeleton() {
@@ -229,25 +273,24 @@ async function loadDocuments(showSkeleton = true) {
 }
 
 function schedulePolling() {
-  const terminal = ["EMBEDDED", "FAILED"];
-  const hasActive = state.documents.some((d) => !terminal.includes(d.status));
+  const hasActive = state.documents.some((d) => isActiveStatus(d.status));
   if (hasActive && !state.pollTimer) {
-    state.pollTimer = setInterval(async () => {
-      try {
-        const data = await apiCall("GET", "/documents");
-        state.documents = data.documents || [];
-        renderDocuments();
-        if (!state.documents.some((d) => !terminal.includes(d.status))) {
-          clearInterval(state.pollTimer);
-          state.pollTimer = null;
-        }
-      } catch (err) {
-        console.warn("[poll] failed to refresh documents:", err.message);
-      }
-    }, 3000);
+    state.pollTimer = setInterval(pollDocuments, 3000);
   } else if (!hasActive && state.pollTimer) {
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
+    clearPollTimer();
+  }
+}
+
+async function pollDocuments() {
+  try {
+    const data = await apiCall("GET", "/documents");
+    state.documents = data.documents || [];
+    renderDocuments();
+    if (!state.documents.some((d) => isActiveStatus(d.status))) {
+      clearPollTimer();
+    }
+  } catch (err) {
+    console.warn("[poll] failed to refresh documents:", err.message);
   }
 }
 
@@ -256,23 +299,32 @@ async function showDetail(id) {
     const data = await apiCall("GET", `/documents/${id}`);
     const doc = data.document;
     els.detailTitle.textContent = doc.title || doc.documentId;
-    els.detailBody.innerHTML = `
-      <div class="grid grid-cols-2 gap-4">
-        <div><span class="text-slate-500">ID</span><p class="font-mono text-xs break-all">${escapeHtml(doc.documentId)}</p></div>
-        <div><span class="text-slate-500">Status</span><p>${escapeHtml(doc.status)}</p></div>
-        <div><span class="text-slate-500">MIME type</span><p>${escapeHtml(doc.mimeType)}</p></div>
-        <div><span class="text-slate-500">Chunks</span><p>${data.chunkCount}</p></div>
-        <div><span class="text-slate-500">Created</span><p>${new Date(doc.createdAt).toLocaleString()}</p></div>
-        <div><span class="text-slate-500">Updated</span><p>${new Date(doc.updatedAt).toLocaleString()}</p></div>
-        ${doc.tags ? `<div class="col-span-2"><span class="text-slate-500">Tags</span><p>${escapeHtml(Array.isArray(doc.tags) ? doc.tags.join(", ") : doc.tags)}</p></div>` : ""}
-        ${doc.authors ? `<div class="col-span-2"><span class="text-slate-500">Authors</span><p>${escapeHtml(Array.isArray(doc.authors) ? doc.authors.join(", ") : doc.authors)}</p></div>` : ""}
-        ${doc.lastError ? `<div class="col-span-2"><span class="text-slate-500">Last error</span><p class="text-rose-600">${escapeHtml(doc.lastError)}</p></div>` : ""}
-      </div>
-    `;
+    els.detailBody.innerHTML = renderDetailBody(doc, data.chunkCount);
     els.detailModal.classList.remove("hidden");
   } catch (err) {
     showToast(err.message, "error");
   }
+}
+
+function renderDetailBody(doc, chunkCount) {
+  const tags = Array.isArray(doc.tags) ? doc.tags.join(", ") : doc.tags;
+  const authors = Array.isArray(doc.authors)
+    ? doc.authors.join(", ")
+    : doc.authors;
+
+  return `
+    <div class="grid grid-cols-2 gap-4">
+      <div><span class="text-slate-500">ID</span><p class="font-mono text-xs break-all">${escapeHtml(doc.documentId)}</p></div>
+      <div><span class="text-slate-500">Status</span><p>${escapeHtml(doc.status)}</p></div>
+      <div><span class="text-slate-500">MIME type</span><p>${escapeHtml(doc.mimeType)}</p></div>
+      <div><span class="text-slate-500">Chunks</span><p>${chunkCount}</p></div>
+      <div><span class="text-slate-500">Created</span><p>${formatDate(doc.createdAt)}</p></div>
+      <div><span class="text-slate-500">Updated</span><p>${formatDate(doc.updatedAt)}</p></div>
+      ${tags ? `<div class="col-span-2"><span class="text-slate-500">Tags</span><p>${escapeHtml(tags)}</p></div>` : ""}
+      ${authors ? `<div class="col-span-2"><span class="text-slate-500">Authors</span><p>${escapeHtml(authors)}</p></div>` : ""}
+      ${doc.lastError ? `<div class="col-span-2"><span class="text-slate-500">Last error</span><p class="text-rose-600">${escapeHtml(doc.lastError)}</p></div>` : ""}
+    </div>
+  `;
 }
 
 async function reindexDocument(id) {
@@ -314,14 +366,7 @@ async function deleteDocument(id) {
   }
 }
 
-async function handleUpload(e) {
-  e.preventDefault();
-  if (state.isUploading) return;
-  const file = els.uploadFile.files[0];
-  if (!file) return;
-
-  state.isUploading = true;
-
+function getUploadFormValues(file) {
   const title =
     document.getElementById("upload-title").value.trim() || file.name;
   const tags = document
@@ -337,21 +382,34 @@ async function handleUpload(e) {
     .map((t) => t.trim())
     .filter(Boolean);
 
+  return {
+    title,
+    tags: tags.length ? tags : undefined,
+    year,
+    authors: authors.length ? authors : undefined,
+  };
+}
+
+async function handleUpload(e) {
+  e.preventDefault();
+  if (state.isUploading) return;
+  const file = els.uploadFile.files[0];
+  if (!file) return;
+
+  state.isUploading = true;
+  const formValues = getUploadFormValues(file);
   const submitBtn = document.getElementById("upload-submit");
   const originalBtnText = submitBtn.textContent;
+
   setButtonLoading(submitBtn, true);
   setUploadFormDisabled(true);
   els.uploadStatus.textContent = "Requesting upload URL...";
-
-  if (state.pollTimer) {
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
+  clearPollTimer();
 
   const tempId = `temp_${Date.now()}`;
   const optimisticDoc = {
     documentId: tempId,
-    title,
+    title: formValues.title,
     status: "UPLOADING",
     mimeType: file.type || "application/octet-stream",
     createdAt: new Date().toISOString(),
@@ -364,10 +422,7 @@ async function handleUpload(e) {
     const meta = await apiCall("POST", "/upload", {
       filename: file.name,
       mimeType: file.type || "application/octet-stream",
-      title,
-      tags: tags.length ? tags : undefined,
-      year,
-      authors: authors.length ? authors : undefined,
+      ...formValues,
     });
 
     optimisticDoc.documentId = meta.documentId;
@@ -386,11 +441,7 @@ async function handleUpload(e) {
     renderDocuments();
 
     showToast("Upload complete", "success");
-    els.uploadForm.reset();
-    els.uploadFileName.classList.add("hidden");
-    els.uploadFileName.textContent = "";
-    els.extractStatus.classList.add("hidden");
-    els.extractStatus.textContent = "";
+    resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
     const idx = state.documents.findIndex((d) => d.documentId === tempId);
@@ -406,6 +457,14 @@ async function handleUpload(e) {
     setUploadFormDisabled(false);
     schedulePolling();
   }
+}
+
+function resetUploadForm() {
+  els.uploadForm.reset();
+  els.uploadFileName.classList.add("hidden");
+  els.uploadFileName.textContent = "";
+  els.extractStatus.classList.add("hidden");
+  els.extractStatus.textContent = "";
 }
 
 async function handleQuery(e) {
@@ -437,59 +496,64 @@ function renderQueryResults(data) {
     return;
   }
 
-  const groups = new Map();
-  for (const r of data.results) {
-    if (!groups.has(r.documentId)) {
-      groups.set(r.documentId, {
-        doc: r,
-        chunks: [],
-        maxScore: 0,
-      });
+  const groups = groupResultsByDocument(data.results);
+  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.resultCount} results across ${groups.length} documents</p>`;
+
+  for (const g of groups) {
+    els.queryResults.appendChild(renderQueryGroup(g));
+  }
+}
+
+function groupResultsByDocument(results) {
+  const map = new Map();
+  for (const r of results) {
+    if (!map.has(r.documentId)) {
+      map.set(r.documentId, { doc: r, chunks: [], maxScore: 0 });
     }
-    const g = groups.get(r.documentId);
+    const g = map.get(r.documentId);
     g.chunks.push(r);
     g.maxScore = Math.max(g.maxScore, r.score || 0);
   }
+  return Array.from(map.values()).sort((a, b) => b.maxScore - a.maxScore);
+}
 
-  const sortedGroups = Array.from(groups.values()).sort(
-    (a, b) => b.maxScore - a.maxScore,
-  );
+function renderQueryGroup(g) {
+  g.chunks.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.resultCount} results across ${sortedGroups.length} documents</p>`;
+  const details = document.createElement("details");
+  details.className =
+    "rounded-lg border border-slate-200 bg-slate-50 overflow-hidden";
+  details.open = true;
 
-  for (const g of sortedGroups) {
-    g.chunks.sort((a, b) => (b.score || 0) - (a.score || 0));
-    const details = document.createElement("details");
-    details.className =
-      "rounded-lg border border-slate-200 bg-slate-50 overflow-hidden";
-    details.open = true;
+  const summary = document.createElement("summary");
+  summary.className =
+    "cursor-pointer list-none bg-slate-100 px-3 py-2 flex items-center justify-between hover:bg-slate-200 transition-colors";
+  summary.innerHTML = `
+    <span class="text-sm font-medium text-slate-800">${escapeHtml(g.doc.title || g.doc.documentId)}</span>
+    <span class="text-xs text-slate-500">best score ${g.maxScore.toFixed(3)} · ${g.chunks.length} chunk${g.chunks.length === 1 ? "" : "s"}</span>
+  `;
 
-    const summary = document.createElement("summary");
-    summary.className =
-      "cursor-pointer list-none bg-slate-100 px-3 py-2 flex items-center justify-between hover:bg-slate-200 transition-colors";
-    summary.innerHTML = `
-      <span class="text-sm font-medium text-slate-800">${escapeHtml(g.doc.title || g.doc.documentId)}</span>
-      <span class="text-xs text-slate-500">best score ${g.maxScore.toFixed(3)} · ${g.chunks.length} chunk${g.chunks.length === 1 ? "" : "s"}</span>
-    `;
-
-    const body = document.createElement("div");
-    body.className = "divide-y divide-slate-200";
-    for (const c of g.chunks) {
-      const row = document.createElement("div");
-      row.className = "p-3";
-      row.innerHTML = `
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-xs text-slate-500">score ${(c.score || 0).toFixed(3)}</span>
-        </div>
-        <p class="text-sm text-slate-800">${escapeHtml(c.text || "")}</p>
-      `;
-      body.appendChild(row);
-    }
-
-    details.appendChild(summary);
-    details.appendChild(body);
-    els.queryResults.appendChild(details);
+  const body = document.createElement("div");
+  body.className = "divide-y divide-slate-200";
+  for (const c of g.chunks) {
+    body.appendChild(renderQueryChunk(c));
   }
+
+  details.appendChild(summary);
+  details.appendChild(body);
+  return details;
+}
+
+function renderQueryChunk(c) {
+  const row = document.createElement("div");
+  row.className = "p-3";
+  row.innerHTML = `
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-xs text-slate-500">score ${(c.score || 0).toFixed(3)}</span>
+    </div>
+    <p class="text-sm text-slate-800">${escapeHtml(c.text || "")}</p>
+  `;
+  return row;
 }
 
 function setUploadFormDisabled(disabled) {
@@ -515,7 +579,7 @@ function setButtonLoading(btn, loading, text = "") {
   if (loading) {
     btn.disabled = true;
     btn.dataset.originalText = text || btn.textContent;
-    btn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-current inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 2.042.777 3.899 2.05 5.294l1.95-2.003z"></path></svg> ${text || "Loading..."}`;
+    btn.innerHTML = `${SPINNER_SVG} ${text || "Loading..."}`;
   } else {
     btn.disabled = false;
     btn.textContent = text || btn.dataset.originalText || "Submit";
@@ -523,13 +587,13 @@ function setButtonLoading(btn, loading, text = "") {
 }
 
 function showToast(message, type = "info") {
-  const toast = document.createElement("div");
   const color =
     type === "error"
       ? "bg-rose-600"
       : type === "success"
         ? "bg-emerald-600"
         : "bg-indigo-600";
+  const toast = document.createElement("div");
   toast.className = `fixed bottom-4 right-4 ${color} text-white px-4 py-2 rounded-lg shadow-lg text-sm transition-opacity duration-300`;
   toast.textContent = message;
   document.body.appendChild(toast);
@@ -703,7 +767,7 @@ async function handleFileSelect(file) {
     const metadata = await extractMetadata(file);
     applyExtractedMetadata(metadata);
     els.extractStatus.textContent = "Metadata extracted.";
-  } catch (err) {
+  } catch {
     els.extractStatus.textContent = "Could not extract metadata.";
   }
   setTimeout(() => {
@@ -768,6 +832,7 @@ function init() {
   els.detailModal.addEventListener("click", (e) => {
     if (e.target === els.detailModal) els.detailModal.classList.add("hidden");
   });
+  els.documentsList.addEventListener("click", handleDocumentAction);
   initUploadDropZone();
 
   updateAuthUI();
