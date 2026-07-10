@@ -11,7 +11,7 @@ Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed,
 
 Node.js 22.x, TypeScript 7, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3 Vectors, DynamoDB, SQS.
 
-**Auth:** [shoo.dev](https://shoo.dev) PKCE flow with server-side JWT verification via [jose](https://github.com/panva/jose). User records stored in DynamoDB single-table design.
+**Auth:** [shoo.dev](https://shoo.dev) PKCE flow with server-side JWT verification via [jose](https://github.com/panva/jose). Identity is derived per-request from the verified `pairwise_sub` claim; documents are scoped to that user in the DynamoDB single-table design.
 
 ## Pipeline
 
