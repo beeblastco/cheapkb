@@ -55,7 +55,7 @@ export default $config({
         output: "dist",
       },
       environment: {
-        API_URL: api.url,
+        API_URL: `${api.url}/v1`,
       },
     });
 

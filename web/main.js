@@ -340,7 +340,7 @@ function escapeHtml(str) {
 
 function init() {
   if (!API_URL) {
-    els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check config.js</p>`;
+    els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check window.APP_CONFIG.</p>`;
     return;
   }
 
