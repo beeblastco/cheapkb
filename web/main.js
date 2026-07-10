@@ -1,4 +1,4 @@
-const API_URL = window.APP_CONFIG?.apiUrl ?? "";
+const API_URL = globalThis.APP_CONFIG?.apiUrl ?? "";
 
 const STATUS_COLORS = {
   EMBEDDED: "bg-emerald-100 text-emerald-700",
@@ -6,7 +6,9 @@ const STATUS_COLORS = {
   UPLOADED: "bg-amber-100 text-amber-700",
   QUEUED: "bg-amber-100 text-amber-700",
   PARSING: "bg-amber-100 text-amber-700",
+  PARSED: "bg-amber-100 text-amber-700",
   CHUNKING: "bg-amber-100 text-amber-700",
+  CHUNKED: "bg-amber-100 text-amber-700",
   EMBEDDING: "bg-amber-100 text-amber-700",
 };
 
@@ -22,7 +24,9 @@ const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
   "PARSING",
+  "PARSED",
   "CHUNKING",
+  "CHUNKED",
   "EMBEDDING",
 ];
 
@@ -188,23 +192,23 @@ function renderDocumentCard(doc, isOptimistic) {
     : "";
 
   const reindexButton =
-    doc.status === "FAILED" && !isOptimistic
-      ? `<button data-action="reindex" data-id="${doc.documentId}" class="${BTN_WARNING}">Reindex</button>`
+    !isOptimistic && !isActiveStatus(doc.status)
+      ? `<button data-action="reindex" data-id="${escapeHtml(doc.documentId)}" class="${BTN_WARNING}">Reindex</button>`
       : "";
 
   return `
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2">
         <h3 class="font-medium text-slate-900 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
-        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${doc.status}</span>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${escapeHtml(doc.status)}</span>
       </div>
-      <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${formatDate(doc.createdAt)}</p>
+      <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${escapeHtml(formatDate(doc.createdAt))}</p>
       ${errorHtml}
     </div>
     <div class="flex items-center gap-2">
-      <button data-action="view" data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="${BTN_SECONDARY} ${BTN_DISABLED}">View</button>
+      <button data-action="view" data-id="${escapeHtml(doc.documentId)}" ${isOptimistic ? "disabled" : ""} class="${BTN_SECONDARY} ${BTN_DISABLED}">View</button>
       ${reindexButton}
-      <button data-action="delete" data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="${BTN_DANGER} ${BTN_DISABLED}">Delete</button>
+      <button data-action="delete" data-id="${escapeHtml(doc.documentId)}" ${isOptimistic ? "disabled" : ""} class="${BTN_DANGER} ${BTN_DISABLED}">Delete</button>
     </div>
   `;
 }
@@ -317,9 +321,9 @@ function renderDetailBody(doc, chunkCount) {
       <div><span class="text-slate-500">ID</span><p class="font-mono text-xs break-all">${escapeHtml(doc.documentId)}</p></div>
       <div><span class="text-slate-500">Status</span><p>${escapeHtml(doc.status)}</p></div>
       <div><span class="text-slate-500">MIME type</span><p>${escapeHtml(doc.mimeType)}</p></div>
-      <div><span class="text-slate-500">Chunks</span><p>${chunkCount}</p></div>
-      <div><span class="text-slate-500">Created</span><p>${formatDate(doc.createdAt)}</p></div>
-      <div><span class="text-slate-500">Updated</span><p>${formatDate(doc.updatedAt)}</p></div>
+      <div><span class="text-slate-500">Chunks</span><p>${Number(chunkCount) || 0}</p></div>
+      <div><span class="text-slate-500">Created</span><p>${escapeHtml(formatDate(doc.createdAt))}</p></div>
+      <div><span class="text-slate-500">Updated</span><p>${escapeHtml(formatDate(doc.updatedAt))}</p></div>
       ${tags ? `<div class="col-span-2"><span class="text-slate-500">Tags</span><p>${escapeHtml(tags)}</p></div>` : ""}
       ${authors ? `<div class="col-span-2"><span class="text-slate-500">Authors</span><p>${escapeHtml(authors)}</p></div>` : ""}
       ${doc.lastError ? `<div class="col-span-2"><span class="text-slate-500">Last error</span><p class="text-rose-600">${escapeHtml(doc.lastError)}</p></div>` : ""}
@@ -411,7 +415,7 @@ async function handleUpload(e) {
     documentId: tempId,
     title: formValues.title,
     status: "UPLOADING",
-    mimeType: file.type || "application/octet-stream",
+    mimeType: getFileMimeType(file),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -421,7 +425,7 @@ async function handleUpload(e) {
   try {
     const meta = await apiCall("POST", "/upload", {
       filename: file.name,
-      mimeType: file.type || "application/octet-stream",
+      mimeType: getFileMimeType(file),
       ...formValues,
     });
 
@@ -430,10 +434,19 @@ async function handleUpload(e) {
     renderDocuments();
 
     els.uploadStatus.textContent = "Uploading file...";
+    if (file.size > meta.maxUploadBytes) {
+      throw new Error(
+        `File exceeds the ${Math.floor(meta.maxUploadBytes / 1024 / 1024)} MB limit`,
+      );
+    }
+    const uploadBody = new FormData();
+    for (const [key, value] of Object.entries(meta.uploadFields)) {
+      uploadBody.append(key, value);
+    }
+    uploadBody.append("file", file);
     const putRes = await fetch(meta.uploadUrl, {
-      method: "PUT",
-      body: file,
-      headers: { "Content-Type": file.type || "application/octet-stream" },
+      method: "POST",
+      body: uploadBody,
     });
     if (!putRes.ok) throw new Error("Failed to upload file to S3");
 
@@ -467,6 +480,16 @@ function resetUploadForm() {
   els.extractStatus.textContent = "";
 }
 
+function getFileMimeType(file) {
+  if (file.type === "application/pdf") return file.type;
+  if (file.type === "text/plain") return file.type;
+  if (file.type === "text/markdown") return file.type;
+  if (file.name.toLowerCase().endsWith(".pdf")) return "application/pdf";
+  if (file.name.toLowerCase().endsWith(".txt")) return "text/plain";
+  if (file.name.toLowerCase().endsWith(".md")) return "text/markdown";
+  return file.type;
+}
+
 async function handleQuery(e) {
   e.preventDefault();
   const query = els.queryInput.value.trim();
@@ -497,7 +520,7 @@ function renderQueryResults(data) {
   }
 
   const groups = groupResultsByDocument(data.results);
-  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.resultCount} results across ${groups.length} documents</p>`;
+  els.queryResults.innerHTML = `<p class="text-xs text-slate-500">${data.results.length} results across ${groups.length} documents</p>`;
 
   for (const g of groups) {
     els.queryResults.appendChild(renderQueryGroup(g));
@@ -734,21 +757,11 @@ function applyExtractedMetadata(metadata) {
   }
 }
 
-function loadPdfJs() {
-  return new Promise((resolve, reject) => {
-    if (window.pdfjsLib) return resolve();
-
-    const script = document.createElement("script");
-    script.src =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    script.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-      resolve();
-    };
-    script.onerror = () => reject(new Error("Failed to load PDF.js"));
-    document.head.appendChild(script);
-  });
+async function loadPdfJs() {
+  if (window.pdfjsLib) return;
+  const pdfjsLib = await import("./pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.mjs";
+  window.pdfjsLib = pdfjsLib;
 }
 
 async function handleFileSelect(file) {
@@ -817,7 +830,7 @@ function initUploadDropZone() {
 
 function init() {
   if (!API_URL) {
-    els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check window.APP_CONFIG.</p>`;
+    els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check globalThis.APP_CONFIG.</p>`;
     return;
   }
 

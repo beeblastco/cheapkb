@@ -5,12 +5,12 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
 import { extractUserId } from "../utils";
 
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -58,6 +58,13 @@ export async function handler(event: any) {
   }
 
   const doc = result.Item;
+  if (doc.userId !== userId) {
+    return {
+      statusCode: 404,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document not found" }),
+    };
+  }
   const now = new Date().toISOString();
 
   await dynamo.send(
@@ -67,18 +74,20 @@ export async function handler(event: any) {
       UpdateExpression:
         "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
       ExpressionAttributeNames: { "#s": "status" },
+      ConditionExpression: "userId = :userId",
       ExpressionAttributeValues: {
         ":s": "QUEUED",
         ":t": now,
         ":gsi1pk": "STATUS#QUEUED",
         ":gsi1sk": now,
+        ":userId": userId,
       },
     }),
   );
 
   await sqs.send(
     new SendMessageCommand({
-      QueueUrl: Resource.Ingest.url,
+      QueueUrl: IngestQueueUrl,
       MessageBody: JSON.stringify({
         documentId,
         sourceKey: doc.sourceKey,

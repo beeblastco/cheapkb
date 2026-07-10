@@ -5,40 +5,48 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
+import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { extractText } from "unpdf";
+import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const ChunkQueueUrl = process.env.CHUNK_QUEUE_URL!;
 
-export async function handler(event: any) {
-  for (const record of event.Records ?? []) {
+export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+  const batchItemFailures: Array<{ itemIdentifier: string }> = [];
+
+  for (const record of event.Records) {
     let body: any;
     try {
       body = JSON.parse(record.body);
     } catch {
       console.error("[parse] Invalid JSON in record:", record.messageId);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
     const { documentId, sourceKey, mimeType } = body;
     if (!documentId || !sourceKey) {
       console.error("[parse] Missing required fields:", record.messageId);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
     try {
       await parseDocument(documentId, sourceKey, mimeType);
     } catch (err: any) {
       console.error(`[parse] Failed for ${documentId}:`, err);
-      await handleError(documentId, sourceKey, mimeType, err);
+      const attempt = parseInt(
+        record.attributes.ApproximateReceiveCount ?? "1",
+        10,
+      );
+      await handleError(documentId, err, attempt);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
+  return { batchItemFailures };
 }
 
 async function parseDocument(
@@ -50,7 +58,7 @@ async function parseDocument(
   await updateStatus(documentId, "PARSING", now);
 
   const resp = await s3.send(
-    new GetObjectCommand({ Bucket: Resource.Storage.name, Key: sourceKey }),
+    new GetObjectCommand({ Bucket: StorageBucketName, Key: sourceKey }),
   );
   const bytes = new Uint8Array(await resp.Body!.transformToByteArray());
 
@@ -79,7 +87,7 @@ async function parseDocument(
   const parsedKey = `parsed/${documentId}/v1/pages.json`;
   await s3.send(
     new PutObjectCommand({
-      Bucket: Resource.Storage.name,
+      Bucket: StorageBucketName,
       Key: parsedKey,
       Body: JSON.stringify({
         documentId,
@@ -97,7 +105,7 @@ async function parseDocument(
 
   await sqs.send(
     new SendMessageCommand({
-      QueueUrl: Resource.Chunk.url,
+      QueueUrl: ChunkQueueUrl,
       MessageBody: JSON.stringify({ documentId, parsedKey }),
     }),
   );
@@ -117,26 +125,11 @@ async function extractPdfText(bytes: Uint8Array) {
     .filter((p) => p.text.length > 0);
 }
 
-async function handleError(
-  documentId: string,
-  sourceKey: string,
-  mimeType: string,
-  err: any,
-) {
+async function handleError(documentId: string, err: any, attempt: number) {
   const now = new Date().toISOString();
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  const doc = result.Item;
-  const retryCount = (doc?.retryCount ?? 0) + 1;
   const lastError = err.message ?? String(err);
-  const realSourceKey = doc?.sourceKey ?? sourceKey;
-  const realMimeType = doc?.mimeType ?? mimeType;
 
-  if (retryCount >= 3) {
+  if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
         TableName,
@@ -147,7 +140,7 @@ async function handleError(
         ExpressionAttributeValues: {
           ":s": "FAILED",
           ":e": lastError,
-          ":r": retryCount,
+          ":r": attempt,
           ":f": "PARSING",
           ":t": now,
           ":gsi1pk": "STATUS#FAILED",
@@ -166,21 +159,10 @@ async function handleError(
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
       ExpressionAttributeValues: {
         ":e": lastError,
-        ":r": retryCount,
+        ":r": attempt,
         ":f": "PARSING",
         ":t": now,
       },
-    }),
-  );
-
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: Resource.Ingest.url,
-      MessageBody: JSON.stringify({
-        documentId,
-        sourceKey: realSourceKey,
-        mimeType: realMimeType,
-      }),
     }),
   );
 }

@@ -4,11 +4,10 @@ import {
   GetCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { Resource } from "sst";
 import { extractUserId } from "../utils";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -41,7 +40,9 @@ export async function handler(event: any) {
     return {
       statusCode: 403,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "You do not have access to this document" }),
+      body: JSON.stringify({
+        error: "You do not have access to this document",
+      }),
     };
   }
 

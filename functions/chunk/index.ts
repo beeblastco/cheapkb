@@ -4,7 +4,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -12,34 +12,46 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { decode, encode } from "gpt-tokenizer";
-import { Resource } from "sst";
+import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TableName = Resource.Meta.name;
+const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const EmbedQueueUrl = process.env.EMBED_QUEUE_URL!;
 
-export async function handler(event: any) {
-  for (const record of event.Records ?? []) {
+export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+  const batchItemFailures: Array<{ itemIdentifier: string }> = [];
+
+  for (const record of event.Records) {
     let body: any;
     try {
       body = JSON.parse(record.body);
     } catch {
       console.error("[chunk] Invalid JSON in record:", record.messageId);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
     const { documentId, parsedKey } = body;
     if (!documentId || !parsedKey) {
       console.error("[chunk] Missing required fields:", record.messageId);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
     try {
       await chunkDocument(documentId, parsedKey);
     } catch (err: any) {
       console.error(`[chunk] Failed for ${documentId}:`, err);
-      await handleError(documentId, err);
+      const attempt = parseInt(
+        record.attributes.ApproximateReceiveCount ?? "1",
+        10,
+      );
+      await handleError(documentId, err, attempt);
+      batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
+  return { batchItemFailures };
 }
 
 async function chunkDocument(documentId: string, parsedKey: string) {
@@ -57,17 +69,20 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   const tags = doc.tags ?? null;
   const authors = doc.authors ?? null;
   const year = doc.year ?? null;
+  const userId = doc.userId;
+  if (!userId) throw new Error("Document owner is missing");
 
   const resp = await s3.send(
-    new GetObjectCommand({ Bucket: Resource.Storage.name, Key: parsedKey }),
+    new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
   );
   const parsed = JSON.parse(await resp.Body!.transformToString());
   const pages: Array<{ pageNumber: number; text: string }> = parsed.pages;
 
   const maxTokens = parseInt(process.env.CHUNK_MAX_TOKENS ?? "700");
   const overlapTokens = parseInt(process.env.CHUNK_OVERLAP_TOKENS ?? "100");
+  const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200");
 
-  const chunks = splitIntoChunks(pages, maxTokens, overlapTokens);
+  const chunks = splitIntoChunks(pages, maxTokens, overlapTokens, maxChunks);
   if (chunks.length === 0) {
     await updateStatus(documentId, "CHUNKED", now);
     await clearError(documentId, now);
@@ -80,10 +95,11 @@ async function chunkDocument(documentId: string, parsedKey: string) {
     const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
     await s3.send(
       new PutObjectCommand({
-        Bucket: Resource.Storage.name,
+        Bucket: StorageBucketName,
         Key: s3ChunkKey,
         Body: JSON.stringify({
           documentId,
+          userId,
           chunkId,
           text: chunk.text,
           title,
@@ -105,6 +121,10 @@ async function chunkDocument(documentId: string, parsedKey: string) {
           entityType: "Chunk",
           chunkId,
           s3ChunkKey,
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
+          tokenCount: encode(chunk.text).length,
+          status: "QUEUED",
           createdAt: now,
         },
       }),
@@ -133,16 +153,16 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   const sendSize = 10;
   for (let i = 0; i < chunkKeys.length; i += sendSize) {
     const group = chunkKeys.slice(i, i + sendSize);
-    await Promise.all(
-      group.map((s3ChunkKey) =>
-        sqs.send(
-          new SendMessageCommand({
-            QueueUrl: Resource.Embed.url,
-            MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
-          }),
-        ),
-      ),
+    const response = await sqs.send(
+      new SendMessageBatchCommand({
+        QueueUrl: EmbedQueueUrl,
+        Entries: group.map((s3ChunkKey, index) => ({
+          Id: String(index),
+          MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+        })),
+      }),
     );
+    if (response.Failed?.length) throw new Error("Failed to queue some chunks");
   }
 
   console.log(
@@ -150,61 +170,11 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   );
 }
 
-function splitIntoChunks(
-  pages: Array<{ pageNumber: number; text: string }>,
-  maxTokens: number,
-  overlapTokens: number,
-) {
-  const out: Array<{
-    chunk: { text: string; pageStart: number; pageEnd: number };
-    i: number;
-  }> = [];
-  let i = 0;
-  let pageStart = 0;
-  let pageEnd = 0;
-  let buffer: number[] = [];
-
-  const flush = () => {
-    if (buffer.length === 0) return;
-    const text = decode(buffer).trim();
-    if (text) {
-      out.push({
-        chunk: { text, pageStart, pageEnd },
-        i: i++,
-      });
-    }
-    const keep = buffer.slice(Math.max(0, buffer.length - overlapTokens));
-    buffer = keep;
-    pageStart = pageEnd;
-  };
-
-  for (const page of pages) {
-    if (buffer.length > 0) flush();
-    pageStart = page.pageNumber;
-    pageEnd = page.pageNumber;
-    const tokens = encode(page.text);
-    for (const tok of tokens) {
-      buffer.push(tok);
-      if (buffer.length >= maxTokens) flush();
-    }
-  }
-  flush();
-  return out;
-}
-
-async function handleError(documentId: string, err: any) {
+async function handleError(documentId: string, err: any, attempt: number) {
   const now = new Date().toISOString();
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  const doc = result.Item;
-  const retryCount = (doc?.retryCount ?? 0) + 1;
   const lastError = err.message ?? String(err);
 
-  if (retryCount >= 3) {
+  if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
         TableName,
@@ -215,7 +185,7 @@ async function handleError(documentId: string, err: any) {
         ExpressionAttributeValues: {
           ":s": "FAILED",
           ":e": lastError,
-          ":r": retryCount,
+          ":r": attempt,
           ":f": "CHUNKING",
           ":t": now,
           ":gsi1pk": "STATUS#FAILED",
@@ -224,7 +194,7 @@ async function handleError(documentId: string, err: any) {
       }),
     );
     console.log(
-      `[chunk] Marked ${documentId} as FAILED after ${retryCount} retries`,
+      `[chunk] Marked ${documentId} as FAILED after ${attempt} retries`,
     );
     return;
   }
@@ -237,23 +207,14 @@ async function handleError(documentId: string, err: any) {
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
       ExpressionAttributeValues: {
         ":e": lastError,
-        ":r": retryCount,
+        ":r": attempt,
         ":f": "CHUNKING",
         ":t": now,
       },
     }),
   );
 
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: Resource.Chunk.url,
-      MessageBody: JSON.stringify({
-        documentId,
-        parsedKey: `parsed/${documentId}/v1/pages.json`,
-      }),
-    }),
-  );
-  console.log(`[chunk] Retry ${retryCount}/3 for ${documentId}`);
+  console.log(`[chunk] Retry ${attempt}/3 for ${documentId}`);
 }
 
 async function updateStatus(documentId: string, status: string, now: string) {
@@ -288,4 +249,50 @@ async function clearError(documentId: string, now: string) {
       },
     }),
   );
+}
+
+function splitIntoChunks(
+  pages: Array<{ pageNumber: number; text: string }>,
+  maxTokens: number,
+  overlapTokens: number,
+  maxChunks: number,
+) {
+  const out: Array<{
+    chunk: { text: string; pageStart: number; pageEnd: number };
+    i: number;
+  }> = [];
+  let i = 0;
+  let pageStart = 0;
+  let pageEnd = 0;
+  let buffer: number[] = [];
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    const text = decode(buffer).trim();
+    if (text) {
+      out.push({
+        chunk: { text, pageStart, pageEnd },
+        i: i++,
+      });
+      if (out.length > maxChunks) {
+        throw new Error(`Document exceeds the ${maxChunks} chunk limit`);
+      }
+    }
+    const keep = buffer.slice(Math.max(0, buffer.length - overlapTokens));
+    buffer = keep;
+    pageStart = pageEnd;
+  };
+
+  for (const page of pages) {
+    if (buffer.length > 0) flush();
+    pageStart = page.pageNumber;
+    pageEnd = page.pageNumber;
+    const tokens = encode(page.text);
+    for (const tok of tokens) {
+      buffer.push(tok);
+      if (buffer.length >= maxTokens) flush();
+    }
+  }
+  flush();
+  return out;
 }
