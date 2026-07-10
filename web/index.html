@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cheapkb</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://shoo.dev/shoo.js"></script>
+    <script>
+      window.APP_CONFIG = { apiUrl: "__API_URL__" };
+    </script>
+  </head>
+  <body class="min-h-screen bg-slate-50 text-slate-900">
+    <div id="app" class="min-h-screen flex flex-col">
+      <header class="bg-white border-b border-slate-200 sticky top-0 z-10">
+        <div
+          class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between"
+        >
+          <div class="flex items-center gap-3">
+            <div
+              class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold"
+            >
+              C
+            </div>
+            <h1 class="text-xl font-semibold tracking-tight">cheapkb</h1>
+          </div>
+          <div id="auth-bar" class="flex items-center gap-3">
+            <span id="user-pill" class="hidden text-sm text-slate-600"></span>
+            <button
+              id="signin-btn"
+              class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
+            >
+              Sign in with Google
+            </button>
+            <button
+              id="signout-btn"
+              class="hidden rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <section id="guest-state" class="text-center py-24">
+          <div class="max-w-md mx-auto">
+            <h2 class="text-3xl font-bold tracking-tight sm:text-4xl mb-4">
+              Your cheap knowledge base
+            </h2>
+            <p class="text-lg text-slate-600 mb-8">
+              Sign in to upload documents, manage the ingest pipeline, and query
+              vectors.
+            </p>
+            <button
+              id="hero-signin-btn"
+              class="rounded-lg bg-indigo-600 px-6 py-3 text-base font-medium text-white hover:bg-indigo-700 transition-colors"
+            >
+              Sign in with Google
+            </button>
+          </div>
+        </section>
+
+        <section id="app-state" class="hidden space-y-8">
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 space-y-6">
+              <div
+                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+              >
+                <h2 class="text-lg font-semibold mb-4">Upload document</h2>
+                <form id="upload-form" class="space-y-4">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2">
+                      <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                        >File</label
+                      >
+                      <input
+                        id="upload-file"
+                        type="file"
+                        accept=".pdf,.txt,.md"
+                        required
+                        class="block w-full text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-indigo-700 hover:file:bg-indigo-100"
+                      />
+                    </div>
+                    <div class="sm:col-span-2">
+                      <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                        >Title</label
+                      >
+                      <input
+                        id="upload-title"
+                        type="text"
+                        placeholder="My document"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                        >Tags</label
+                      >
+                      <input
+                        id="upload-tags"
+                        type="text"
+                        placeholder="research, blog"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                        >Year</label
+                      >
+                      <input
+                        id="upload-year"
+                        type="number"
+                        placeholder="2024"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div class="sm:col-span-2">
+                      <label
+                        class="block text-sm font-medium text-slate-700 mb-1"
+                        >Authors</label
+                      >
+                      <input
+                        id="upload-authors"
+                        type="text"
+                        placeholder="Alice, Bob"
+                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <button
+                      type="submit"
+                      id="upload-submit"
+                      class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Upload
+                    </button>
+                    <span id="upload-status" class="text-sm"></span>
+                  </div>
+                </form>
+              </div>
+
+              <div
+                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+              >
+                <h2 class="text-lg font-semibold mb-4">Documents</h2>
+                <div id="documents-empty" class="text-sm text-slate-500 py-4">
+                  No documents yet.
+                </div>
+                <div
+                  id="documents-list"
+                  class="divide-y divide-slate-100"
+                ></div>
+              </div>
+            </div>
+
+            <div class="space-y-6">
+              <div
+                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+              >
+                <h2 class="text-lg font-semibold mb-4">Query</h2>
+                <form id="query-form" class="space-y-3">
+                  <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                      >Question</label
+                    >
+                    <textarea
+                      id="query-input"
+                      rows="3"
+                      placeholder="What is RAG?"
+                      required
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    ></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                      >Top K</label
+                    >
+                    <input
+                      id="query-topk"
+                      type="number"
+                      value="5"
+                      min="1"
+                      max="50"
+                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    id="query-submit"
+                    class="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Search
+                  </button>
+                </form>
+                <div id="query-results" class="mt-4 space-y-3"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="detail-modal"
+          class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+        >
+          <div
+            class="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6"
+          >
+            <div class="flex items-center justify-between mb-4">
+              <h3 id="detail-title" class="text-lg font-semibold">
+                Document details
+              </h3>
+              <button
+                id="detail-close"
+                class="text-slate-400 hover:text-slate-600"
+              >
+                &times;
+              </button>
+            </div>
+            <div id="detail-body" class="space-y-4 text-sm"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="border-t border-slate-200 bg-white py-6">
+        <div class="max-w-6xl mx-auto px-4 text-center text-sm text-slate-500">
+          cheapkb &middot; cost-effective serverless RAG
+        </div>
+      </footer>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>
