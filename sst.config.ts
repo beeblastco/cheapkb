@@ -35,7 +35,7 @@ export default $config({
       cors: {
         allowOrigins: ["*"],
         allowHeaders: ["Content-Type", "Authorization"],
-        allowMethods: ["*"],
+        allowMethods: ["ANY"],
       },
       transform: {
         api: (a) => {
