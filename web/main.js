@@ -6,6 +6,7 @@ const state = {
   documents: [],
   loading: false,
   pollTimer: null,
+  isUploading: false,
 };
 
 const els = {
@@ -77,7 +78,7 @@ function updateAuthUI() {
     els.userPill.classList.remove("hidden");
     els.guestState.classList.add("hidden");
     els.appState.classList.remove("hidden");
-    loadDocuments();
+    loadDocuments(true);
   } else {
     state.token = null;
     state.userId = null;
@@ -143,22 +144,24 @@ function renderDocuments() {
   els.documentsEmpty.classList.add("hidden");
 
   for (const doc of state.documents) {
+    const isOptimistic = doc.documentId.startsWith("temp_");
     const card = document.createElement("div");
     card.className =
-      "py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3";
+      "py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-opacity duration-200";
+    card.dataset.id = doc.documentId;
     card.innerHTML = `
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <h3 class="font-medium text-slate-900 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
           <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${doc.status}</span>
         </div>
-        <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${new Date(doc.createdAt).toLocaleString()}</p>
+        <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${doc.createdAt ? new Date(doc.createdAt).toLocaleString() : "Just now"}</p>
         ${doc.lastError ? `<p class="text-xs text-rose-600 mt-1 truncate">Error: ${escapeHtml(doc.lastError)}</p>` : ""}
       </div>
       <div class="flex items-center gap-2">
-        <button data-id="${doc.documentId}" class="view-btn rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors">View</button>
-        ${doc.status === "FAILED" ? `<button data-id="${doc.documentId}" class="reindex-btn rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">Reindex</button>` : ""}
-        <button data-id="${doc.documentId}" class="delete-btn rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 transition-colors">Delete</button>
+        <button data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="view-btn rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">View</button>
+        ${doc.status === "FAILED" && !isOptimistic ? `<button data-id="${doc.documentId}" class="reindex-btn rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors">Reindex</button>` : ""}
+        <button data-id="${doc.documentId}" ${isOptimistic ? "disabled" : ""} class="delete-btn rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Delete</button>
       </div>
     `;
     els.documentsList.appendChild(card);
@@ -175,7 +178,46 @@ function renderDocuments() {
   });
 }
 
-async function loadDocuments() {
+function renderDocumentsSkeleton() {
+  els.documentsEmpty.classList.add("hidden");
+  els.documentsList.innerHTML = "";
+  for (let i = 0; i < 3; i++) {
+    const card = document.createElement("div");
+    card.className =
+      "py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-pulse";
+    card.innerHTML = `
+      <div class="flex-1 min-w-0 space-y-2">
+        <div class="h-4 w-1/3 rounded bg-slate-200"></div>
+        <div class="h-3 w-1/2 rounded bg-slate-200"></div>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="h-7 w-12 rounded bg-slate-200"></div>
+        <div class="h-7 w-14 rounded bg-slate-200"></div>
+      </div>
+    `;
+    els.documentsList.appendChild(card);
+  }
+}
+
+function renderQuerySkeleton() {
+  els.queryResults.innerHTML = "";
+  for (let i = 0; i < 3; i++) {
+    const row = document.createElement("div");
+    row.className =
+      "rounded-lg border border-slate-200 bg-slate-50 p-3 animate-pulse space-y-2";
+    row.innerHTML = `
+      <div class="h-4 w-1/3 rounded bg-slate-200"></div>
+      <div class="h-3 w-full rounded bg-slate-200"></div>
+      <div class="h-3 w-5/6 rounded bg-slate-200"></div>
+    `;
+    els.queryResults.appendChild(row);
+  }
+}
+
+async function loadDocuments(showSkeleton = true) {
+  if (showSkeleton && state.documents.length === 0) {
+    renderDocumentsSkeleton();
+  }
   try {
     const data = await apiCall("GET", "/documents");
     state.documents = data.documents || [];
@@ -234,30 +276,51 @@ async function showDetail(id) {
 }
 
 async function reindexDocument(id) {
+  const doc = state.documents.find((d) => d.documentId === id);
+  const originalStatus = doc?.status;
+  if (doc) {
+    doc.status = "QUEUED";
+    doc.lastError = null;
+    renderDocuments();
+  }
   try {
     const data = await apiCall("POST", `/documents/${id}/reindex`);
     showToast(data.message || "Reindex started", "success");
-    await loadDocuments();
+    await loadDocuments(false);
   } catch (err) {
+    if (doc) {
+      doc.status = originalStatus ?? "FAILED";
+      doc.lastError = err.message;
+      renderDocuments();
+    }
     showToast(err.message, "error");
   }
 }
 
 async function deleteDocument(id) {
   if (!confirm("Delete this document and all its data?")) return;
+  const index = state.documents.findIndex((d) => d.documentId === id);
+  const removed = index >= 0 ? state.documents.splice(index, 1)[0] : null;
+  renderDocuments();
   try {
     await apiCall("DELETE", `/documents/${id}`);
     showToast("Document deleted", "success");
-    await loadDocuments();
   } catch (err) {
+    if (removed) {
+      state.documents.splice(index, 0, removed);
+      renderDocuments();
+    }
     showToast(err.message, "error");
   }
 }
 
 async function handleUpload(e) {
   e.preventDefault();
+  if (state.isUploading) return;
   const file = els.uploadFile.files[0];
   if (!file) return;
+
+  state.isUploading = true;
 
   const title =
     document.getElementById("upload-title").value.trim() || file.name;
@@ -275,8 +338,27 @@ async function handleUpload(e) {
     .filter(Boolean);
 
   const submitBtn = document.getElementById("upload-submit");
-  submitBtn.disabled = true;
+  const originalBtnText = submitBtn.textContent;
+  setButtonLoading(submitBtn, true);
+  setUploadFormDisabled(true);
   els.uploadStatus.textContent = "Requesting upload URL...";
+
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+  const tempId = `temp_${Date.now()}`;
+  const optimisticDoc = {
+    documentId: tempId,
+    title,
+    status: "UPLOADING",
+    mimeType: file.type || "application/octet-stream",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  state.documents.unshift(optimisticDoc);
+  renderDocuments();
 
   try {
     const meta = await apiCall("POST", "/upload", {
@@ -288,6 +370,10 @@ async function handleUpload(e) {
       authors: authors.length ? authors : undefined,
     });
 
+    optimisticDoc.documentId = meta.documentId;
+    optimisticDoc.status = "UPLOADED";
+    renderDocuments();
+
     els.uploadStatus.textContent = "Uploading file...";
     const putRes = await fetch(meta.uploadUrl, {
       method: "PUT",
@@ -296,19 +382,29 @@ async function handleUpload(e) {
     });
     if (!putRes.ok) throw new Error("Failed to upload file to S3");
 
-    els.uploadStatus.textContent = "Ingest queued.";
+    optimisticDoc.status = "QUEUED";
+    renderDocuments();
+
     showToast("Upload complete", "success");
     els.uploadForm.reset();
     els.uploadFileName.classList.add("hidden");
     els.uploadFileName.textContent = "";
     els.extractStatus.classList.add("hidden");
     els.extractStatus.textContent = "";
-    await loadDocuments();
+    await loadDocuments(false);
   } catch (err) {
+    const idx = state.documents.findIndex((d) => d.documentId === tempId);
+    if (idx >= 0) {
+      state.documents.splice(idx, 1);
+      renderDocuments();
+    }
     els.uploadStatus.textContent = "";
     showToast(err.message, "error");
   } finally {
-    submitBtn.disabled = false;
+    state.isUploading = false;
+    setButtonLoading(submitBtn, false, originalBtnText);
+    setUploadFormDisabled(false);
+    schedulePolling();
   }
 }
 
@@ -319,8 +415,10 @@ async function handleQuery(e) {
   if (!query) return;
 
   const submitBtn = document.getElementById("query-submit");
-  submitBtn.disabled = true;
-  els.queryResults.innerHTML = `<p class="text-sm text-slate-500">Searching...</p>`;
+  const originalBtnText = submitBtn.textContent;
+  setButtonLoading(submitBtn, true);
+  els.queryInput.disabled = true;
+  renderQuerySkeleton();
 
   try {
     const data = await apiCall("POST", "/query", { query, topK });
@@ -328,7 +426,8 @@ async function handleQuery(e) {
   } catch (err) {
     els.queryResults.innerHTML = `<p class="text-sm text-rose-600">${escapeHtml(err.message)}</p>`;
   } finally {
-    submitBtn.disabled = false;
+    setButtonLoading(submitBtn, false, originalBtnText);
+    els.queryInput.disabled = false;
   }
 }
 
@@ -390,6 +489,36 @@ function renderQueryResults(data) {
     details.appendChild(summary);
     details.appendChild(body);
     els.queryResults.appendChild(details);
+  }
+}
+
+function setUploadFormDisabled(disabled) {
+  const fields = [
+    "upload-file",
+    "upload-title",
+    "upload-tags",
+    "upload-year",
+    "upload-authors",
+  ];
+  for (const id of fields) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  }
+  if (els.uploadDropZone) {
+    els.uploadDropZone.classList.toggle("pointer-events-none", disabled);
+    els.uploadDropZone.classList.toggle("opacity-50", disabled);
+  }
+}
+
+function setButtonLoading(btn, loading, text = "") {
+  if (!btn) return;
+  if (loading) {
+    btn.disabled = true;
+    btn.dataset.originalText = text || btn.textContent;
+    btn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-current inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 2.042.777 3.899 2.05 5.294l1.95-2.003z"></path></svg> ${text || "Loading..."}`;
+  } else {
+    btn.disabled = false;
+    btn.textContent = text || btn.dataset.originalText || "Submit";
   }
 }
 
@@ -559,7 +688,7 @@ function loadPdfJs() {
 }
 
 async function handleFileSelect(file) {
-  if (!file) return;
+  if (!file || state.isUploading) return;
 
   const dt = new DataTransfer();
   dt.items.add(file);
