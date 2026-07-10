@@ -53,7 +53,7 @@ function signOut() {
   state.token = null;
   state.userId = null;
   localStorage.removeItem("shoo_id_token");
-  updateAuthUI();
+  window.location.reload();
 }
 
 function updateAuthUI() {
@@ -92,7 +92,12 @@ async function apiCall(method, path, body) {
     },
   };
   if (body) options.body = JSON.stringify(body);
-  const res = await fetch(url, options);
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (err) {
+    throw new Error("Network error. Please check your connection.");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401) {
