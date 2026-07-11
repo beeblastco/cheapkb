@@ -1,4 +1,7 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
@@ -67,38 +70,80 @@ export async function handler(event: any) {
   }
   const now = new Date().toISOString();
 
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ConditionExpression: "userId = :userId",
-      ExpressionAttributeValues: {
-        ":s": "QUEUED",
-        ":t": now,
-        ":gsi1pk": "STATUS#QUEUED",
-        ":gsi1sk": now,
-        ":userId": userId,
-      },
-    }),
-  );
-
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: IngestQueueUrl,
-      MessageBody: JSON.stringify({
-        documentId,
-        sourceKey: doc.sourceKey,
-        mimeType: doc.mimeType,
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :queued, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ExpressionAttributeNames: { "#s": "status" },
+        ConditionExpression: "userId = :userId AND #s = :uploaded",
+        ExpressionAttributeValues: {
+          ":queued": "QUEUED",
+          ":uploaded": "UPLOADED",
+          ":t": now,
+          ":gsi1pk": "STATUS#QUEUED",
+          ":gsi1sk": now,
+          ":userId": userId,
+        },
       }),
-    }),
-  );
+    );
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) {
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId,
+          status: doc.status,
+          alreadyStarted: true,
+        }),
+      };
+    }
+    throw error;
+  }
+
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: IngestQueueUrl,
+        MessageBody: JSON.stringify({
+          documentId,
+          sourceKey: doc.sourceKey,
+          mimeType: doc.mimeType,
+        }),
+      }),
+    );
+  } catch (error) {
+    await rollbackQueueStatus(documentId);
+    throw error;
+  }
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId, status: "QUEUED" }),
   };
+}
+
+async function rollbackQueueStatus(documentId: string) {
+  const now = new Date().toISOString();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ExpressionAttributeNames: { "#s": "status" },
+      ConditionExpression: "#s = :queued",
+      ExpressionAttributeValues: {
+        ":queued": "QUEUED",
+        ":uploaded": "UPLOADED",
+        ":t": now,
+        ":gsi1pk": "STATUS#UPLOADED",
+        ":gsi1sk": now,
+      },
+    }),
+  );
 }

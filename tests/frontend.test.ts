@@ -18,6 +18,8 @@ describe("frontend hardening", () => {
     expect(main).toContain('method: "POST"');
     expect(main).toContain("meta.uploadFields");
     expect(main).toContain("meta.maxUploadBytes");
+    expect(main).toContain('apiCall("POST", "/ingest"');
+    expect(main).toContain("UPLOAD_TIMEOUT_MS");
   });
 
   it("keeps optimistic documents while the list index catches up", () => {

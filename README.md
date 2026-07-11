@@ -68,7 +68,11 @@ The locally served Shoo SDK sets `data-shoo-base-url="https://shoo.dev"` so auth
 Frontend assets use root-relative paths so the `/shoo/callback` route loads the same scripts and styles as the site root.
 The frontend keeps a short-lived PKCE backup so callbacks opened in a new browser context can restore the verifier, and failed callbacks return to the sign-in screen.
 
-Browser uploads use presigned S3 POST requests. The storage bucket CORS policy allows POST requests from the deployed frontend, and failed uploads remove their incomplete document record.
+Browser uploads use presigned S3 POST requests. The storage bucket CORS policy allows POST requests from the deployed frontend, and failed uploads remain visible with their error.
+
+After S3 accepts an upload, the browser explicitly starts ingestion through the API. The API and S3 event adapter use the same conditional `UPLOADED` to `QUEUED` transition so retries are safe and only one parser job is queued.
+
+Every production deployment uploads a temporary text document through the real pipeline, waits for `EMBEDDED`, verifies chunk counts, and removes the source to trigger cleanup.
 
 The dark frontend keeps recent pending and failed documents visible while DynamoDB's list index catches up. Pending uploads and failed rows with their failure details survive a refresh for up to 30 minutes and reconcile automatically with the server list.
 
