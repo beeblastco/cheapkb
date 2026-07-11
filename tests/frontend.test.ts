@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
@@ -14,9 +15,26 @@ describe("frontend hardening", () => {
   });
 
   it("fingerprints production JavaScript and CSS assets", () => {
-    const build = fs.readFileSync("web/build.js", "utf8");
-    expect(build).toContain("main.${mainHash}.js");
-    expect(build).toContain("styles.${stylesHash}.css");
+    execFileSync("npm", ["--prefix", "web", "run", "build"], {
+      env: {
+        ...process.env,
+        API_URL: "https://example.execute-api.us-east-1.amazonaws.com/v1",
+      },
+      stdio: "pipe",
+    });
+    const files = fs.readdirSync("web/dist");
+    const mainFile = files.find((file) =>
+      /^main\.[a-f0-9]{12}\.js$/.test(file),
+    );
+    const stylesFile = files.find((file) =>
+      /^styles\.[a-f0-9]{12}\.css$/.test(file),
+    );
+    const html = fs.readFileSync("web/dist/index.html", "utf8");
+
+    expect(mainFile).toBeDefined();
+    expect(stylesFile).toBeDefined();
+    expect(html).toContain(`src="/${mainFile}"`);
+    expect(html).toContain(`href="/${stylesFile}"`);
   });
 
   it("uploads through the constrained POST form", () => {
