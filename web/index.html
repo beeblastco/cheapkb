@@ -106,6 +106,7 @@
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div class="sm:col-span-2">
                       <label
+                        for="upload-title"
                         class="block text-sm font-medium text-zinc-300 mb-1"
                         >Title</label
                       >
@@ -118,6 +119,7 @@
                     </div>
                     <div>
                       <label
+                        for="upload-tags"
                         class="block text-sm font-medium text-zinc-300 mb-1"
                         >Tags</label
                       >
@@ -130,6 +132,7 @@
                     </div>
                     <div>
                       <label
+                        for="upload-year"
                         class="block text-sm font-medium text-zinc-300 mb-1"
                         >Year</label
                       >
@@ -142,6 +145,7 @@
                     </div>
                     <div class="sm:col-span-2">
                       <label
+                        for="upload-authors"
                         class="block text-sm font-medium text-zinc-300 mb-1"
                         >Authors</label
                       >
@@ -191,7 +195,9 @@
                 <h2 class="text-lg font-semibold mb-4">Query</h2>
                 <form id="query-form" class="space-y-3">
                   <div>
-                    <label class="block text-sm font-medium text-zinc-300 mb-1"
+                    <label
+                      for="query-input"
+                      class="block text-sm font-medium text-zinc-300 mb-1"
                       >Question</label
                     >
                     <textarea
@@ -203,7 +209,9 @@
                     ></textarea>
                   </div>
                   <div>
-                    <label class="block text-sm font-medium text-zinc-300 mb-1"
+                    <label
+                      for="query-topk"
+                      class="block text-sm font-medium text-zinc-300 mb-1"
                       >Top K</label
                     >
                     <input
