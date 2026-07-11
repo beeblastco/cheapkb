@@ -104,20 +104,46 @@ export async function handler(event: any) {
     throw error;
   }
 
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: IngestQueueUrl,
-      MessageBody: JSON.stringify({
-        documentId,
-        sourceKey: doc.sourceKey,
-        mimeType: doc.mimeType,
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: IngestQueueUrl,
+        MessageBody: JSON.stringify({
+          documentId,
+          sourceKey: doc.sourceKey,
+          mimeType: doc.mimeType,
+        }),
       }),
-    }),
-  );
+    );
+  } catch (error) {
+    await rollbackQueueStatus(documentId);
+    throw error;
+  }
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId, status: "QUEUED" }),
   };
+}
+
+async function rollbackQueueStatus(documentId: string) {
+  const now = new Date().toISOString();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ExpressionAttributeNames: { "#s": "status" },
+      ConditionExpression: "#s = :queued",
+      ExpressionAttributeValues: {
+        ":queued": "QUEUED",
+        ":uploaded": "UPLOADED",
+        ":t": now,
+        ":gsi1pk": "STATUS#UPLOADED",
+        ":gsi1sk": now,
+      },
+    }),
+  );
 }

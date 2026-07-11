@@ -72,7 +72,7 @@ Browser uploads use presigned S3 POST requests. The storage bucket CORS policy a
 
 After S3 accepts an upload, the browser explicitly starts ingestion through the API. The API and S3 event adapter use the same conditional `UPLOADED` to `QUEUED` transition so retries are safe and only one parser job is queued.
 
-The manual `E2E Production` GitHub Actions workflow uploads a temporary text document through the real production pipeline, waits for `EMBEDDED`, verifies chunk counts, and removes the source to trigger cleanup.
+Every production deployment uploads a temporary text document through the real pipeline, waits for `EMBEDDED`, verifies chunk counts, and removes the source to trigger cleanup.
 
 The dark frontend keeps recent pending and failed documents visible while DynamoDB's list index catches up. Pending uploads and failed rows with their failure details survive a refresh for up to 30 minutes and reconcile automatically with the server list.
 

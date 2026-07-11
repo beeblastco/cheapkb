@@ -72,16 +72,21 @@ export async function handler(event: any) {
       continue;
     }
 
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: IngestQueueUrl,
-        MessageBody: JSON.stringify({
-          documentId,
-          sourceKey: key,
-          mimeType: doc.mimeType ?? "application/octet-stream",
+    try {
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: IngestQueueUrl,
+          MessageBody: JSON.stringify({
+            documentId,
+            sourceKey: key,
+            mimeType: doc.mimeType ?? "application/octet-stream",
+          }),
         }),
-      }),
-    );
+      );
+    } catch (error) {
+      await rollbackQueueStatus(documentId);
+      throw error;
+    }
 
     console.log(`[ingest-adapter] Triggered ingest for ${documentId}`);
   }
@@ -149,6 +154,27 @@ async function queueDocument(documentId: string, now: string) {
     if (error instanceof ConditionalCheckFailedException) return false;
     throw error;
   }
+}
+
+async function rollbackQueueStatus(documentId: string) {
+  const now = new Date().toISOString();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ExpressionAttributeNames: { "#s": "status" },
+      ConditionExpression: "#s = :queued",
+      ExpressionAttributeValues: {
+        ":queued": "QUEUED",
+        ":uploaded": "UPLOADED",
+        ":t": now,
+        ":gsi1pk": "STATUS#UPLOADED",
+        ":gsi1sk": now,
+      },
+    }),
+  );
 }
 
 async function updateFailure(documentId: string, error: string, now: string) {

@@ -45,6 +45,24 @@ describe("S3 ingest adapter", () => {
 
     expect(sqsMock.calls()).toHaveLength(0);
   });
+
+  it("rolls back to uploaded so an S3 retry can enqueue again", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "UPLOADED", mimeType: "text/plain" },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).rejects(new Error("SQS unavailable"));
+
+    await expect(handler(s3Event())).rejects.toThrow("SQS unavailable");
+
+    expect(dynamoMock.commandCalls(UpdateCommand)[1].args[0].input).toEqual(
+      expect.objectContaining({
+        ExpressionAttributeValues: expect.objectContaining({
+          ":uploaded": "UPLOADED",
+        }),
+      }),
+    );
+  });
 });
 
 function s3Event() {
