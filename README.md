@@ -70,6 +70,8 @@ The frontend keeps a short-lived PKCE backup so callbacks opened in a new browse
 
 Browser uploads use presigned S3 POST requests. The storage bucket CORS policy allows POST requests from the deployed frontend, and failed uploads remove their incomplete document record.
 
+The dark frontend keeps a recently uploaded document visible optimistically while DynamoDB's list index catches up. Pending uploads survive a refresh for 30 minutes and reconcile automatically with the server list.
+
 ## Configuration
 
 ```bash
