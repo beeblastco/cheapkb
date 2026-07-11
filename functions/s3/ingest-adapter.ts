@@ -1,4 +1,7 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
@@ -61,7 +64,13 @@ export async function handler(event: any) {
       continue;
     }
 
-    await updateStatus(documentId, "QUEUED", now);
+    const queued = await queueDocument(documentId, now);
+    if (!queued) {
+      console.log(
+        `[ingest-adapter] Document ${documentId} already started, skipping`,
+      );
+      continue;
+    }
 
     await sqs.send(
       new SendMessageCommand({
@@ -116,22 +125,30 @@ async function createMinimalRecord(
   return item;
 }
 
-async function updateStatus(documentId: string, status: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":s": status,
-        ":t": now,
-        ":gsi1pk": `STATUS#${status}`,
-        ":gsi1sk": now,
-      },
-    }),
-  );
+async function queueDocument(documentId: string, now: string) {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :queued, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ExpressionAttributeNames: { "#s": "status" },
+        ConditionExpression: "#s = :uploaded",
+        ExpressionAttributeValues: {
+          ":queued": "QUEUED",
+          ":uploaded": "UPLOADED",
+          ":t": now,
+          ":gsi1pk": "STATUS#QUEUED",
+          ":gsi1sk": now,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
+  }
 }
 
 async function updateFailure(documentId: string, error: string, now: string) {

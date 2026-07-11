@@ -1,4 +1,7 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
@@ -67,23 +70,39 @@ export async function handler(event: any) {
   }
   const now = new Date().toISOString();
 
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ConditionExpression: "userId = :userId",
-      ExpressionAttributeValues: {
-        ":s": "QUEUED",
-        ":t": now,
-        ":gsi1pk": "STATUS#QUEUED",
-        ":gsi1sk": now,
-        ":userId": userId,
-      },
-    }),
-  );
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :queued, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ExpressionAttributeNames: { "#s": "status" },
+        ConditionExpression: "userId = :userId AND #s = :uploaded",
+        ExpressionAttributeValues: {
+          ":queued": "QUEUED",
+          ":uploaded": "UPLOADED",
+          ":t": now,
+          ":gsi1pk": "STATUS#QUEUED",
+          ":gsi1sk": now,
+          ":userId": userId,
+        },
+      }),
+    );
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) {
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId,
+          status: doc.status,
+          alreadyStarted: true,
+        }),
+      };
+    }
+    throw error;
+  }
 
   await sqs.send(
     new SendMessageCommand({

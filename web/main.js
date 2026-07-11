@@ -5,6 +5,8 @@ const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
 const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
 const PENDING_DOCUMENT_MAX_AGE_MS = 30 * 60 * 1000;
+const API_TIMEOUT_MS = 20000;
+const UPLOAD_TIMEOUT_MS = 120000;
 
 const STATUS_COLORS = {
   EMBEDDED: "bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20",
@@ -33,6 +35,30 @@ const ACTIVE_STATUSES = [
   "CHUNKED",
   "EMBEDDING",
 ];
+const STATUS_LABELS = {
+  UPLOADING: "Uploading",
+  UPLOADED: "Uploaded",
+  QUEUED: "Waiting",
+  PARSING: "Reading",
+  PARSED: "Read",
+  CHUNKING: "Splitting",
+  CHUNKED: "Split",
+  EMBEDDING: "Indexing",
+  EMBEDDED: "Ready",
+  FAILED: "Needs attention",
+};
+const STATUS_PROGRESS = {
+  UPLOADING: 12,
+  UPLOADED: 20,
+  QUEUED: 28,
+  PARSING: 42,
+  PARSED: 55,
+  CHUNKING: 68,
+  CHUNKED: 78,
+  EMBEDDING: 88,
+  EMBEDDED: 100,
+};
+const STALLED_AFTER_MS = 5 * 60 * 1000;
 
 const state = {
   token: null,
@@ -150,6 +176,7 @@ async function apiCall(method, path, body) {
   const url = `${API_URL.replace(/\/$/, "")}${path}`;
   const options = {
     method,
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${state.token}`,
       "Content-Type": "application/json",
@@ -160,7 +187,10 @@ async function apiCall(method, path, body) {
   let res;
   try {
     res = await fetch(url, options);
-  } catch {
+  } catch (error) {
+    if (error.name === "TimeoutError") {
+      throw new Error("The server took too long to respond. Please retry.");
+    }
     throw new Error("Network error. Please check your connection.");
   }
 
@@ -181,6 +211,13 @@ function statusClass(status) {
 
 function isActiveStatus(status) {
   return ACTIVE_STATUSES.includes(status);
+}
+
+function isStalled(doc) {
+  const updatedAt = Date.parse(doc.updatedAt ?? doc.createdAt ?? "") || 0;
+  return (
+    isActiveStatus(doc.status) && Date.now() - updatedAt > STALLED_AFTER_MS
+  );
 }
 
 function formatDate(value) {
@@ -208,23 +245,29 @@ function renderDocuments() {
 }
 
 function renderDocumentCard(doc, isOptimistic) {
+  const stalled = isStalled(doc);
   const errorHtml = doc.lastError
-    ? `<p class="text-xs text-rose-600 mt-1 truncate">Error: ${escapeHtml(doc.lastError)}</p>`
+    ? `<p class="mt-2 text-xs text-rose-300">${escapeHtml(doc.lastError)}</p>`
+    : "";
+  const progress = STATUS_PROGRESS[doc.status] ?? 0;
+  const progressHtml = isActiveStatus(doc.status)
+    ? `<div class="mt-3 h-1 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full ${stalled ? "bg-amber-400" : "bg-indigo-400"}" style="width:${progress}%"></div></div>`
     : "";
 
   const reindexButton =
-    !isOptimistic && !isActiveStatus(doc.status)
-      ? `<button data-action="reindex" data-id="${escapeHtml(doc.documentId)}" class="${BTN_WARNING}">Reindex</button>`
+    !isOptimistic && (!isActiveStatus(doc.status) || stalled)
+      ? `<button data-action="reindex" data-id="${escapeHtml(doc.documentId)}" class="${BTN_WARNING}">${stalled ? "Restart" : "Reindex"}</button>`
       : "";
 
   return `
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2">
         <h3 class="font-medium text-zinc-100 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
-        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${escapeHtml(doc.status)}</span>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${escapeHtml(stalled ? "Delayed" : STATUS_LABELS[doc.status] || doc.status)}</span>
       </div>
       <p class="text-xs text-zinc-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${escapeHtml(formatDate(doc.createdAt))}</p>
       ${errorHtml}
+      ${progressHtml}
     </div>
     <div class="flex items-center gap-2">
       <button data-action="view" data-id="${escapeHtml(doc.documentId)}" ${isOptimistic ? "disabled" : ""} class="${BTN_SECONDARY} ${BTN_DISABLED}">View</button>
@@ -547,15 +590,18 @@ async function handleUpload(e) {
     const putRes = await fetch(meta.uploadUrl, {
       method: "POST",
       body: uploadBody,
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
     if (!putRes.ok) throw new Error("Failed to upload file to S3");
 
+    els.uploadStatus.textContent = "Starting indexing…";
+    await apiCall("POST", "/ingest", { documentId: meta.documentId });
     optimisticDoc.status = "QUEUED";
     optimisticDoc.updatedAt = new Date().toISOString();
     writePendingDocuments(state.documents);
     renderDocuments();
 
-    showToast("Upload complete", "success");
+    showToast("Uploaded. Indexing has started.", "success");
     resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
