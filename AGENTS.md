@@ -1,8 +1,8 @@
 The current project name is `cheapkb`. Focus on cheap solution for RAG, priority features and engineering way to make it cheaps, trade off with latency and critical speed (S3 Vector, Lambda batch, SQS, DynamoDB), all covered by the free tier.
 
-IaC using sst. The project is deployed on AWS with account id that start with 95 and end with 09. Always check what is the current aws profile, account id before you do anything.
+IaC using sst. The project is deployed on AWS. Always check what is the current aws profile and account id before you do anything.
 
-Set AWS_PROFILE=95...09 before you interact with the aws cli.
+Set AWS_PROFILE before you interact with the aws cli.
 
 The .env file is used to store the environment variables. The sst.config.ts will load the env variables from the .env file.
 
