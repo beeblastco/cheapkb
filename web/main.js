@@ -325,7 +325,10 @@ function readPendingDocuments() {
     if (!Array.isArray(documents)) return [];
     return documents.filter((doc) => {
       const updatedAt = Date.parse(doc.updatedAt ?? doc.createdAt ?? "") || 0;
-      return Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS;
+      return (
+        !doc.documentId.startsWith("temp_") &&
+        Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS
+      );
     });
   } catch {
     localStorage.removeItem(PENDING_DOCUMENTS_KEY);
@@ -338,8 +341,8 @@ function writePendingDocuments(documents, serverDocuments = []) {
   const pending = documents.filter(
     (doc) =>
       !serverIds.has(doc.documentId) &&
-      (doc.documentId.startsWith("temp_") ||
-        doc.status === "UPLOADING" ||
+      !doc.documentId.startsWith("temp_") &&
+      (doc.status === "UPLOADING" ||
         doc.status === "QUEUED" ||
         doc.status === "FAILED"),
   );
@@ -605,6 +608,7 @@ async function handleUpload(e) {
     resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
+    const failedDocumentId = createdDocumentId ?? tempId;
     if (createdDocumentId) {
       try {
         await apiCall("DELETE", `/documents/${createdDocumentId}`);
@@ -1026,7 +1030,12 @@ async function init() {
 }
 
 if (globalThis.CHEAPKB_TEST) {
-  globalThis.CHEAPKB_TEST_API = { mergeDocuments, setButtonLoading, state };
+  globalThis.CHEAPKB_TEST_API = {
+    mergeDocuments,
+    readPendingDocuments,
+    setButtonLoading,
+    state,
+  };
 } else {
   init();
 }
