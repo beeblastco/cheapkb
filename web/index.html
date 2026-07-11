@@ -17,22 +17,24 @@
     ></script>
     <script src="/config.js"></script>
   </head>
-  <body class="min-h-screen bg-slate-50 text-slate-900">
+  <body class="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
     <div id="app" class="min-h-screen flex flex-col">
-      <header class="bg-white border-b border-slate-200 sticky top-0 z-10">
+      <header
+        class="bg-zinc-950/80 border-b border-zinc-800 sticky top-0 z-10 backdrop-blur-xl"
+      >
         <div
           class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between"
         >
           <div class="flex items-center gap-3">
             <div
-              class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold"
+              class="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center text-white font-bold shadow-lg shadow-indigo-950"
             >
               C
             </div>
             <h1 class="text-xl font-semibold tracking-tight">cheapkb</h1>
           </div>
           <div id="auth-bar" class="flex items-center gap-3">
-            <span id="user-pill" class="hidden text-sm text-slate-600"></span>
+            <span id="user-pill" class="hidden text-sm text-zinc-400"></span>
             <button
               id="signin-btn"
               class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition-colors"
@@ -41,7 +43,7 @@
             </button>
             <button
               id="signout-btn"
-              class="hidden rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              class="hidden rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800 transition-colors"
             >
               Sign out
             </button>
@@ -55,7 +57,7 @@
             <h2 class="text-3xl font-bold tracking-tight sm:text-4xl mb-4">
               Your cheap knowledge base
             </h2>
-            <p class="text-lg text-slate-600 mb-8">
+            <p class="text-lg text-zinc-400 mb-8">
               Sign in to upload documents, manage the ingest pipeline, and query
               vectors.
             </p>
@@ -72,13 +74,13 @@
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div class="lg:col-span-2 space-y-6">
               <div
-                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+                class="bg-zinc-900/70 rounded-2xl border border-zinc-800 p-6 shadow-2xl shadow-black/20"
               >
                 <h2 class="text-lg font-semibold mb-4">Upload document</h2>
                 <form id="upload-form" class="space-y-4">
                   <div
                     id="upload-drop-zone"
-                    class="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center transition-colors"
+                    class="rounded-xl border border-dashed border-zinc-700 bg-zinc-950/60 p-6 text-center transition-colors hover:border-indigo-500 hover:bg-indigo-500/5"
                   >
                     <input
                       id="upload-file"
@@ -88,11 +90,11 @@
                       class="hidden"
                     />
                     <div class="space-y-2">
-                      <p class="text-sm font-medium text-slate-700">
+                      <p class="text-sm font-medium text-zinc-300">
                         Drop a file here, or
                         <span class="text-indigo-600">click to browse</span>
                       </p>
-                      <p class="text-xs text-slate-500">
+                      <p class="text-xs text-zinc-500">
                         PDF, Markdown, or plain text
                       </p>
                     </div>
@@ -104,50 +106,54 @@
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div class="sm:col-span-2">
                       <label
-                        class="block text-sm font-medium text-slate-700 mb-1"
+                        for="upload-title"
+                        class="block text-sm font-medium text-zinc-300 mb-1"
                         >Title</label
                       >
                       <input
                         id="upload-title"
                         type="text"
                         placeholder="My document"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
                     <div>
                       <label
-                        class="block text-sm font-medium text-slate-700 mb-1"
+                        for="upload-tags"
+                        class="block text-sm font-medium text-zinc-300 mb-1"
                         >Tags</label
                       >
                       <input
                         id="upload-tags"
                         type="text"
                         placeholder="research, blog"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
                     <div>
                       <label
-                        class="block text-sm font-medium text-slate-700 mb-1"
+                        for="upload-year"
+                        class="block text-sm font-medium text-zinc-300 mb-1"
                         >Year</label
                       >
                       <input
                         id="upload-year"
                         type="number"
                         placeholder="2024"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
                     <div class="sm:col-span-2">
                       <label
-                        class="block text-sm font-medium text-slate-700 mb-1"
+                        for="upload-authors"
+                        class="block text-sm font-medium text-zinc-300 mb-1"
                         >Authors</label
                       >
                       <input
                         id="upload-authors"
                         type="text"
                         placeholder="Alice, Bob"
-                        class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
                   </div>
@@ -169,27 +175,29 @@
               </div>
 
               <div
-                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+                class="bg-zinc-900/70 rounded-2xl border border-zinc-800 p-6 shadow-2xl shadow-black/20"
               >
                 <h2 class="text-lg font-semibold mb-4">Documents</h2>
-                <div id="documents-empty" class="text-sm text-slate-500 py-4">
-                  No documents yet.
-                </div>
                 <div
-                  id="documents-list"
-                  class="divide-y divide-slate-100"
-                ></div>
+                  id="documents-empty"
+                  class="text-sm text-zinc-500 py-8 text-center"
+                >
+                  Upload your first document to start your knowledge base.
+                </div>
+                <div id="documents-list" class="divide-y divide-zinc-800"></div>
               </div>
             </div>
 
             <div class="space-y-6">
               <div
-                class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm"
+                class="bg-zinc-900/70 rounded-2xl border border-zinc-800 p-6 shadow-2xl shadow-black/20 lg:sticky lg:top-24"
               >
                 <h2 class="text-lg font-semibold mb-4">Query</h2>
                 <form id="query-form" class="space-y-3">
                   <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                    <label
+                      for="query-input"
+                      class="block text-sm font-medium text-zinc-300 mb-1"
                       >Question</label
                     >
                     <textarea
@@ -197,11 +205,13 @@
                       rows="3"
                       placeholder="What is RAG?"
                       required
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     ></textarea>
                   </div>
                   <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1"
+                    <label
+                      for="query-topk"
+                      class="block text-sm font-medium text-zinc-300 mb-1"
                       >Top K</label
                     >
                     <input
@@ -210,7 +220,7 @@
                       value="5"
                       min="1"
                       max="50"
-                      class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      class="w-full rounded-lg border border-zinc-700 bg-zinc-950 text-zinc-100 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                   <button
@@ -232,7 +242,7 @@
           class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
         >
           <div
-            class="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6"
+            class="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6"
           >
             <div class="flex items-center justify-between mb-4">
               <h3 id="detail-title" class="text-lg font-semibold">
@@ -240,7 +250,7 @@
               </h3>
               <button
                 id="detail-close"
-                class="text-slate-400 hover:text-slate-600"
+                class="text-zinc-400 hover:text-zinc-200"
               >
                 &times;
               </button>
@@ -250,8 +260,8 @@
         </section>
       </main>
 
-      <footer class="border-t border-slate-200 bg-white py-6">
-        <div class="max-w-6xl mx-auto px-4 text-center text-sm text-slate-500">
+      <footer class="border-t border-zinc-800 bg-zinc-950/70 py-6">
+        <div class="max-w-6xl mx-auto px-4 text-center text-sm text-zinc-600">
           cheapkb &middot; cost-effective serverless RAG
         </div>
       </footer>

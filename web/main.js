@@ -3,26 +3,26 @@ const SHOO_CALLBACK_PATH = "/shoo/callback";
 const SHOO_PKCE_KEY = "shoo_pkce";
 const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
 const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
+const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
+const PENDING_DOCUMENT_MAX_AGE_MS = 30 * 60 * 1000;
 
 const STATUS_COLORS = {
-  EMBEDDED: "bg-emerald-100 text-emerald-700",
-  FAILED: "bg-rose-100 text-rose-700",
-  UPLOADED: "bg-amber-100 text-amber-700",
-  QUEUED: "bg-amber-100 text-amber-700",
-  PARSING: "bg-amber-100 text-amber-700",
-  PARSED: "bg-amber-100 text-amber-700",
-  CHUNKING: "bg-amber-100 text-amber-700",
-  CHUNKED: "bg-amber-100 text-amber-700",
-  EMBEDDING: "bg-amber-100 text-amber-700",
+  EMBEDDED: "bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20",
+  FAILED: "bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/20",
+  UPLOADED: "bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/20",
+  QUEUED: "bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/20",
+  PARSING: "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/20",
+  PARSED: "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/20",
+  CHUNKING: "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/20",
+  CHUNKED: "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/20",
+  EMBEDDING: "bg-indigo-500/10 text-indigo-300 ring-1 ring-indigo-500/20",
 };
 
 const BTN_BASE = "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors";
-const BTN_SECONDARY = `${BTN_BASE} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`;
-const BTN_DANGER = `${BTN_BASE} bg-rose-50 text-rose-700 hover:bg-rose-100`;
-const BTN_WARNING = `${BTN_BASE} bg-amber-50 text-amber-700 hover:bg-amber-100`;
+const BTN_SECONDARY = `${BTN_BASE} border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800`;
+const BTN_DANGER = `${BTN_BASE} bg-rose-500/10 text-rose-400 hover:bg-rose-500/20`;
+const BTN_WARNING = `${BTN_BASE} bg-amber-500/10 text-amber-300 hover:bg-amber-500/20`;
 const BTN_DISABLED = "disabled:opacity-50 disabled:cursor-not-allowed";
-
-const SPINNER_SVG = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-current inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 2.042.777 3.899 2.05 5.294l1.95-2.003z"></path></svg>`;
 
 const ACTIVE_STATUSES = [
   "UPLOADED",
@@ -131,6 +131,8 @@ function updateAuthUI() {
     els.userPill.classList.remove("hidden");
     els.guestState.classList.add("hidden");
     els.appState.classList.remove("hidden");
+    state.documents = readPendingDocuments();
+    renderDocuments();
     loadDocuments(true);
   } else {
     state.token = null;
@@ -174,7 +176,7 @@ async function apiCall(method, path, body) {
 }
 
 function statusClass(status) {
-  return STATUS_COLORS[status] ?? "bg-slate-100 text-slate-700";
+  return STATUS_COLORS[status] ?? "bg-zinc-800 text-zinc-300";
 }
 
 function isActiveStatus(status) {
@@ -218,10 +220,10 @@ function renderDocumentCard(doc, isOptimistic) {
   return `
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2">
-        <h3 class="font-medium text-slate-900 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
+        <h3 class="font-medium text-zinc-100 truncate">${escapeHtml(doc.title || doc.documentId)}</h3>
         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(doc.status)}">${escapeHtml(doc.status)}</span>
       </div>
-      <p class="text-xs text-slate-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${escapeHtml(formatDate(doc.createdAt))}</p>
+      <p class="text-xs text-zinc-500 mt-1 truncate">${escapeHtml(doc.mimeType || "")} &middot; ${escapeHtml(formatDate(doc.createdAt))}</p>
       ${errorHtml}
     </div>
     <div class="flex items-center gap-2">
@@ -230,6 +232,79 @@ function renderDocumentCard(doc, isOptimistic) {
       <button data-action="delete" data-id="${escapeHtml(doc.documentId)}" ${isOptimistic ? "disabled" : ""} class="${BTN_DANGER} ${BTN_DISABLED}">Delete</button>
     </div>
   `;
+}
+
+function mergeDocuments(serverDocuments) {
+  const merged = [];
+  const serverById = new Map(
+    serverDocuments.map((doc) => [doc.documentId, doc]),
+  );
+
+  for (const doc of state.documents) {
+    const serverDoc = serverById.get(doc.documentId);
+    if (serverDoc) {
+      const localUpdatedAt =
+        Date.parse(doc.updatedAt ?? doc.createdAt ?? "") || 0;
+      const serverUpdatedAt =
+        Date.parse(serverDoc.updatedAt ?? serverDoc.createdAt ?? "") || 0;
+      const keepLocalFailure =
+        doc.status === "FAILED" && localUpdatedAt > serverUpdatedAt;
+      merged.push(keepLocalFailure ? { ...serverDoc, ...doc } : serverDoc);
+      serverById.delete(doc.documentId);
+      continue;
+    }
+    const updatedAt = Date.parse(doc.updatedAt ?? doc.createdAt ?? "") || 0;
+    const isRecent = Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS;
+    if (
+      doc.documentId.startsWith("temp_") ||
+      doc.status === "UPLOADING" ||
+      doc.status === "FAILED" ||
+      (isActiveStatus(doc.status) && isRecent)
+    ) {
+      merged.push(doc);
+    }
+  }
+
+  for (const doc of serverById.values()) {
+    merged.push(doc);
+  }
+
+  const documents = merged.sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  );
+  writePendingDocuments(documents, serverDocuments);
+  return documents;
+}
+
+function readPendingDocuments() {
+  try {
+    const documents = JSON.parse(localStorage.getItem(PENDING_DOCUMENTS_KEY));
+    if (!Array.isArray(documents)) return [];
+    return documents.filter((doc) => {
+      const updatedAt = Date.parse(doc.updatedAt ?? doc.createdAt ?? "") || 0;
+      return Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS;
+    });
+  } catch {
+    localStorage.removeItem(PENDING_DOCUMENTS_KEY);
+    return [];
+  }
+}
+
+function writePendingDocuments(documents, serverDocuments = []) {
+  const serverIds = new Set(serverDocuments.map((doc) => doc.documentId));
+  const pending = documents.filter(
+    (doc) =>
+      !serverIds.has(doc.documentId) &&
+      (doc.documentId.startsWith("temp_") ||
+        doc.status === "UPLOADING" ||
+        doc.status === "QUEUED" ||
+        doc.status === "FAILED"),
+  );
+  if (pending.length) {
+    localStorage.setItem(PENDING_DOCUMENTS_KEY, JSON.stringify(pending));
+  } else {
+    localStorage.removeItem(PENDING_DOCUMENTS_KEY);
+  }
 }
 
 function handleDocumentAction(e) {
@@ -254,12 +329,12 @@ function renderDocumentsSkeleton() {
       "py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-pulse";
     card.innerHTML = `
       <div class="flex-1 min-w-0 space-y-2">
-        <div class="h-4 w-1/3 rounded bg-slate-200"></div>
-        <div class="h-3 w-1/2 rounded bg-slate-200"></div>
+        <div class="h-4 w-1/3 rounded bg-zinc-800"></div>
+        <div class="h-3 w-1/2 rounded bg-zinc-800"></div>
       </div>
       <div class="flex items-center gap-2">
-        <div class="h-7 w-12 rounded bg-slate-200"></div>
-        <div class="h-7 w-14 rounded bg-slate-200"></div>
+        <div class="h-7 w-12 rounded bg-zinc-800"></div>
+        <div class="h-7 w-14 rounded bg-zinc-800"></div>
       </div>
     `;
     els.documentsList.appendChild(card);
@@ -271,11 +346,11 @@ function renderQuerySkeleton() {
   for (let i = 0; i < 3; i++) {
     const row = document.createElement("div");
     row.className =
-      "rounded-lg border border-slate-200 bg-slate-50 p-3 animate-pulse space-y-2";
+      "rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 animate-pulse space-y-2";
     row.innerHTML = `
-      <div class="h-4 w-1/3 rounded bg-slate-200"></div>
-      <div class="h-3 w-full rounded bg-slate-200"></div>
-      <div class="h-3 w-5/6 rounded bg-slate-200"></div>
+      <div class="h-4 w-1/3 rounded bg-zinc-800"></div>
+      <div class="h-3 w-full rounded bg-zinc-800"></div>
+      <div class="h-3 w-5/6 rounded bg-zinc-800"></div>
     `;
     els.queryResults.appendChild(row);
   }
@@ -287,7 +362,7 @@ async function loadDocuments(showSkeleton = true) {
   }
   try {
     const data = await apiCall("GET", "/documents");
-    state.documents = data.documents || [];
+    state.documents = mergeDocuments(data.documents || []);
     renderDocuments();
     schedulePolling();
   } catch (err) {
@@ -307,7 +382,7 @@ function schedulePolling() {
 async function pollDocuments() {
   try {
     const data = await apiCall("GET", "/documents");
-    state.documents = data.documents || [];
+    state.documents = mergeDocuments(data.documents || []);
     renderDocuments();
     if (!state.documents.some((d) => isActiveStatus(d.status))) {
       clearPollTimer();
@@ -376,6 +451,7 @@ async function deleteDocument(id) {
   if (!confirm("Delete this document and all its data?")) return;
   const index = state.documents.findIndex((d) => d.documentId === id);
   const removed = index >= 0 ? state.documents.splice(index, 1)[0] : null;
+  writePendingDocuments(state.documents);
   renderDocuments();
   try {
     await apiCall("DELETE", `/documents/${id}`);
@@ -383,6 +459,7 @@ async function deleteDocument(id) {
   } catch (err) {
     if (removed) {
       state.documents.splice(index, 0, removed);
+      writePendingDocuments(state.documents);
       renderDocuments();
     }
     showToast(err.message, "error");
@@ -439,6 +516,7 @@ async function handleUpload(e) {
     updatedAt: new Date().toISOString(),
   };
   state.documents.unshift(optimisticDoc);
+  writePendingDocuments(state.documents);
   renderDocuments();
 
   let createdDocumentId = null;
@@ -451,6 +529,8 @@ async function handleUpload(e) {
 
     createdDocumentId = meta.documentId;
     optimisticDoc.documentId = meta.documentId;
+    optimisticDoc.updatedAt = new Date().toISOString();
+    writePendingDocuments(state.documents);
     renderDocuments();
 
     els.uploadStatus.textContent = "Uploading file...";
@@ -471,6 +551,8 @@ async function handleUpload(e) {
     if (!putRes.ok) throw new Error("Failed to upload file to S3");
 
     optimisticDoc.status = "QUEUED";
+    optimisticDoc.updatedAt = new Date().toISOString();
+    writePendingDocuments(state.documents);
     renderDocuments();
 
     showToast("Upload complete", "success");
@@ -486,9 +568,24 @@ async function handleUpload(e) {
       (d) => d.documentId === tempId || d.documentId === createdDocumentId,
     );
     if (idx >= 0) {
-      state.documents.splice(idx, 1);
-      renderDocuments();
+      state.documents[idx] = {
+        ...state.documents[idx],
+        documentId: failedDocumentId,
+        status: "FAILED",
+        lastError: err.message,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      state.documents.unshift({
+        ...optimisticDoc,
+        documentId: failedDocumentId,
+        status: "FAILED",
+        lastError: err.message,
+        updatedAt: new Date().toISOString(),
+      });
     }
+    renderDocuments();
+    writePendingDocuments(state.documents);
     els.uploadStatus.textContent = "";
     showToast(err.message, "error");
   } finally {
@@ -572,19 +669,19 @@ function renderQueryGroup(g) {
 
   const details = document.createElement("details");
   details.className =
-    "rounded-lg border border-slate-200 bg-slate-50 overflow-hidden";
+    "rounded-lg border border-zinc-800 bg-zinc-950/50 overflow-hidden";
   details.open = true;
 
   const summary = document.createElement("summary");
   summary.className =
-    "cursor-pointer list-none bg-slate-100 px-3 py-2 flex items-center justify-between hover:bg-slate-200 transition-colors";
+    "cursor-pointer list-none bg-zinc-900 px-3 py-2 flex items-center justify-between hover:bg-zinc-800 transition-colors";
   summary.innerHTML = `
-    <span class="text-sm font-medium text-slate-800">${escapeHtml(g.doc.title || g.doc.documentId)}</span>
+    <span class="text-sm font-medium text-zinc-200">${escapeHtml(g.doc.title || g.doc.documentId)}</span>
     <span class="text-xs text-slate-500">best score ${g.maxScore.toFixed(3)} · ${g.chunks.length} chunk${g.chunks.length === 1 ? "" : "s"}</span>
   `;
 
   const body = document.createElement("div");
-  body.className = "divide-y divide-slate-200";
+  body.className = "divide-y divide-zinc-800";
   for (const c of g.chunks) {
     body.appendChild(renderQueryChunk(c));
   }
@@ -601,7 +698,7 @@ function renderQueryChunk(c) {
     <div class="flex items-center justify-between mb-1">
       <span class="text-xs text-slate-500">score ${(c.score || 0).toFixed(3)}</span>
     </div>
-    <p class="text-sm text-slate-800">${escapeHtml(c.text || "")}</p>
+    <p class="text-sm text-zinc-300">${escapeHtml(c.text || "")}</p>
   `;
   return row;
 }
@@ -629,10 +726,12 @@ function setButtonLoading(btn, loading, text = "") {
   if (loading) {
     btn.disabled = true;
     btn.dataset.originalText = text || btn.textContent;
-    btn.innerHTML = `${SPINNER_SVG} ${text || "Loading..."}`;
+    btn.textContent = text || "Working…";
+    btn.classList.add("is-working");
   } else {
     btn.disabled = false;
     btn.textContent = text || btn.dataset.originalText || "Submit";
+    btn.classList.remove("is-working");
   }
 }
 
@@ -880,7 +979,11 @@ async function init() {
   updateAuthUI();
 }
 
-init();
+if (globalThis.CHEAPKB_TEST) {
+  globalThis.CHEAPKB_TEST_API = { mergeDocuments, setButtonLoading, state };
+} else {
+  init();
+}
 
 async function handleSignInCallback() {
   if (window.location.pathname !== SHOO_CALLBACK_PATH) return false;
