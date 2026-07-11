@@ -979,7 +979,11 @@ async function init() {
   updateAuthUI();
 }
 
-init();
+if (globalThis.CHEAPKB_TEST) {
+  globalThis.CHEAPKB_TEST_API = { mergeDocuments, setButtonLoading, state };
+} else {
+  init();
+}
 
 async function handleSignInCallback() {
   if (window.location.pathname !== SHOO_CALLBACK_PATH) return false;

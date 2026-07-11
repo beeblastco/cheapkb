@@ -36,7 +36,7 @@ button:active:not(:disabled) {
   height: 0.35rem;
   margin-left: 0.55rem;
   border-radius: 9999px;
-  background: currentColor;
+  background: currentcolor;
   animation: working-pulse 900ms ease-in-out infinite alternate;
 }
 
