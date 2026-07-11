@@ -50,6 +50,8 @@ Full API reference: [docs/API.md](docs/API.md)
 
 A vanilla JS + TailwindCSS management UI lives in `web/`. It is deployed to an **S3 bucket** and served through a **CloudFront distribution** via `sst.aws.StaticSite`.
 
+Production JavaScript and CSS filenames include a content hash so CloudFront's immutable caching cannot keep browsers on an older frontend after deployment.
+
 ```bash
 cd web
 API_URL=https://<your-api-url>/v1 npm run dev   # builds and serves on http://localhost:5173
