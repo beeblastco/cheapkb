@@ -508,7 +508,11 @@ async function handleUpload(e) {
     resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
-    const failedDocumentId = createdDocumentId ?? tempId;
+    if (createdDocumentId) {
+      try {
+        await apiCall("DELETE", `/documents/${createdDocumentId}`);
+      } catch {}
+    }
     const idx = state.documents.findIndex(
       (d) => d.documentId === tempId || d.documentId === createdDocumentId,
     );
