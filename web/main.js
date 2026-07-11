@@ -1,4 +1,8 @@
 const API_URL = globalThis.APP_CONFIG?.apiUrl ?? "";
+const SHOO_CALLBACK_PATH = "/shoo/callback";
+const SHOO_PKCE_KEY = "shoo_pkce";
+const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
+const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
 
 const STATUS_COLORS = {
   EMBEDDED: "bg-emerald-100 text-emerald-700",
@@ -73,12 +77,26 @@ function getIdentity() {
   }
 }
 
-function startSignIn() {
+async function startSignIn() {
   if (typeof window.Shoo === "undefined") {
     showToast("Shoo SDK not loaded", "error");
     return;
   }
-  window.Shoo.startSignIn();
+  try {
+    const bundle = await window.Shoo.createPkceBundle();
+    localStorage.setItem(
+      SHOO_PKCE_BACKUP_KEY,
+      JSON.stringify({
+        state: bundle.state,
+        verifier: bundle.verifier,
+        createdAt: Date.now(),
+      }),
+    );
+    await window.Shoo.startSignIn({ bundle });
+  } catch {
+    localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+    showToast("Could not start sign-in. Please try again.", "error");
+  }
 }
 
 function signOut() {
@@ -89,6 +107,7 @@ function signOut() {
   state.userId = null;
   clearPollTimer();
   localStorage.removeItem("shoo_id_token");
+  localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
   window.location.reload();
 }
 
@@ -422,6 +441,7 @@ async function handleUpload(e) {
   state.documents.unshift(optimisticDoc);
   renderDocuments();
 
+  let createdDocumentId = null;
   try {
     const meta = await apiCall("POST", "/upload", {
       filename: file.name,
@@ -429,8 +449,8 @@ async function handleUpload(e) {
       ...formValues,
     });
 
+    createdDocumentId = meta.documentId;
     optimisticDoc.documentId = meta.documentId;
-    optimisticDoc.status = "UPLOADED";
     renderDocuments();
 
     els.uploadStatus.textContent = "Uploading file...";
@@ -457,7 +477,14 @@ async function handleUpload(e) {
     resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
-    const idx = state.documents.findIndex((d) => d.documentId === tempId);
+    if (createdDocumentId) {
+      try {
+        await apiCall("DELETE", `/documents/${createdDocumentId}`);
+      } catch {}
+    }
+    const idx = state.documents.findIndex(
+      (d) => d.documentId === tempId || d.documentId === createdDocumentId,
+    );
     if (idx >= 0) {
       state.documents.splice(idx, 1);
       renderDocuments();
@@ -828,11 +855,13 @@ function initUploadDropZone() {
   });
 }
 
-function init() {
+async function init() {
   if (!API_URL) {
     els.guestState.innerHTML = `<p class="text-rose-600">API URL is not configured. Please check globalThis.APP_CONFIG.</p>`;
     return;
   }
+
+  if (await handleSignInCallback()) return;
 
   els.signinBtn.addEventListener("click", startSignIn);
   els.heroSigninBtn.addEventListener("click", startSignIn);
@@ -852,3 +881,44 @@ function init() {
 }
 
 init();
+
+async function handleSignInCallback() {
+  if (window.location.pathname !== SHOO_CALLBACK_PATH) return false;
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("code") || !params.has("state")) return false;
+
+  restorePkceVerifier(params.get("state"));
+  try {
+    await window.Shoo.handleCallback();
+    localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+    return true;
+  } catch {
+    sessionStorage.removeItem(SHOO_PKCE_KEY);
+    localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+    window.history.replaceState(null, "", "/");
+    showToast("Sign-in expired. Please sign in again.", "error");
+    return false;
+  }
+}
+
+function restorePkceVerifier(callbackState) {
+  if (sessionStorage.getItem(SHOO_PKCE_KEY)) return;
+  const rawBackup = localStorage.getItem(SHOO_PKCE_BACKUP_KEY);
+  if (!rawBackup) return;
+
+  try {
+    const backup = JSON.parse(rawBackup);
+    const isValid =
+      backup.state === callbackState &&
+      typeof backup.verifier === "string" &&
+      typeof backup.createdAt === "number" &&
+      Date.now() - backup.createdAt <= SHOO_PKCE_MAX_AGE_MS;
+    if (isValid) {
+      sessionStorage.setItem(SHOO_PKCE_KEY, rawBackup);
+    } else {
+      localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+    }
+  } catch {
+    localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+  }
+}

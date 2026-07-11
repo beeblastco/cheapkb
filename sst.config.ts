@@ -71,6 +71,19 @@ export default $config({
       },
     });
 
+    new pulumiAws.s3.BucketCorsConfigurationV2("StorageCors", {
+      bucket: storage.name,
+      corsRules: [
+        {
+          allowedHeaders: ["*"],
+          allowedMethods: ["POST"],
+          allowedOrigins: [web.url],
+          exposeHeaders: ["ETag"],
+          maxAgeSeconds: 3600,
+        },
+      ],
+    });
+
     new pulumiAws.s3.BucketLifecycleConfigurationV2("StorageLifecycle", {
       bucket: storage.name,
       rules: [
