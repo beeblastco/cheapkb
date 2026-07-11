@@ -232,6 +232,37 @@ function renderDocumentCard(doc, isOptimistic) {
   `;
 }
 
+function mergeDocuments(serverDocuments) {
+  const merged = [];
+  const serverById = new Map(
+    serverDocuments.map((doc) => [doc.documentId, doc]),
+  );
+
+  for (const doc of state.documents) {
+    const serverDoc = serverById.get(doc.documentId);
+    if (serverDoc) {
+      merged.push(serverDoc);
+      serverById.delete(doc.documentId);
+      continue;
+    }
+    if (
+      doc.documentId.startsWith("temp_") ||
+      doc.status === "UPLOADING" ||
+      doc.status === "FAILED"
+    ) {
+      merged.push(doc);
+    }
+  }
+
+  for (const doc of serverById.values()) {
+    merged.push(doc);
+  }
+
+  return merged.sort((a, b) =>
+    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+  );
+}
+
 function handleDocumentAction(e) {
   const button = e.target.closest("[data-action]");
   if (!button) return;
@@ -287,7 +318,7 @@ async function loadDocuments(showSkeleton = true) {
   }
   try {
     const data = await apiCall("GET", "/documents");
-    state.documents = data.documents || [];
+    state.documents = mergeDocuments(data.documents || []);
     renderDocuments();
     schedulePolling();
   } catch (err) {
@@ -307,7 +338,7 @@ function schedulePolling() {
 async function pollDocuments() {
   try {
     const data = await apiCall("GET", "/documents");
-    state.documents = data.documents || [];
+    state.documents = mergeDocuments(data.documents || []);
     renderDocuments();
     if (!state.documents.some((d) => isActiveStatus(d.status))) {
       clearPollTimer();
@@ -477,18 +508,28 @@ async function handleUpload(e) {
     resetUploadForm();
     await loadDocuments(false);
   } catch (err) {
-    if (createdDocumentId) {
-      try {
-        await apiCall("DELETE", `/documents/${createdDocumentId}`);
-      } catch {}
-    }
+    const failedDocumentId = createdDocumentId ?? tempId;
     const idx = state.documents.findIndex(
       (d) => d.documentId === tempId || d.documentId === createdDocumentId,
     );
     if (idx >= 0) {
-      state.documents.splice(idx, 1);
-      renderDocuments();
+      state.documents[idx] = {
+        ...state.documents[idx],
+        documentId: failedDocumentId,
+        status: "FAILED",
+        lastError: err.message,
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      state.documents.unshift({
+        ...optimisticDoc,
+        documentId: failedDocumentId,
+        status: "FAILED",
+        lastError: err.message,
+        updatedAt: new Date().toISOString(),
+      });
     }
+    renderDocuments();
     els.uploadStatus.textContent = "";
     showToast(err.message, "error");
   } finally {

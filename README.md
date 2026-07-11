@@ -68,7 +68,7 @@ The locally served Shoo SDK sets `data-shoo-base-url="https://shoo.dev"` so auth
 Frontend assets use root-relative paths so the `/shoo/callback` route loads the same scripts and styles as the site root.
 The frontend keeps a short-lived PKCE backup so callbacks opened in a new browser context can restore the verifier, and failed callbacks return to the sign-in screen.
 
-Browser uploads use presigned S3 POST requests. The storage bucket CORS policy allows POST requests from the deployed frontend, and failed uploads remove their incomplete document record.
+Browser uploads use presigned S3 POST requests. The storage bucket CORS policy allows POST requests from the deployed frontend, and failed uploads stay visible in the UI with an error instead of disappearing.
 
 ## Configuration
 
