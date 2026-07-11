@@ -759,8 +759,8 @@ function applyExtractedMetadata(metadata) {
 
 async function loadPdfJs() {
   if (window.pdfjsLib) return;
-  const pdfjsLib = await import("./pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.mjs";
+  const pdfjsLib = await import("/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.mjs";
   window.pdfjsLib = pdfjsLib;
 }
 
