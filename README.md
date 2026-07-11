@@ -64,6 +64,7 @@ API_URL=https://<your-api-url>/v1 npm run dev   # builds and serves on http://lo
 5. Each Lambda verifies the token server-side before processing
 
 The deployed site URL is injected into Lambda functions as `APP_ORIGIN`, so the JWT audience always matches the frontend origin.
+The locally served Shoo SDK sets `data-shoo-base-url="https://shoo.dev"` so authorization requests use Shoo instead of the CloudFront origin.
 
 ## Configuration
 
