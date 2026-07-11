@@ -11,7 +11,9 @@ export default $config({
       providers: {
         aws: {
           // Use profile locally; CI uses AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars
-          ...(!process.env.AWS_ACCESS_KEY_ID && { profile: process.env.AWS_PROFILE }),
+          ...(!process.env.AWS_ACCESS_KEY_ID && {
+            profile: process.env.AWS_PROFILE,
+          }),
         },
       },
       removal: input?.stage === PROD_STAGE ? "retain" : "remove",
