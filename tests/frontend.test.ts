@@ -61,6 +61,39 @@ describe("frontend hardening", () => {
     });
   });
 
+  it("discards abandoned temporary upload rows after refresh", () => {
+    const main = fs.readFileSync("web/main.js", "utf8");
+    const dom = new JSDOM("", {
+      runScripts: "outside-only",
+      url: "https://cheapkb.test",
+    });
+    Object.assign(dom.window, {
+      APP_CONFIG: { apiUrl: "https://api.cheapkb.test" },
+      CHEAPKB_TEST: true,
+    });
+    dom.window.localStorage.setItem(
+      "cheapkb_pending_documents",
+      JSON.stringify([
+        {
+          documentId: "temp_1",
+          status: "UPLOADING",
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+    dom.window.eval(main);
+
+    const api = (dom.window as any).CHEAPKB_TEST_API;
+    expect(api.readPendingDocuments()).toEqual([]);
+  });
+
+  it("defines the fallback document ID before upload failure recovery", () => {
+    const main = fs.readFileSync("web/main.js", "utf8");
+    expect(main).toContain(
+      "const failedDocumentId = createdDocumentId ?? tempId",
+    );
+  });
+
   it("shows calm button progress and supports reduced motion", () => {
     const main = fs.readFileSync("web/main.js", "utf8");
     const css = fs.readFileSync("web/input.css", "utf8");
