@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const apiUrl = process.env.API_URL ?? "";
 const apiOrigin = apiUrl ? new URL(apiUrl).origin : "";
 const distDir = path.join(__dirname, "dist");
+const builtStylesPath = path.join(__dirname, ".styles.css");
 const pdfBuildDir = path.join(__dirname, "node_modules", "pdfjs-dist", "build");
 const SHOO_URL = "https://shoo.dev/shoo.js";
 const SHOO_SHA384 =
@@ -15,12 +16,6 @@ const SHOO_SHA384 =
 
 fs.rmSync(distDir, { recursive: true, force: true });
 fs.mkdirSync(distDir, { recursive: true });
-
-const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-fs.writeFileSync(
-  path.join(distDir, "index.html"),
-  indexHtml.replace(/__API_ORIGIN__/g, apiOrigin),
-);
 
 fs.writeFileSync(
   path.join(distDir, "config.js"),
@@ -56,6 +51,29 @@ const minifiedJs = await minify(mainJs, {
 if (!minifiedJs.code) {
   throw new Error("Failed to minify main.js");
 }
-fs.writeFileSync(path.join(distDir, "main.js"), minifiedJs.code);
+const mainHash = createHash("sha256")
+  .update(minifiedJs.code)
+  .digest("hex")
+  .slice(0, 12);
+const styles = fs.readFileSync(builtStylesPath);
+const stylesHash = createHash("sha256")
+  .update(styles)
+  .digest("hex")
+  .slice(0, 12);
+const mainFile = `main.${mainHash}.js`;
+const stylesFile = `styles.${stylesHash}.css`;
+
+fs.writeFileSync(path.join(distDir, mainFile), minifiedJs.code);
+fs.writeFileSync(path.join(distDir, stylesFile), styles);
+fs.rmSync(builtStylesPath, { force: true });
+
+const indexHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+fs.writeFileSync(
+  path.join(distDir, "index.html"),
+  indexHtml
+    .replace(/__API_ORIGIN__/g, apiOrigin)
+    .replace("styles.css", stylesFile)
+    .replace("main.js", mainFile),
+);
 
 console.log("Built dist/ with API_URL:", apiUrl);

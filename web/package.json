@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.js && BROWSERSLIST_IGNORE_OLD_DATA=true tailwindcss -i ./input.css -o ./dist/styles.css --content ./index.html ./main.js --minify",
-    "dev": "node build.js && cd dist && python3 -m http.server 5173"
+    "build": "BROWSERSLIST_IGNORE_OLD_DATA=true tailwindcss -i ./input.css -o ./.styles.css --content ./index.html ./main.js --minify && node build.js",
+    "dev": "npm run build && cd dist && python3 -m http.server 5173"
   },
   "devDependencies": {
     "pdfjs-dist": "^6.1.200",

@@ -13,6 +13,12 @@ describe("frontend hardening", () => {
     expect(main).not.toContain("cdnjs.cloudflare.com");
   });
 
+  it("fingerprints production JavaScript and CSS assets", () => {
+    const build = fs.readFileSync("web/build.js", "utf8");
+    expect(build).toContain("main.${mainHash}.js");
+    expect(build).toContain("styles.${stylesHash}.css");
+  });
+
   it("uploads through the constrained POST form", () => {
     const main = fs.readFileSync("web/main.js", "utf8");
     expect(main).toContain('method: "POST"');
