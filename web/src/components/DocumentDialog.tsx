@@ -1,5 +1,3 @@
-import type { Document } from "@/lib/types";
-import { formatDate } from "@/lib/client";
 import {
   Dialog,
   DialogContent,
@@ -7,6 +5,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { formatDate } from "@/lib/client";
+import type { Document } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function DocumentDialog({

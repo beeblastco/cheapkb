@@ -1,17 +1,17 @@
-import { useState, useRef } from "react";
-import { LoaderCircle, Plus, Upload } from "lucide-react";
-import type { Document, Toast } from "@/lib/types";
+import { Field } from "@/components/Field";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   extractMetadata,
   getFileMimeType,
   uploadDocument,
   writePendingDocuments,
 } from "@/lib/client";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Field } from "@/components/Field";
+import type { Document, Toast } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { LoaderCircle, Plus, Upload } from "lucide-react";
+import { useRef, useState } from "react";
 
 function splitList(value: string): string[] | undefined {
   const items = value

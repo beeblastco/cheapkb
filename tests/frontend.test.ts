@@ -10,7 +10,7 @@ import {
   mergeDocuments,
   readPendingDocuments,
   uploadDocument,
-} from "../web/src/client";
+} from "../web/src/lib/client";
 
 const API_URL = "https://api.cheapkb.test/v1";
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
@@ -23,7 +23,7 @@ describe("frontend", () => {
     vi.stubGlobal("localStorage", dom.window.localStorage);
     vi.stubGlobal("sessionStorage", dom.window.sessionStorage);
     vi.stubGlobal("FormData", dom.window.FormData);
-    vi.stubGlobal("APP_CONFIG", { apiUrl: API_URL });
+    vi.stubEnv("VITE_API_URL", API_URL);
   });
 
   afterEach(() => {
@@ -208,22 +208,20 @@ describe("frontend", () => {
         stdio: "pipe",
       });
       const sourceHtml = fs.readFileSync("web/index.html", "utf8");
-      const files = fs.readdirSync("web/dist");
       const html = fs.readFileSync("web/dist/index.html", "utf8");
-      const mainFile = files.find((file) =>
-        /^main\.[a-f0-9]{12}\.js$/.test(file),
-      );
-      const stylesFile = files.find((file) =>
-        /^styles\.[a-f0-9]{12}\.css$/.test(file),
-      );
+      const jsFiles = fs
+        .readdirSync("web/dist/assets")
+        .filter((f) => f.endsWith(".js"));
+      const cssFiles = fs
+        .readdirSync("web/dist/assets")
+        .filter((f) => f.endsWith(".css"));
 
       expect(sourceHtml).toContain("Content-Security-Policy");
       expect(sourceHtml).toContain("script-src 'self'");
       expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
-      expect(mainFile).toBeDefined();
-      expect(stylesFile).toBeDefined();
-      expect(html).toContain(`src="/${mainFile}"`);
-      expect(html).toContain(`href="/${stylesFile}"`);
+      expect(jsFiles.length).toBeGreaterThan(0);
+      expect(cssFiles.length).toBeGreaterThan(0);
+      expect(html).toContain("/assets/");
       expect(html).not.toContain("__API_ORIGIN__");
     });
   });

@@ -1,12 +1,12 @@
-import { useState } from "react";
-import { LoaderCircle, Search } from "lucide-react";
-import type { QueryResult } from "@/lib/types";
-import { groupResults } from "@/lib/client";
+import { Field } from "@/components/Field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Field } from "@/components/Field";
+import { groupResults } from "@/lib/client";
+import type { QueryResult } from "@/lib/types";
+import { LoaderCircle, Search } from "lucide-react";
+import { useState } from "react";
 
 export function QueryCard({
   request,

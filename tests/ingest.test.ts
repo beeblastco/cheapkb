@@ -1,5 +1,5 @@
-import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,

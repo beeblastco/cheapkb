@@ -1,10 +1,10 @@
-import { FileText, LoaderCircle } from "lucide-react";
-import type { Document } from "@/lib/types";
-import { isActiveStatus } from "@/lib/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { isActiveStatus } from "@/lib/client";
+import type { Document } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { FileText, LoaderCircle } from "lucide-react";
 
 const STATUS_LABELS: Record<string, string> = {
   UPLOADING: "Uploading",

@@ -1,6 +1,6 @@
-import { LogOut } from "lucide-react";
-import type { ShooIdentity } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import type { ShooIdentity } from "@/lib/types";
+import { LogOut } from "lucide-react";
 
 export function Header({
   identity,

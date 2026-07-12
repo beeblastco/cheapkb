@@ -1,5 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Document, ShooIdentity, Toast as ToastType } from "@/lib/types";
+import { DocumentDialog } from "@/components/DocumentDialog";
+import { DocumentsCard } from "@/components/DocumentsCard";
+import { Header } from "@/components/Header";
+import { QueryCard } from "@/components/QueryCard";
+import { Toast } from "@/components/Toast";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { UploadCard } from "@/components/UploadCard";
 import {
   apiCall,
   getIdentity,
@@ -11,14 +17,8 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Header } from "@/components/Header";
-import { UploadCard } from "@/components/UploadCard";
-import { DocumentsCard } from "@/components/DocumentsCard";
-import { QueryCard } from "@/components/QueryCard";
-import { DocumentDialog } from "@/components/DocumentDialog";
-import { Toast } from "@/components/Toast";
+import type { Document, ShooIdentity, Toast as ToastType } from "@/lib/types";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 function Guest({
   onSignIn,
