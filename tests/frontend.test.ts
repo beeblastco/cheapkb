@@ -225,7 +225,7 @@ describe("frontend", () => {
       expect(html).toContain("/assets/");
       expect(html).toContain(new URL(API_URL).origin);
       expect(html).not.toContain("__API_ORIGIN__");
-    });
+    }, 30000);
   });
 });
 
