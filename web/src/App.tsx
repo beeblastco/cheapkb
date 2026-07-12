@@ -30,10 +30,7 @@ function Guest({ onSignIn }: { onSignIn: () => void }) {
         <main className="flex flex-1 items-center justify-center px-5 py-16">
           <Card className="w-full max-w-sm border-border/80 bg-card/70 shadow-2xl shadow-black/20">
             <CardContent className="px-6 text-center">
-              <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
-                cheapkb
-              </p>
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+              <h1 className="text-2xl font-semibold tracking-tight">
                 Your documents, searchable.
               </h1>
               <p className="mt-2 text-sm leading-6 text-muted-foreground">
