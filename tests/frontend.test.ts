@@ -175,6 +175,23 @@ describe("frontend", () => {
 
       expect(readPendingDocuments()).toEqual([]);
     });
+
+    it("removes a stale local failure that no longer exists on the server", () => {
+      const documents = mergeDocuments(
+        [
+          {
+            documentId: "doc-deleted",
+            status: "FAILED",
+            lastError: "Failed to fetch",
+            updatedAt: "2020-01-01T00:00:00.000Z",
+          },
+        ],
+        [],
+      );
+
+      expect(documents).toEqual([]);
+      expect(localStorage.getItem(PENDING_DOCUMENTS_KEY)).toBeNull();
+    });
   });
 
   describe("document helpers", () => {

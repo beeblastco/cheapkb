@@ -79,7 +79,7 @@ After S3 accepts an upload, the browser explicitly starts ingestion through the 
 
 Every production deployment uploads a temporary text document through the real pipeline, waits for `EMBEDDED`, verifies chunk counts, and removes the source to trigger cleanup.
 
-The dark frontend keeps recent pending and failed documents visible while DynamoDB's list index catches up. Pending uploads and failed rows with their failure details survive a refresh for up to 30 minutes and reconcile automatically with the server list.
+The dark frontend keeps recent pending and failed documents visible while DynamoDB's list index catches up. Pending uploads survive a refresh for up to 30 minutes, while local-only failed rows expire after 5 minutes. Server-side failures remain visible until they are retried or deleted.
 
 ## Configuration
 

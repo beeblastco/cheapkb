@@ -6,6 +6,7 @@ const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
 const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
 const PENDING_DOCUMENT_MAX_AGE_MS = 30 * 60 * 1000;
+const FAILED_DOCUMENT_MAX_AGE_MS = 5 * 60 * 1000;
 const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
 const ACTIVE_STATUSES = [
@@ -186,12 +187,17 @@ export function mergeDocuments(
     }
     const updatedAt =
       Date.parse(document.updatedAt ?? document.createdAt ?? "") || 0;
-    const isRecent = Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS;
+    const maxAge =
+      document.status === "FAILED"
+        ? FAILED_DOCUMENT_MAX_AGE_MS
+        : PENDING_DOCUMENT_MAX_AGE_MS;
+    const isRecent = Date.now() - updatedAt < maxAge;
     if (
-      document.documentId.startsWith("temp_") ||
-      document.status === "UPLOADING" ||
-      document.status === "FAILED" ||
-      (isActiveStatus(document.status) && isRecent)
+      isRecent &&
+      (document.documentId.startsWith("temp_") ||
+        document.status === "UPLOADING" ||
+        document.status === "FAILED" ||
+        isActiveStatus(document.status))
     ) {
       merged.push(document);
     }
@@ -214,9 +220,13 @@ export function readPendingDocuments(): Document[] {
     return documents.filter((document: Document) => {
       const updatedAt =
         Date.parse(document.updatedAt ?? document.createdAt ?? "") || 0;
+      const maxAge =
+        document.status === "FAILED"
+          ? FAILED_DOCUMENT_MAX_AGE_MS
+          : PENDING_DOCUMENT_MAX_AGE_MS;
       return (
         !document.documentId.startsWith("temp_") &&
-        Date.now() - updatedAt < PENDING_DOCUMENT_MAX_AGE_MS
+        Date.now() - updatedAt < maxAge
       );
     });
   } catch {
