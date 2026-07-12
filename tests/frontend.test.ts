@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   apiCall,
   getFileMimeType,
+  getUserProfile,
   groupResults,
   mergeDocuments,
   readPendingDocuments,
@@ -62,6 +63,28 @@ describe("frontend", () => {
       await expect(apiCall("", "GET", "/documents")).rejects.toThrow(
         "Not signed in",
       );
+    });
+
+    it("reads the signed profile used by the user menu", () => {
+      const payload = Buffer.from(
+        JSON.stringify({
+          email: "user@example.com",
+          name: "Cheap KB",
+          picture: "https://example.com/avatar.png",
+        }),
+      ).toString("base64url");
+
+      expect(
+        getUserProfile({
+          token: `header.${payload}.signature`,
+          userId: "ps-1",
+        }),
+      ).toEqual({
+        email: "user@example.com",
+        initials: "CK",
+        name: "Cheap KB",
+        picture: "https://example.com/avatar.png",
+      });
     });
   });
 
@@ -231,6 +254,14 @@ describe("frontend", () => {
         stdio: "pipe",
       });
       const sourceHtml = fs.readFileSync("web/index.html", "utf8");
+      const uploadSource = fs.readFileSync(
+        "web/src/components/UploadCard.tsx",
+        "utf8",
+      );
+      const documentsSource = fs.readFileSync(
+        "web/src/components/DocumentsCard.tsx",
+        "utf8",
+      );
       const html = fs.readFileSync("web/dist/index.html", "utf8");
       const jsFiles = fs
         .readdirSync("web/dist/assets")
@@ -242,7 +273,12 @@ describe("frontend", () => {
       expect(sourceHtml).toContain("Content-Security-Policy");
       expect(sourceHtml).toContain("script-src 'self'");
       expect(sourceHtml).toContain("script-src 'self' https://shoo.dev");
+      expect(sourceHtml).toContain("https://lh3.googleusercontent.com");
       expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
+      expect(uploadSource).toContain("multiple");
+      expect(uploadSource).toContain('window.addEventListener("drop"');
+      expect(uploadSource).toContain("Sync all");
+      expect(documentsSource).not.toContain("STATUS_LABELS");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);
       expect(html).toContain("/assets/");

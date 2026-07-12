@@ -40,6 +40,25 @@ export interface ShooIdentity {
   userId?: string;
 }
 
+export interface UserProfile {
+  email: string;
+  initials: string;
+  name: string;
+  picture: string;
+}
+
+export interface UploadQueueItem {
+  authors: string;
+  error: string;
+  file: File;
+  id: string;
+  progress: string;
+  state: "EXTRACTING" | "READY" | "SYNCING" | "FAILED";
+  tags: string;
+  title: string;
+  year: string;
+}
+
 export interface Toast {
   message: string;
   type: "info" | "error" | "success";

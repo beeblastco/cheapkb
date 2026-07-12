@@ -1,4 +1,10 @@
-import type { Document, QueryResult, ResultGroup, ShooIdentity } from "./types";
+import type {
+  Document,
+  QueryResult,
+  ResultGroup,
+  ShooIdentity,
+  UserProfile,
+} from "./types";
 
 const SHOO_CALLBACK_PATH = "/shoo/callback";
 const SHOO_PKCE_KEY = "shoo_pkce";
@@ -52,6 +58,40 @@ export function getIdentity(): ShooIdentity | null {
     return window.Shoo?.getIdentity() ?? null;
   } catch {
     return null;
+  }
+}
+
+export function getUserProfile(identity: ShooIdentity): UserProfile {
+  const fallback = identity.userId || "User";
+  try {
+    const payload = identity.token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = atob(
+      normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="),
+    );
+    const bytes = Uint8Array.from(decoded, (character) =>
+      character.charCodeAt(0),
+    );
+    const claims = JSON.parse(new TextDecoder().decode(bytes));
+    const name = String(claims.name || claims.email || fallback);
+    return {
+      email: String(claims.email || ""),
+      initials: name
+        .split(/\s+/)
+        .map((part: string) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase(),
+      name,
+      picture: String(claims.picture || ""),
+    };
+  } catch {
+    return {
+      email: "",
+      initials: fallback.slice(0, 2).toUpperCase(),
+      name: fallback,
+      picture: "",
+    };
   }
 }
 

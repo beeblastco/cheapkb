@@ -1,11 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/ibm-plex-sans";
+@import "@fontsource/ibm-plex-mono/400.css";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --color-background: oklch(0.147 0.004 49.25);
   --color-foreground: oklch(0.985 0.001 106.423);
   --color-card: oklch(0.216 0.006 56.043);
@@ -58,5 +60,17 @@
 
   body {
     @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(
+        circle at 20% -10%,
+        oklch(0.473 0.137 46.201 / 8%),
+        transparent 28rem
+      ),
+      linear-gradient(oklch(1 0 0 / 1.5%) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(1 0 0 / 1.5%) 1px, transparent 1px);
+    background-size:
+      auto,
+      48px 48px,
+      48px 48px;
   }
 }

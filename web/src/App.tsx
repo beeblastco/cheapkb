@@ -2,9 +2,9 @@ import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
-import { Toast } from "@/components/Toast";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { UploadCard } from "@/components/UploadCard";
 import {
   apiCall,
@@ -17,35 +17,37 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, ShooIdentity, Toast as ToastType } from "@/lib/types";
+import type { Document, ShooIdentity } from "@/lib/types";
+import { LogIn } from "lucide-react";
+import { toast } from "sonner";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function Guest({
-  onSignIn,
-  toast,
-}: {
-  onSignIn: () => void;
-  toast: ToastType | null;
-}) {
+function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
-    <div className="flex min-h-screen flex-col">
-      <Header onSignIn={onSignIn} />
-      <main className="flex flex-1 items-center justify-center px-6 py-24">
-        <div className="max-w-xl text-center">
-          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-            A small knowledge base that stays small.
-          </h1>
-          <p className="mx-auto mt-5 max-w-md text-base leading-7 text-zinc-500">
-            Upload documents, follow the ingest pipeline, and query your vectors
-            without the infrastructure tax.
-          </p>
-          <Button className="mt-8 cursor-pointer" onClick={onSignIn}>
-            Sign in with Google
-          </Button>
-        </div>
-      </main>
-      <Toast toast={toast} />
-    </div>
+    <TooltipProvider>
+      <div className="flex min-h-screen flex-col">
+        <Header />
+        <main className="flex flex-1 items-center justify-center px-5 py-16">
+          <Card className="w-full max-w-sm border-border/80 bg-card/70 shadow-2xl shadow-black/20">
+            <CardContent className="px-6 text-center">
+              <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
+                cheapkb
+              </p>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+                Your documents, searchable.
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Sign in to sync sources, follow ingestion, and search your
+                private knowledge base.
+              </p>
+              <Button className="mt-6 w-full" onClick={onSignIn}>
+                <LogIn /> Continue with Google
+              </Button>
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -57,7 +59,6 @@ function App() {
     string,
     unknown
   > | null>(null);
-  const [toast, setToast] = useState<ToastType | null>(null);
   const documentsRef = useRef(documents);
 
   useEffect(() => {
@@ -65,9 +66,8 @@ function App() {
   }, [documents]);
 
   const notify = useCallback(
-    (message: string, type: ToastType["type"] = "info") => {
-      setToast({ message, type });
-      window.setTimeout(() => setToast(null), 3000);
+    (message: string, type: "info" | "error" | "success" = "info") => {
+      toast[type](message);
     },
     [],
   );
@@ -161,7 +161,6 @@ function App() {
   }
 
   async function deleteDocument(documentId: string) {
-    if (!window.confirm("Delete this document and all its data?")) return;
     const previous = documentsRef.current;
     const next = previous.filter(
       (document) => document.documentId !== documentId,
@@ -179,57 +178,41 @@ function App() {
   }
 
   if (!identity?.token) {
-    return <Guest onSignIn={signIn} toast={toast} />;
+    return <Guest onSignIn={signIn} />;
   }
 
   return (
-    <div className="min-h-screen">
-      <Header identity={identity} onSignOut={signOut} />
-      <main className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-        <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Workspace
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
-              Knowledge, ready when you need it.
-            </h1>
-            <p className="mt-2 max-w-xl text-sm text-zinc-500">
-              Upload a source, watch it index, then search it from one quiet
-              workspace.
-            </p>
+    <TooltipProvider>
+      <div className="min-h-screen">
+        <Header identity={identity} onSignOut={signOut} />
+        <main className="mx-auto w-full max-w-[1600px] px-3 py-3 sm:px-4 lg:px-6">
+          <div className="grid items-start gap-3 lg:grid-cols-12">
+            <div className="space-y-3 lg:col-span-8 xl:col-span-9">
+              <UploadCard
+                token={identity.token}
+                setDocuments={setDocuments}
+                loadDocuments={loadDocuments}
+                notify={notify}
+              />
+              <DocumentsCard
+                documents={documents}
+                loading={loadingDocuments}
+                onDelete={deleteDocument}
+                onReindex={reindexDocument}
+                onView={showDocument}
+              />
+            </div>
+            <div className="lg:col-span-4 xl:col-span-3">
+              <QueryCard request={request} onView={showDocument} />
+            </div>
           </div>
-          <Badge className="w-fit">
-            {documents.length} document{documents.length === 1 ? "" : "s"}
-          </Badge>
-        </div>
-
-        <div className="grid gap-6 lg:grid-cols-12">
-          <div className="space-y-6 lg:col-span-8">
-            <UploadCard
-              token={identity.token}
-              documents={documents}
-              setDocuments={setDocuments}
-              loadDocuments={loadDocuments}
-              notify={notify}
-            />
-            <DocumentsCard
-              documents={documents}
-              loading={loadingDocuments}
-              onDelete={deleteDocument}
-              onReindex={reindexDocument}
-              onView={showDocument}
-            />
-          </div>
-          <QueryCard request={request} />
-        </div>
-      </main>
-      <DocumentDialog
-        data={selectedDocument}
-        onClose={() => setSelectedDocument(null)}
-      />
-      <Toast toast={toast} />
-    </div>
+        </main>
+        <DocumentDialog
+          data={selectedDocument}
+          onClose={() => setSelectedDocument(null)}
+        />
+      </div>
+    </TooltipProvider>
   );
 }
 
