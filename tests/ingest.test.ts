@@ -16,6 +16,7 @@ vi.mock("../functions/utils", () => ({
 }));
 
 import { handler } from "../functions/admin/ingest";
+import { jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 const sqsMock = mockClient(SQSClient);
@@ -36,10 +37,7 @@ describe("manual ingest authorization", () => {
       },
     });
 
-    const response = await handler({
-      headers: {},
-      body: JSON.stringify({ documentId: "doc-1" }),
-    });
+    const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
 
     expect(response.statusCode).toBe(404);
     expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
@@ -59,10 +57,7 @@ describe("manual ingest authorization", () => {
     dynamoMock.on(UpdateCommand).resolves({});
     sqsMock.on(SendMessageCommand).resolves({});
 
-    const response = await handler({
-      headers: {},
-      body: JSON.stringify({ documentId: "doc-1" }),
-    });
+    const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
 
     expect(response.statusCode).toBe(200);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
@@ -84,10 +79,7 @@ describe("manual ingest authorization", () => {
         new ConditionalCheckFailedException({ $metadata: {}, message: "race" }),
       );
 
-    const response = await handler({
-      headers: {},
-      body: JSON.stringify({ documentId: "doc-1" }),
-    });
+    const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body).alreadyStarted).toBe(true);
@@ -108,10 +100,7 @@ describe("manual ingest authorization", () => {
     sqsMock.on(SendMessageCommand).rejects(new Error("SQS unavailable"));
 
     await expect(
-      handler({
-        headers: {},
-        body: JSON.stringify({ documentId: "doc-1" }),
-      }),
+      handler(jsonApiEvent({ documentId: "doc-1" })),
     ).rejects.toThrow("SQS unavailable");
 
     expect(dynamoMock.commandCalls(UpdateCommand)[1].args[0].input).toEqual(

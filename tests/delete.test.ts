@@ -24,6 +24,7 @@ vi.mock("../functions/utils", () => ({
 }));
 
 import { handler } from "../functions/admin/delete";
+import { apiEvent } from "./helpers/events";
 
 const s3Mock = mockClient(S3Client);
 const vectorsMock = mockClient(S3VectorsClient);
@@ -50,7 +51,9 @@ describe("document deletion", () => {
     vectorsMock.on(DeleteVectorsCommand).rejects(new Error("vector failure"));
     s3Mock.on(ListObjectVersionsCommand).resolves({});
 
-    const response = await handler(deleteEvent());
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
 
     expect(response.statusCode).toBe(500);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
@@ -64,7 +67,9 @@ describe("document deletion", () => {
     });
     s3Mock.on(DeleteObjectsCommand).resolves({});
 
-    const response = await handler(deleteEvent());
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
 
     expect(response.statusCode).toBe(200);
     for (const call of s3Mock.commandCalls(DeleteObjectsCommand)) {
@@ -75,7 +80,3 @@ describe("document deletion", () => {
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(1);
   });
 });
-
-function deleteEvent(): any {
-  return { headers: {}, pathParameters: { id: "doc-1" } };
-}

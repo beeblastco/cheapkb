@@ -1,149 +1,237 @@
-import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import { JSDOM } from "jsdom";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("frontend hardening", () => {
-  it("uses local executable assets and a restrictive CSP", () => {
-    const html = fs.readFileSync("web/index.html", "utf8");
-    const main = fs.readFileSync("web/main.js", "utf8");
+import {
+  apiCall,
+  getFileMimeType,
+  groupResults,
+  mergeDocuments,
+  readPendingDocuments,
+  uploadDocument,
+} from "../web/src/client";
 
-    expect(html).toContain("Content-Security-Policy");
-    expect(html).toContain("script-src 'self'");
-    expect(html).not.toContain("cdn.tailwindcss.com");
-    expect(main).not.toContain("cdnjs.cloudflare.com");
+const API_URL = "https://api.cheapkb.test/v1";
+const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
+
+describe("frontend", () => {
+  beforeEach(() => {
+    const dom = new JSDOM("", { url: "https://cheapkb.test" });
+    vi.stubGlobal("window", dom.window);
+    vi.stubGlobal("document", dom.window.document);
+    vi.stubGlobal("localStorage", dom.window.localStorage);
+    vi.stubGlobal("sessionStorage", dom.window.sessionStorage);
+    vi.stubGlobal("FormData", dom.window.FormData);
+    vi.stubGlobal("APP_CONFIG", { apiUrl: API_URL });
   });
 
-  it("fingerprints production JavaScript and CSS assets", () => {
-    execFileSync("npm", ["--prefix", "web", "run", "build"], {
-      env: {
-        ...process.env,
-        API_URL: "https://example.execute-api.us-east-1.amazonaws.com/v1",
-      },
-      stdio: "pipe",
-    });
-    const files = fs.readdirSync("web/dist");
-    const mainFile = files.find((file) =>
-      /^main\.[a-f0-9]{12}\.js$/.test(file),
-    );
-    const stylesFile = files.find((file) =>
-      /^styles\.[a-f0-9]{12}\.css$/.test(file),
-    );
-    const html = fs.readFileSync("web/dist/index.html", "utf8");
-
-    expect(mainFile).toBeDefined();
-    expect(stylesFile).toBeDefined();
-    expect(html).toContain(`src="/${mainFile}"`);
-    expect(html).toContain(`href="/${stylesFile}"`);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
-  it("uploads through the constrained POST form", () => {
-    const main = fs.readFileSync("web/main.js", "utf8");
-    expect(main).toContain('method: "POST"');
-    expect(main).toContain("meta.uploadFields");
-    expect(main).toContain("meta.maxUploadBytes");
-    expect(main).toContain('apiCall("POST", "/ingest"');
-    expect(main).toContain("UPLOAD_TIMEOUT_MS");
+  describe("API client", () => {
+    it("sends authenticated JSON requests to the configured API", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ documents: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        apiCall("token", "POST", "/query", { q: "cheap RAG" }),
+      ).resolves.toEqual({
+        documents: [],
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${API_URL}/query`,
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ q: "cheap RAG" }),
+          headers: expect.objectContaining({ Authorization: "Bearer token" }),
+        }),
+      );
+    });
+
+    it("rejects requests without an identity token", async () => {
+      await expect(apiCall("", "GET", "/documents")).rejects.toThrow(
+        "Not signed in",
+      );
+    });
   });
 
-  it("keeps optimistic documents while the list index catches up", () => {
-    const main = fs.readFileSync("web/main.js", "utf8");
-    const dom = new JSDOM("", {
-      runScripts: "outside-only",
-      url: "https://cheapkb.test",
+  describe("upload flow", () => {
+    it("uploads through the constrained POST form and starts ingestion", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            documentId: "doc-1",
+            maxUploadBytes: 100,
+            uploadUrl: "https://storage.example.com",
+            uploadFields: { key: "raw/doc-1/file.txt" },
+          }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 204 }))
+        .mockResolvedValueOnce(jsonResponse({ queued: true }));
+      vi.stubGlobal("fetch", fetchMock);
+      const file = new window.File(["hello"], "file.txt", {
+        type: "text/plain",
+      });
+
+      await expect(
+        uploadDocument("token", file, { title: "File" }, vi.fn()),
+      ).resolves.toBe("doc-1");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "https://storage.example.com",
+        expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        3,
+        `${API_URL}/ingest`,
+        expect.objectContaining({
+          body: JSON.stringify({ documentId: "doc-1" }),
+        }),
+      );
     });
-    const now = new Date().toISOString();
-    const older = new Date(Date.now() - 1000).toISOString();
-    Object.assign(dom.window, {
-      APP_CONFIG: { apiUrl: "https://api.cheapkb.test" },
-      CHEAPKB_TEST: true,
+
+    it("deletes the document record when storage rejects the upload", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            documentId: "doc-1",
+            maxUploadBytes: 100,
+            uploadUrl: "https://storage.example.com",
+            uploadFields: {},
+          }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 500 }))
+        .mockResolvedValueOnce(jsonResponse({ deleted: true }));
+      vi.stubGlobal("fetch", fetchMock);
+      const file = new window.File(["hello"], "file.txt", {
+        type: "text/plain",
+      });
+
+      await expect(
+        uploadDocument("token", file, {}, vi.fn()),
+      ).rejects.toMatchObject({
+        message: "Failed to upload file to S3",
+        documentId: "doc-1",
+      });
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        3,
+        `${API_URL}/documents/doc-1`,
+        expect.objectContaining({ method: "DELETE" }),
+      );
     });
-    dom.window.eval(main);
-    const api = (dom.window as any).CHEAPKB_TEST_API;
-    api.state.documents = [
-      {
-        documentId: "doc_1",
+  });
+
+  describe("document state", () => {
+    it("keeps a newer local failure while the server index catches up", () => {
+      const serverTime = "2026-01-01T00:00:00.000Z";
+      const localTime = "2026-01-01T00:00:01.000Z";
+
+      const documents = mergeDocuments(
+        [
+          {
+            documentId: "doc-1",
+            status: "FAILED",
+            lastError: "Upload interrupted",
+            updatedAt: localTime,
+          },
+        ],
+        [{ documentId: "doc-1", status: "UPLOADED", updatedAt: serverTime }],
+      );
+
+      expect(documents[0]).toMatchObject({
         status: "FAILED",
         lastError: "Upload interrupted",
-        createdAt: older,
-        updatedAt: now,
-      },
-    ];
+      });
+    });
 
-    const documents = api.mergeDocuments([
-      {
-        documentId: "doc_1",
-        status: "UPLOADED",
-        createdAt: older,
-        updatedAt: older,
-      },
-    ]);
+    it("discards temporary and expired pending documents", () => {
+      localStorage.setItem(
+        PENDING_DOCUMENTS_KEY,
+        JSON.stringify([
+          {
+            documentId: "temp_1",
+            status: "UPLOADING",
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            documentId: "doc-old",
+            status: "FAILED",
+            updatedAt: "2020-01-01T00:00:00.000Z",
+          },
+        ]),
+      );
 
-    expect(documents[0]).toMatchObject({
-      status: "FAILED",
-      lastError: "Upload interrupted",
+      expect(readPendingDocuments()).toEqual([]);
     });
   });
 
-  it("discards abandoned temporary upload rows after refresh", () => {
-    const main = fs.readFileSync("web/main.js", "utf8");
-    const dom = new JSDOM("", {
-      runScripts: "outside-only",
-      url: "https://cheapkb.test",
+  describe("document helpers", () => {
+    it("infers supported MIME types from file extensions", () => {
+      expect(getFileMimeType({ name: "notes.md", type: "" })).toBe(
+        "text/markdown",
+      );
+      expect(getFileMimeType({ name: "report.pdf", type: "" })).toBe(
+        "application/pdf",
+      );
     });
-    Object.assign(dom.window, {
-      APP_CONFIG: { apiUrl: "https://api.cheapkb.test" },
-      CHEAPKB_TEST: true,
-    });
-    dom.window.localStorage.setItem(
-      "cheapkb_pending_documents",
-      JSON.stringify([
-        {
-          documentId: "temp_1",
-          status: "UPLOADING",
-          updatedAt: new Date().toISOString(),
-        },
-      ]),
-    );
-    dom.window.eval(main);
 
-    const api = (dom.window as any).CHEAPKB_TEST_API;
-    expect(api.readPendingDocuments()).toEqual([]);
+    it("groups query results by document and highest score", () => {
+      const groups = groupResults([
+        { documentId: "doc-low", score: 0.2 },
+        { documentId: "doc-high", score: 0.8 },
+        { documentId: "doc-high", score: 0.6 },
+      ]);
+
+      expect(groups.map((group) => group.document.documentId)).toEqual([
+        "doc-high",
+        "doc-low",
+      ]);
+      expect(groups[0]).toMatchObject({ maxScore: 0.8 });
+      expect(groups[0].chunks).toHaveLength(2);
+    });
   });
 
-  it("defines the fallback document ID before upload failure recovery", () => {
-    const main = fs.readFileSync("web/main.js", "utf8");
-    expect(main).toContain(
-      "const failedDocumentId = createdDocumentId ?? tempId",
-    );
-  });
+  describe("production build", () => {
+    it("uses a restrictive CSP and fingerprints local assets", () => {
+      execFileSync("npm", ["--prefix", "web", "run", "build"], {
+        env: { ...process.env, API_URL },
+        stdio: "pipe",
+      });
+      const sourceHtml = fs.readFileSync("web/index.html", "utf8");
+      const files = fs.readdirSync("web/dist");
+      const html = fs.readFileSync("web/dist/index.html", "utf8");
+      const mainFile = files.find((file) =>
+        /^main\.[a-f0-9]{12}\.js$/.test(file),
+      );
+      const stylesFile = files.find((file) =>
+        /^styles\.[a-f0-9]{12}\.css$/.test(file),
+      );
 
-  it("shows calm button progress and supports reduced motion", () => {
-    const main = fs.readFileSync("web/main.js", "utf8");
-    const css = fs.readFileSync("web/input.css", "utf8");
-    const dom = new JSDOM('<button id="submit">Upload</button>', {
-      runScripts: "outside-only",
-      url: "https://cheapkb.test",
+      expect(sourceHtml).toContain("Content-Security-Policy");
+      expect(sourceHtml).toContain("script-src 'self'");
+      expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
+      expect(mainFile).toBeDefined();
+      expect(stylesFile).toBeDefined();
+      expect(html).toContain(`src="/${mainFile}"`);
+      expect(html).toContain(`href="/${stylesFile}"`);
+      expect(html).not.toContain("__API_ORIGIN__");
     });
-    Object.assign(dom.window, {
-      APP_CONFIG: { apiUrl: "https://api.cheapkb.test" },
-      CHEAPKB_TEST: true,
-    });
-    dom.window.eval(main);
-    const api = (dom.window as any).CHEAPKB_TEST_API;
-    const button = dom.window.document.getElementById(
-      "submit",
-    ) as HTMLButtonElement;
-
-    api.setButtonLoading(button, true);
-    expect(button.disabled).toBe(true);
-    expect(button.classList.contains("is-working")).toBe(true);
-    expect(button.querySelector("svg")).toBeNull();
-
-    api.setButtonLoading(button, false);
-    expect(button.disabled).toBe(false);
-    expect(button.textContent).toBe("Upload");
-    expect(css).toContain("@media (prefers-reduced-motion: reduce)");
-    expect(css).toContain("animation-duration: 0.01ms !important");
   });
 });
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}

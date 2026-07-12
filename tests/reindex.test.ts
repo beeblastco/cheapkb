@@ -22,6 +22,7 @@ vi.mock("../functions/utils", () => ({
 }));
 
 import { handler } from "../functions/admin/reindex";
+import { apiEvent } from "./helpers/events";
 
 const s3Mock = mockClient(S3Client);
 const sqsMock = mockClient(SQSClient);
@@ -44,10 +45,9 @@ describe("reindex migration", () => {
     });
     sqsMock.on(SendMessageBatchCommand).resolves({});
 
-    const response = await handler({
-      headers: {},
-      pathParameters: { id: "doc-1" },
-    });
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body).restartFrom).toBe("EMBEDDING");

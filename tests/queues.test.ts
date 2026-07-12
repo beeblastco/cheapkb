@@ -18,6 +18,7 @@ vi.mock("sst", () => ({
 
 import { handler as embed } from "../functions/embed/index";
 import { handler as parse } from "../functions/parse/index";
+import { sqsEvent } from "./helpers/events";
 
 const s3Mock = mockClient(S3Client);
 const dynamoMock = mockClient(DynamoDBDocumentClient);
@@ -29,7 +30,7 @@ describe("SQS partial failures", () => {
   });
 
   it("returns malformed parse records to SQS", async () => {
-    const result = await parse(sqsEvent("parse-1", "not-json", "1"));
+    const result = await parse(sqsEvent("parse-1", "not-json"));
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "parse-1" }]);
   });
 
@@ -45,7 +46,7 @@ describe("SQS partial failures", () => {
           documentId: "doc-1",
           s3ChunkKey: "chunks/doc-1/chunk.json",
         }),
-        "2",
+        2,
       ),
     );
 
@@ -57,26 +58,3 @@ describe("SQS partial failures", () => {
     );
   });
 });
-
-function sqsEvent(messageId: string, body: string, attempt: string): any {
-  return {
-    Records: [
-      {
-        messageId,
-        receiptHandle: "receipt",
-        body,
-        attributes: {
-          ApproximateReceiveCount: attempt,
-          SentTimestamp: "0",
-          SenderId: "sender",
-          ApproximateFirstReceiveTimestamp: "0",
-        },
-        messageAttributes: {},
-        md5OfBody: "hash",
-        eventSource: "aws:sqs",
-        eventSourceARN: "arn:aws:sqs:us-east-1:123456789012:queue",
-        awsRegion: "us-east-1",
-      },
-    ],
-  };
-}

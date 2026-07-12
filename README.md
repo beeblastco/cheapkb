@@ -48,7 +48,9 @@ Full API reference: [docs/API.md](docs/API.md)
 
 ## Frontend
 
-A vanilla JS + TailwindCSS management UI lives in `web/`. It is deployed to an **S3 bucket** and served through a **CloudFront distribution** via `sst.aws.StaticSite`.
+A compact React + shadcn/ui management UI lives in `web/`. It is deployed to an **S3 bucket** and served through a **CloudFront distribution** via `sst.aws.StaticSite`.
+
+The frontend keeps its source small: `App.jsx` contains the feature UI, `client.js` contains browser and API logic, and `components/ui` contains only the shadcn components downloaded by the CLI. All styling uses Tailwind utilities, and the accessible dialog uses Radix UI.
 
 Production JavaScript and CSS filenames include a content hash so CloudFront's immutable caching cannot keep browsers on an older frontend after deployment.
 
@@ -96,6 +98,8 @@ APP_ORIGIN=http://localhost:5173  # Your app origin for shoo JWT audience
 Vector dimension is **1024** with cosine distance.
 
 ## Test
+
+Tests use shared typed API Gateway, S3, and SQS event fixtures. Backend tests cover tenant boundaries, pipeline retries, cleanup ordering, rate limits, and infrastructure safeguards; frontend tests cover browser behavior and the production build.
 
 ```bash
 npm ci --legacy-peer-deps

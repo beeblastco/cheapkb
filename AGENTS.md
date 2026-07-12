@@ -1,8 +1,8 @@
 The current project name is `cheapkb`. Focus on cheap solution for RAG, priority features and engineering way to make it cheaps, trade off with latency and critical speed (S3 Vector, Lambda batch, SQS, DynamoDB), all covered by the free tier.
 
-IaC using sst. The project is deployed on AWS. Always check what is the current aws profile and account id before you do anything.
+IaC using sst. The project is deployed only to AWS account `954475336309` using AWS profile `954475336309`. Do not use, deploy to, or maintain compatibility with any other AWS account or profile.
 
-Set AWS_PROFILE before you interact with the aws cli.
+Before every AWS CLI or SST interaction, set `AWS_PROFILE=954475336309` and verify with `aws sts get-caller-identity` that the account is exactly `954475336309`. Abort the operation on any mismatch. If `cheapkb` resources are accidentally created in another account, inventory and remove all of those accidental resources immediately; do not retain stale stages, endpoints, or compatibility resources.
 
 The .env file is used to store the environment variables. The sst.config.ts will load the env variables from the .env file.
 

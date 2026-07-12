@@ -9,6 +9,7 @@ import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { handler } from "../functions/s3/ingest-adapter";
+import { s3Event } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 const sqsMock = mockClient(SQSClient);
@@ -64,18 +65,3 @@ describe("S3 ingest adapter", () => {
     );
   });
 });
-
-function s3Event() {
-  return {
-    Records: [
-      {
-        s3: {
-          object: {
-            key: "raw/doc-1/sample.txt",
-            size: 20,
-          },
-        },
-      },
-    ],
-  };
-}

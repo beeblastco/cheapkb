@@ -58,7 +58,7 @@ export default $config({
         output: "dist",
       },
       environment: {
-        API_URL: pulumi.interpolate`${api.url}/v1`,
+        VITE_API_URL: pulumi.interpolate`${api.url}/v1`,
       },
     });
 

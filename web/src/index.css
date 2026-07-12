@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-background: oklch(0.147 0.004 49.25);
+  --color-foreground: oklch(0.985 0.001 106.423);
+  --color-card: oklch(0.216 0.006 56.043);
+  --color-card-foreground: oklch(0.985 0.001 106.423);
+  --color-popover: oklch(0.216 0.006 56.043);
+  --color-popover-foreground: oklch(0.985 0.001 106.423);
+  --color-primary: oklch(0.473 0.137 46.201);
+  --color-primary-foreground: oklch(0.987 0.022 95.277);
+  --color-secondary: oklch(0.274 0.006 286.033);
+  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.268 0.007 34.298);
+  --color-muted-foreground: oklch(0.709 0.01 56.259);
+  --color-accent: oklch(0.268 0.007 34.298);
+  --color-accent-foreground: oklch(0.985 0.001 106.423);
+  --color-destructive: oklch(0.704 0.191 22.216);
+  --color-destructive-foreground: oklch(0.987 0.022 95.277);
+  --color-border: oklch(1 0 0 / 10%);
+  --color-input: oklch(1 0 0 / 15%);
+  --color-ring: oklch(0.553 0.013 58.071);
+  --radius: 0.875rem;
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from { height: 0; }
+    to { height: var(--radix-accordion-content-height); }
+  }
+  @keyframes accordion-up {
+    from { height: var(--radix-accordion-content-height); }
+    to { height: 0; }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

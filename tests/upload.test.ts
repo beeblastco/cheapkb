@@ -18,6 +18,7 @@ vi.mock("@aws-sdk/s3-presigned-post", () => ({
 }));
 
 import { handler } from "../functions/admin/upload";
+import { jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 
@@ -28,10 +29,9 @@ describe("upload validation", () => {
   });
 
   it("rejects unsupported content types before creating storage", async () => {
-    const response = await handler({
-      headers: {},
-      body: JSON.stringify({ filename: "page.html", mimeType: "text/html" }),
-    });
+    const response = await handler(
+      jsonApiEvent({ filename: "page.html", mimeType: "text/html" }),
+    );
 
     expect(response.statusCode).toBe(400);
     expect(createPresignedPost).not.toHaveBeenCalled();
@@ -39,14 +39,13 @@ describe("upload validation", () => {
   });
 
   it("creates a size-constrained presigned POST", async () => {
-    const response = await handler({
-      headers: {},
-      body: JSON.stringify({
+    const response = await handler(
+      jsonApiEvent({
         filename: "file.pdf",
         mimeType: "application/pdf",
         title: "File",
       }),
-    });
+    );
 
     expect(response.statusCode).toBe(200);
     expect(createPresignedPost).toHaveBeenCalledWith(
