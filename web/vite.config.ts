@@ -6,6 +6,7 @@ import path from "node:path";
 const API_URL = process.env.VITE_API_URL || process.env.API_URL || "";
 const API_ORIGIN =
   process.env.VITE_API_ORIGIN || (API_URL ? new URL(API_URL).origin : "");
+const STORAGE_ORIGIN = process.env.VITE_STORAGE_ORIGIN || "";
 
 export default defineConfig({
   plugins: [
@@ -14,7 +15,9 @@ export default defineConfig({
     {
       name: "content-security-policy",
       transformIndexHtml(html) {
-        return html.replaceAll("__API_ORIGIN__", API_ORIGIN);
+        return html
+          .replaceAll("__API_ORIGIN__", API_ORIGIN)
+          .replaceAll("__STORAGE_ORIGIN__", STORAGE_ORIGIN);
       },
     },
   ],

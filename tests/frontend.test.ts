@@ -14,6 +14,8 @@ import {
 
 const API_URL = "https://api.cheapkb.test/v1";
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
+const STORAGE_ORIGIN =
+  "https://cheapkb-storage-954475336309-us-east-1.s3.us-east-1.amazonaws.com";
 
 describe("frontend", () => {
   beforeEach(() => {
@@ -204,7 +206,11 @@ describe("frontend", () => {
   describe("production build", () => {
     it("uses a restrictive CSP and fingerprints local assets", () => {
       execFileSync("npm", ["--prefix", "web", "run", "build"], {
-        env: { ...process.env, API_URL },
+        env: {
+          ...process.env,
+          API_URL,
+          VITE_STORAGE_ORIGIN: STORAGE_ORIGIN,
+        },
         stdio: "pipe",
       });
       const sourceHtml = fs.readFileSync("web/index.html", "utf8");
@@ -224,7 +230,9 @@ describe("frontend", () => {
       expect(cssFiles.length).toBeGreaterThan(0);
       expect(html).toContain("/assets/");
       expect(html).toContain(new URL(API_URL).origin);
+      expect(html).toContain(STORAGE_ORIGIN);
       expect(html).not.toContain("__API_ORIGIN__");
+      expect(html).not.toContain("__STORAGE_ORIGIN__");
     }, 30000);
   });
 });

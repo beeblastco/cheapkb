@@ -31,6 +31,8 @@ export default $config({
     const name = (service: string) =>
       `${PROJECT}-${stagePrefix}${service}-${ACCOUNT_ID}-${REGION}`;
     const vectorBucketName = name("vecs");
+    const storageBucketName = name("storage");
+    const storageOrigin = `https://${storageBucketName}.s3.${REGION}.amazonaws.com`;
     const vectorIndexName = STAGE === PROD_STAGE ? "default" : STAGE;
     const vectorIndexArn = `arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${vectorBucketName}/index/${vectorIndexName}`;
 
@@ -60,6 +62,7 @@ export default $config({
       environment: {
         VITE_API_URL: pulumi.interpolate`${api.url}/v1`,
         VITE_API_ORIGIN: api.url,
+        VITE_STORAGE_ORIGIN: storageOrigin,
       },
     });
 
@@ -67,7 +70,7 @@ export default $config({
       versioning: true,
       transform: {
         bucket: (a) => {
-          a.bucket = name("storage");
+          a.bucket = storageBucketName;
         },
       },
     });

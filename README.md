@@ -53,7 +53,7 @@ A compact React + shadcn/ui management UI lives in `web/`. It is deployed to an 
 The frontend uses Vite, React, TypeScript, Tailwind CSS v4, and shadcn/ui. `App.tsx` coordinates the feature UI, `lib/client.ts` contains browser and API logic, and `components/ui` contains the installed shadcn primitives. Tailwind is integrated through the official Vite plugin, `@` resolves to `web/src`, and the accessible dialog uses the direct `radix-ui` dependency.
 
 Production JavaScript and CSS filenames include a content hash so CloudFront's immutable caching cannot keep browsers on an older frontend after deployment.
-The production build injects the exact API origin into the page's Content Security Policy and permits the Shoo script and connection origin. This keeps authentication and API requests working without broad network access.
+The production build injects the exact API and storage bucket origins into the page's Content Security Policy and permits the Shoo script and connection origin. This keeps authentication, API requests, and presigned S3 uploads working without broad network access.
 
 ```bash
 cd web

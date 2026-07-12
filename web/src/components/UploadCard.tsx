@@ -13,13 +13,12 @@ import { cn } from "@/lib/utils";
 import { LoaderCircle, Plus, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 
-function splitList(value: string): string[] | undefined {
-  const items = value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return items.length ? items : undefined;
-}
+const EMPTY_VALUES = {
+  title: "",
+  tags: "",
+  year: "",
+  authors: "",
+};
 
 export function UploadCard({
   token,
@@ -39,26 +38,28 @@ export function UploadCard({
   const [extracting, setExtracting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
-  const [values, setValues] = useState({
-    title: "",
-    tags: "",
-    year: "",
-    authors: "",
-  });
+  const [values, setValues] = useState(EMPTY_VALUES);
+  const details = useRef<HTMLDetailsElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function chooseFile(selectedFile: File | undefined) {
-    if (!selectedFile || uploading) return;
+    if (!selectedFile || extracting || uploading) return;
     setFile(selectedFile);
     setExtracting(true);
-    const metadata = await extractMetadata(selectedFile);
-    setValues((current) => ({
-      title: current.title || metadata.title || "",
-      tags: current.tags,
-      year: current.year?.toString() || "",
-      authors: current.authors || metadata.authors?.join(", ") || "",
-    }));
-    setExtracting(false);
+    try {
+      const metadata = await extractMetadata(selectedFile);
+      setValues({
+        title: metadata.title || "",
+        tags: "",
+        year: metadata.year?.toString() || "",
+        authors: metadata.authors?.join(", ") || "",
+      });
+    } catch {
+      setValues(EMPTY_VALUES);
+      notify("Could not read document metadata.", "error");
+    } finally {
+      setExtracting(false);
+    }
   }
 
   async function submit(event: React.FormEvent) {
@@ -105,11 +106,8 @@ export function UploadCard({
             : document,
         ),
       );
-      setFile(null);
-      setValues({ title: "", tags: "", year: "", authors: "" });
-      setStatus("");
       notify("Uploaded. Indexing has started.", "success");
-      await loadDocuments();
+      void loadDocuments();
     } catch (error) {
       const failedDocumentId =
         createdDocumentId ??
@@ -130,10 +128,14 @@ export function UploadCard({
         writePendingDocuments(failed);
         return failed;
       });
-      setStatus("");
       notify((error as Error).message, "error");
     } finally {
+      setFile(null);
+      setValues(EMPTY_VALUES);
+      setStatus("");
       setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+      if (details.current) details.current.open = false;
     }
   }
 
@@ -149,7 +151,7 @@ export function UploadCard({
               "flex w-full cursor-pointer flex-col items-center rounded-lg border border-dashed border-border bg-muted/50 px-6 py-8 text-center transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-50",
               dragging && "border-primary bg-primary/5",
             )}
-            disabled={uploading}
+            disabled={extracting || uploading}
             onClick={() => fileInput.current?.click()}
             onDragEnter={(event) => {
               event.preventDefault();
@@ -180,7 +182,10 @@ export function UploadCard({
             type="file"
           />
 
-          <details className="group rounded-lg border border-border bg-muted/30">
+          <details
+            ref={details}
+            className="group rounded-lg border border-border bg-muted/30"
+          >
             <summary className="cursor-pointer list-none px-4 py-3 text-sm text-muted-foreground hover:text-foreground">
               Optional details
               <Plus className="float-right size-4 transition-transform group-open:rotate-45" />
@@ -244,7 +249,7 @@ export function UploadCard({
           <div className="flex items-center gap-3">
             <Button
               className="cursor-pointer"
-              disabled={!file || uploading}
+              disabled={!file || extracting || uploading}
               type="submit"
             >
               {uploading && (
@@ -258,4 +263,12 @@ export function UploadCard({
       </CardContent>
     </Card>
   );
+}
+
+function splitList(value: string): string[] | undefined {
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length ? items : undefined;
 }
