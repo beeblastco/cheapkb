@@ -11,7 +11,11 @@ import { Field } from "@/components/Field";
 export function QueryCard({
   request,
 }: {
-  request: (method: string, path: string, body?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  request: (
+    method: string,
+    path: string,
+    body?: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
 }) {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);

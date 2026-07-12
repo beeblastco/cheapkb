@@ -2,10 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-function Card({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       data-slot="card"
@@ -25,10 +22,7 @@ function CardHeader({
   return (
     <div
       data-slot="card-header"
-      className={cn(
-        "flex flex-col gap-1.5 px-6",
-        className,
-      )}
+      className={cn("flex flex-col gap-1.5 px-6", className)}
       {...props}
     />
   );
@@ -86,4 +80,11 @@ function CardFooter({
   );
 }
 
-export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
+export {
+  Card,
+  CardHeader,
+  CardFooter,
+  CardTitle,
+  CardDescription,
+  CardContent,
+};

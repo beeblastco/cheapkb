@@ -1,7 +1,12 @@
 import { useState, useRef } from "react";
 import { LoaderCircle, Plus, Upload } from "lucide-react";
 import type { Document, Toast } from "@/lib/types";
-import { extractMetadata, getFileMimeType, uploadDocument, writePendingDocuments } from "@/lib/client";
+import {
+  extractMetadata,
+  getFileMimeType,
+  uploadDocument,
+  writePendingDocuments,
+} from "@/lib/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -107,7 +112,9 @@ export function UploadCard({
       await loadDocuments();
     } catch (error) {
       const failedDocumentId =
-        createdDocumentId ?? (error as Error & { documentId?: string }).documentId ?? tempId;
+        createdDocumentId ??
+        (error as Error & { documentId?: string }).documentId ??
+        tempId;
       setDocuments((current) => {
         const failed = current.map((document) =>
           document.documentId === tempId

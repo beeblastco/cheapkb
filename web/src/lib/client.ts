@@ -338,7 +338,12 @@ async function extractPdfMetadata(
     for (let index = 1; index <= Math.min(3, pdf.numPages); index += 1) {
       const page = await pdf.getPage(index);
       const content = await page.getTextContent();
-      pages.push(content.items.filter((item) => "str" in item).map((item) => (item as { str: string }).str).join(" "));
+      pages.push(
+        content.items
+          .filter((item) => "str" in item)
+          .map((item) => (item as { str: string }).str)
+          .join(" "),
+      );
     }
     const parsed = parseMetadata(pages.join("\n"), fallback);
     title ||= parsed.title;
@@ -373,9 +378,7 @@ function cleanTitle(title: string | undefined): string {
   return title?.trim().replace(/\s+/g, " ").slice(0, 200) ?? "";
 }
 
-function normalizeAuthors(
-  authors: string | string[] | undefined,
-): string[] {
+function normalizeAuthors(authors: string | string[] | undefined): string[] {
   if (!authors) return [];
   if (Array.isArray(authors)) {
     return authors.map((author) => author.trim()).filter(Boolean);

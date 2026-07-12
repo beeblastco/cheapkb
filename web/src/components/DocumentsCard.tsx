@@ -32,7 +32,13 @@ const STATUS_PROGRESS: Record<string, string> = {
 
 const STALLED_AFTER_MS = 5 * 60 * 1000;
 
-function StatusBadge({ stalled, status }: { stalled: boolean; status: string }) {
+function StatusBadge({
+  stalled,
+  status,
+}: {
+  stalled: boolean;
+  status: string;
+}) {
   const variant =
     status === "EMBEDDED"
       ? "default"
@@ -82,9 +88,7 @@ function DocumentRow({
           {document.mimeType || "Document"} · {formatDate(document.createdAt)}
         </p>
         {document.lastError && (
-          <p className="mt-2 text-xs text-destructive">
-            {document.lastError}
-          </p>
+          <p className="mt-2 text-xs text-destructive">{document.lastError}</p>
         )}
         {isActiveStatus(document.status) && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">

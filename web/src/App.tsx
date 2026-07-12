@@ -20,7 +20,13 @@ import { QueryCard } from "@/components/QueryCard";
 import { DocumentDialog } from "@/components/DocumentDialog";
 import { Toast } from "@/components/Toast";
 
-function Guest({ onSignIn, toast }: { onSignIn: () => void; toast: ToastType | null }) {
+function Guest({
+  onSignIn,
+  toast,
+}: {
+  onSignIn: () => void;
+  toast: ToastType | null;
+}) {
   return (
     <div className="flex min-h-screen flex-col">
       <Header onSignIn={onSignIn} />
@@ -47,7 +53,10 @@ function App() {
   const [identity, setIdentity] = useState<ShooIdentity | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
-  const [selectedDocument, setSelectedDocument] = useState<Record<string, unknown> | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [toast, setToast] = useState<ToastType | null>(null);
   const documentsRef = useRef(documents);
 
@@ -55,10 +64,13 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback((message: string, type: ToastType["type"] = "info") => {
-    setToast({ message, type });
-    window.setTimeout(() => setToast(null), 3000);
-  }, []);
+  const notify = useCallback(
+    (message: string, type: ToastType["type"] = "info") => {
+      setToast({ message, type });
+      window.setTimeout(() => setToast(null), 3000);
+    },
+    [],
+  );
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
