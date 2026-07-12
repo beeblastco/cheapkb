@@ -51,17 +51,19 @@ export function QueryCard({
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submit}>
-            <Field label="Question">
+            <Field htmlFor="query-question" label="Question">
               <Textarea
                 disabled={loading}
+                id="query-question"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="What is RAG?"
                 required
                 value={query}
               />
             </Field>
-            <Field label="Top K">
+            <Field htmlFor="query-top-k" label="Top K">
               <Input
+                id="query-top-k"
                 max="50"
                 min="1"
                 onChange={(event) => setTopK(Number(event.target.value))}

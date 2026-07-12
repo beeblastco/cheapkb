@@ -3,8 +3,21 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
+const API_URL = process.env.VITE_API_URL || process.env.API_URL || "";
+const API_ORIGIN =
+  process.env.VITE_API_ORIGIN || (API_URL ? new URL(API_URL).origin : "");
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: "content-security-policy",
+      transformIndexHtml(html) {
+        return html.replaceAll("__API_ORIGIN__", API_ORIGIN);
+      },
+    },
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -17,8 +30,6 @@ export default defineConfig({
     outDir: "dist",
   },
   define: {
-    "import.meta.env.VITE_API_URL": JSON.stringify(
-      process.env.VITE_API_URL || process.env.API_URL || "",
-    ),
+    "import.meta.env.VITE_API_URL": JSON.stringify(API_URL),
   },
 });

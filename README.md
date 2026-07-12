@@ -50,9 +50,10 @@ Full API reference: [docs/API.md](docs/API.md)
 
 A compact React + shadcn/ui management UI lives in `web/`. It is deployed to an **S3 bucket** and served through a **CloudFront distribution** via `sst.aws.StaticSite`.
 
-The frontend keeps its source small: `App.jsx` contains the feature UI, `client.js` contains browser and API logic, and `components/ui` contains only the shadcn components downloaded by the CLI. All styling uses Tailwind utilities, and the accessible dialog uses Radix UI.
+The frontend uses Vite, React, TypeScript, Tailwind CSS v4, and shadcn/ui. `App.tsx` coordinates the feature UI, `lib/client.ts` contains browser and API logic, and `components/ui` contains the installed shadcn primitives. Tailwind is integrated through the official Vite plugin, `@` resolves to `web/src`, and the accessible dialog uses the direct `radix-ui` dependency.
 
 Production JavaScript and CSS filenames include a content hash so CloudFront's immutable caching cannot keep browsers on an older frontend after deployment.
+The production build injects the exact API origin into the page's Content Security Policy and permits the Shoo script and connection origin. This keeps authentication and API requests working without broad network access.
 
 ```bash
 cd web
@@ -110,7 +111,7 @@ API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web 
 
 ## Deploy
 
-Production deploys only through `.github/workflows/deploy.yml` after changes merge to `main`. The check job formats, typechecks, tests, builds the frontend, and audits production dependencies before the deploy job runs `sst deploy --stage production`.
+Production deploys only through `.github/workflows/deploy.yml` after changes merge to `main`. The check job formats, typechecks, tests, builds the frontend, and audits production dependencies before the deploy job runs `sst deploy --stage production`. GitHub Actions configures AWS profile `954475336309` from repository secrets and verifies account `954475336309` immediately before deployment and every production E2E AWS operation.
 
 After deployment, SST prints both the API endpoint (`apiEndpoint`) and the web endpoint (`webEndpoint`). The API URL is baked into the frontend build, and the frontend URL is used as `APP_ORIGIN` for JWT verification.
 

@@ -218,10 +218,12 @@ describe("frontend", () => {
 
       expect(sourceHtml).toContain("Content-Security-Policy");
       expect(sourceHtml).toContain("script-src 'self'");
+      expect(sourceHtml).toContain("script-src 'self' https://shoo.dev");
       expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);
       expect(html).toContain("/assets/");
+      expect(html).toContain(new URL(API_URL).origin);
       expect(html).not.toContain("__API_ORIGIN__");
     });
   });

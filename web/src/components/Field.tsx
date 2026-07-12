@@ -4,16 +4,18 @@ import type { ReactNode } from "react";
 
 export function Field({
   className,
+  htmlFor,
   label,
   children,
 }: {
   className?: string;
+  htmlFor: string;
   label: string;
   children: ReactNode;
 }) {
   return (
     <div className={cn("space-y-1.5", className)}>
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
     </div>
   );

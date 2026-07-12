@@ -1,5 +1,7 @@
 set -euo pipefail
 
+export AWS_PROFILE="954475336309"
+
 document_id="e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 table="cheapkb-meta-${AWS_ACCOUNT_ID}-${AWS_REGION}"
 bucket="cheapkb-storage-${AWS_ACCOUNT_ID}-${AWS_REGION}"
@@ -10,6 +12,7 @@ cleanup() {
   status=$?
   trap - EXIT
   set +e
+  verify_aws_account
   aws s3 rm "s3://${bucket}/${source_key}" >/dev/null
   cleanup_status=$?
   if [ "${cleanup_status}" -ne 0 ]; then
@@ -18,6 +21,15 @@ cleanup() {
   fi
   exit "${status}"
 }
+
+verify_aws_account() {
+  account="$(aws sts get-caller-identity --query Account --output text)"
+  if [ "${account}" != "954475336309" ]; then
+    echo "AWS account mismatch: ${account}" >&2
+    exit 1
+  fi
+}
+
 trap cleanup EXIT
 
 item="$(jq -nc \
@@ -26,10 +38,13 @@ item="$(jq -nc \
   --arg key "${source_key}" \
   --arg now "${created_at}" \
   '{pk:{S:$pk},sk:{S:"META"},entityType:{S:"Document"},documentId:{S:$id},userId:{S:"e2e-ci"},title:{S:"Production pipeline test"},sourceKey:{S:$key},mimeType:{S:"text/plain"},status:{S:"UPLOADED"},createdAt:{S:$now},updatedAt:{S:$now},gsi1pk:{S:"STATUS#UPLOADED"},gsi1sk:{S:$now},gsi2pk:{S:"USER#e2e-ci"},gsi2sk:{S:$now}}')"
+verify_aws_account
 aws dynamodb put-item --table-name "${table}" --item "${item}"
+verify_aws_account
 printf '%s\n' 'CheapKB production pipeline end-to-end verification document.' | aws s3 cp - "s3://${bucket}/${source_key}" --content-type text/plain
 
 for attempt in $(seq 1 60); do
+  verify_aws_account
   document="$(aws dynamodb get-item \
     --table-name "${table}" \
     --key "{\"pk\":{\"S\":\"DOC#${document_id}\"},\"sk\":{\"S\":\"META\"}}" \

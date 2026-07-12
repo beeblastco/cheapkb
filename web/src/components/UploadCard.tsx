@@ -186,9 +186,14 @@ export function UploadCard({
               <Plus className="float-right size-4 transition-transform group-open:rotate-45" />
             </summary>
             <div className="grid gap-4 border-t border-border p-4 sm:grid-cols-2">
-              <Field className="sm:col-span-2" label="Title">
+              <Field
+                className="sm:col-span-2"
+                htmlFor="upload-title"
+                label="Title"
+              >
                 <Input
                   disabled={uploading}
+                  id="upload-title"
                   onChange={(event) =>
                     setValues({ ...values, title: event.target.value })
                   }
@@ -196,9 +201,10 @@ export function UploadCard({
                   value={values.title}
                 />
               </Field>
-              <Field label="Tags">
+              <Field htmlFor="upload-tags" label="Tags">
                 <Input
                   disabled={uploading}
+                  id="upload-tags"
                   onChange={(event) =>
                     setValues({ ...values, tags: event.target.value })
                   }
@@ -206,9 +212,10 @@ export function UploadCard({
                   value={values.tags}
                 />
               </Field>
-              <Field label="Year">
+              <Field htmlFor="upload-year" label="Year">
                 <Input
                   disabled={uploading}
+                  id="upload-year"
                   onChange={(event) =>
                     setValues({ ...values, year: event.target.value })
                   }
@@ -217,9 +224,14 @@ export function UploadCard({
                   value={values.year}
                 />
               </Field>
-              <Field className="sm:col-span-2" label="Authors">
+              <Field
+                className="sm:col-span-2"
+                htmlFor="upload-authors"
+                label="Authors"
+              >
                 <Input
                   disabled={uploading}
+                  id="upload-authors"
                   onChange={(event) =>
                     setValues({ ...values, authors: event.target.value })
                   }
