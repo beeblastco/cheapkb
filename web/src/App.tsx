@@ -263,8 +263,8 @@ function App() {
       <div className="flex min-h-dvh flex-col">
         <Header identity={identity} onSignOut={signOut} />
         <main className="flex w-full flex-1 flex-col">
-          <div className="grid w-full flex-1 items-start gap-4 px-4 py-4 lg:grid-cols-12">
-            <div className="flex flex-col gap-4 lg:col-span-8 xl:col-span-9">
+          <div className="mx-auto grid w-full max-w-[1440px] flex-1 items-start gap-3 px-3 py-3 sm:px-4 lg:grid-cols-12 lg:px-6">
+            <div className="flex flex-col gap-3 lg:col-span-8 xl:col-span-9">
               <DocumentsCard
                 documents={documents}
                 loading={loadingDocuments}
