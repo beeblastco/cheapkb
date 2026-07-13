@@ -60,17 +60,5 @@
 
   body {
     @apply bg-background text-foreground;
-    background-image:
-      radial-gradient(
-        circle at 20% -10%,
-        oklch(0.473 0.137 46.201 / 8%),
-        transparent 28rem
-      ),
-      linear-gradient(oklch(1 0 0 / 1.5%) 1px, transparent 1px),
-      linear-gradient(90deg, oklch(1 0 0 / 1.5%) 1px, transparent 1px);
-    background-size:
-      auto,
-      48px 48px,
-      48px 48px;
   }
 }

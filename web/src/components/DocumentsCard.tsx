@@ -9,9 +9,33 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import {
   Pagination,
   PaginationContent,
@@ -19,7 +43,15 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -33,42 +65,175 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { isActiveStatus } from "@/lib/client";
-import type { Document } from "@/lib/types";
+import {
+  extractMetadata,
+  getFileMimeType,
+  isActiveStatus,
+  uploadDocument,
+  writePendingDocuments,
+} from "@/lib/client";
+import type { Document, Toast, UploadQueueItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownUp,
   Eye,
-  FileText,
-  LoaderCircle,
+  FilePlus2,
+  Pencil,
   RefreshCw,
   Search,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 50;
 const STALLED_AFTER_MS = 5 * 60 * 1000;
+const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
 
 type SortKey = "title" | "status" | "createdAt" | "updatedAt";
 
 export function DocumentsCard({
   documents,
   loading,
+  token,
+  setDocuments,
+  loadDocuments,
+  notify,
   onDelete,
   onReindex,
   onView,
 }: {
   documents: Document[];
   loading: boolean;
+  token: string;
+  setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
+  loadDocuments: (showLoading?: boolean) => Promise<void>;
+  notify: (message: string, type?: Toast["type"]) => void;
   onDelete: (documentId: string) => void;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
 }) {
+  const [items, setItems] = useState<UploadQueueItem[]>([]);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("createdAt");
   const [descending, setDescending] = useState(true);
   const [page, setPage] = useState(1);
+  const dragDepth = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const itemsRef = useRef(items);
+  const syncingRef = useRef(syncing);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    syncingRef.current = syncing;
+  }, [syncing]);
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (syncingRef.current) return;
+      const validFiles = files.filter((file) =>
+        SUPPORTED_EXTENSIONS.some((extension) =>
+          file.name.toLowerCase().endsWith(extension),
+        ),
+      );
+      if (validFiles.length !== files.length) {
+        notify("Only PDF, Markdown, and text files were added.", "error");
+      }
+
+      const existing = new Set(
+        itemsRef.current.map(
+          (item) =>
+            `${item.file.name}:${item.file.size}:${item.file.lastModified}`,
+        ),
+      );
+      const queued: UploadQueueItem[] = [];
+      for (const file of validFiles) {
+        const fingerprint = `${file.name}:${file.size}:${file.lastModified}`;
+        if (existing.has(fingerprint)) continue;
+        existing.add(fingerprint);
+        queued.push({
+          authors: "",
+          error: "",
+          file,
+          id: crypto.randomUUID(),
+          progress: "Reading metadata",
+          state: "EXTRACTING",
+          tags: "",
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          year: "",
+        });
+      }
+
+      if (!queued.length) return;
+      setItems((current) => [...current, ...queued]);
+      for (const item of queued) {
+        const metadata = await extractMetadata(item.file);
+        setItems((current) =>
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  authors: metadata.authors.join(", "),
+                  progress: "Ready to sync",
+                  state: "READY",
+                  title: metadata.title || currentItem.title,
+                  year: metadata.year?.toString() || "",
+                }
+              : currentItem,
+          ),
+        );
+      }
+    },
+    [notify],
+  );
+
+  useEffect(() => {
+    function dragEnter(event: DragEvent) {
+      if (syncingRef.current || !event.dataTransfer?.types.includes("Files")) {
+        return;
+      }
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragging(true);
+    }
+
+    function dragOver(event: DragEvent) {
+      if (!event.dataTransfer?.types.includes("Files")) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    }
+
+    function dragLeave(event: DragEvent) {
+      if (!event.dataTransfer?.types.includes("Files")) return;
+      event.preventDefault();
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (!dragDepth.current) setDragging(false);
+    }
+
+    function drop(event: DragEvent) {
+      if (syncingRef.current || !event.dataTransfer?.files.length) return;
+      event.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      void addFiles(Array.from(event.dataTransfer.files));
+    }
+
+    window.addEventListener("dragenter", dragEnter);
+    window.addEventListener("dragover", dragOver);
+    window.addEventListener("dragleave", dragLeave);
+    window.addEventListener("drop", drop);
+    return () => {
+      window.removeEventListener("dragenter", dragEnter);
+      window.removeEventListener("dragover", dragOver);
+      window.removeEventListener("dragleave", dragLeave);
+      window.removeEventListener("drop", drop);
+    };
+  }, [addFiles]);
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -87,8 +252,28 @@ export function DocumentsCard({
       });
   }, [descending, documents, query, sortKey]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const visible = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const filteredItems = useMemo(() => {
+    const value = query.trim().toLowerCase();
+    return items.filter((item) =>
+      value
+        ? [item.title, item.file.name, item.state].some((field) =>
+            field.toLowerCase().includes(value),
+          )
+        : true,
+    );
+  }, [items, query]);
+
+  const totalCount = filteredItems.length + filtered.length;
+  const pageCount = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const combined = [
+    ...filteredItems.map((item) => ({ item })),
+    ...filtered.map((document) => ({ document })),
+  ];
+  const visible = combined.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const selectedItem = items.find((item) => item.id === selectedItemId) || null;
+  const readyCount = items.filter((item) =>
+    ["READY", "FAILED"].includes(item.state),
+  ).length;
 
   useEffect(() => {
     setPage(1);
@@ -97,6 +282,91 @@ export function DocumentsCard({
   useEffect(() => {
     if (page > pageCount) setPage(pageCount);
   }, [page, pageCount]);
+
+  async function syncAll() {
+    if (syncingRef.current) return;
+    const pending = itemsRef.current.filter((item) =>
+      ["READY", "FAILED"].includes(item.state),
+    );
+    if (!pending.length) return;
+
+    syncingRef.current = true;
+    setSyncing(true);
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const item of pending) {
+      updateItem(item.id, {
+        error: "",
+        progress: "Requesting upload URL",
+        state: "SYNCING",
+      });
+      try {
+        const documentId = await uploadDocument(
+          token,
+          item.file,
+          {
+            authors: splitList(item.authors),
+            tags: splitList(item.tags),
+            title: item.title.trim() || item.file.name,
+            year: Number(item.year) || undefined,
+          },
+          (progress) => updateItem(item.id, { progress }),
+        );
+        const now = new Date().toISOString();
+        setDocuments((current) => {
+          const byId = new Map(
+            current.map((document) => [document.documentId, document]),
+          );
+          byId.set(documentId, {
+            createdAt: now,
+            documentId,
+            mimeType: getFileMimeType(item.file),
+            status: "QUEUED",
+            title: item.title.trim() || item.file.name,
+            updatedAt: now,
+          });
+          const next = Array.from(byId.values());
+          writePendingDocuments(next);
+          return next;
+        });
+        setItems((current) =>
+          current.filter((currentItem) => currentItem.id !== item.id),
+        );
+        succeeded += 1;
+      } catch (error) {
+        updateItem(item.id, {
+          error: (error as Error).message,
+          progress: "Sync failed",
+          state: "FAILED",
+        });
+        failed += 1;
+      }
+    }
+
+    syncingRef.current = false;
+    setSyncing(false);
+    await loadDocuments();
+    if (failed) {
+      notify(`${succeeded} synced, ${failed} need attention.`, "error");
+    } else {
+      notify(
+        `${succeeded} document${succeeded === 1 ? "" : "s"} synced.`,
+        "success",
+      );
+    }
+  }
+
+  function updateItem(id: string, values: Partial<UploadQueueItem>) {
+    setItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...values } : item)),
+    );
+  }
+
+  function removeItem(id: string) {
+    setItems((current) => current.filter((item) => item.id !== id));
+    if (selectedItemId === id) setSelectedItemId(null);
+  }
 
   function sort(nextKey: SortKey) {
     if (sortKey === nextKey) setDescending((current) => !current);
@@ -107,130 +377,183 @@ export function DocumentsCard({
   }
 
   return (
-    <Card className="min-h-[34rem] gap-0 overflow-hidden py-0">
-      <CardHeader className="flex-row items-center justify-between border-b border-border py-4">
-        <div>
-          <CardTitle>Documents</CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {documents.length} total · 50 per page
-          </p>
+    <>
+      {dragging ? (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center border-2 border-dashed bg-background/90">
+          <p>Drop files to add them</p>
         </div>
-        {loading && (
-          <LoaderCircle className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
-        )}
-      </CardHeader>
-      <CardContent className="flex min-h-[30rem] flex-col p-0">
-        <div className="border-b border-border p-3">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
+      ) : null}
+      <Card className="min-h-[calc(100vh-6rem)]">
+        <CardHeader className="flex-row items-center justify-between">
+          <div>
+            <CardTitle>Documents</CardTitle>
+            <CardDescription>
+              {documents.length + items.length} total · 50 per page
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            {loading ? <Spinner /> : null}
+            <Button
+              disabled={syncing}
+              onClick={() => fileInput.current?.click()}
+              variant="outline"
+            >
+              <FilePlus2 data-icon="inline-start" />
+              Add files
+            </Button>
+            <Button disabled={!readyCount || syncing} onClick={syncAll}>
+              {syncing ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <RefreshCw data-icon="inline-start" />
+              )}
+              Sync all{readyCount ? ` (${readyCount})` : ""}
+            </Button>
+          </div>
+          <input
+            ref={fileInput}
+            accept=".pdf,.txt,.md"
+            className="hidden"
+            multiple
+            onChange={(event) => {
+              void addFiles(Array.from(event.target.files || []));
+              event.target.value = "";
+            }}
+            type="file"
+          />
+        </CardHeader>
+        <CardContent className="flex flex-1 flex-col gap-4">
+          <InputGroup className="max-w-sm">
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
               aria-label="Search documents"
-              className="pl-9"
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search documents"
               value={query}
             />
+          </InputGroup>
+
+          <div className="flex-1 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <SortableHead
+                    label="Document"
+                    onClick={() => sort("title")}
+                  />
+                  <SortableHead label="Status" onClick={() => sort("status")} />
+                  <SortableHead
+                    className="hidden md:table-cell"
+                    label="Uploaded"
+                    onClick={() => sort("createdAt")}
+                  />
+                  <SortableHead
+                    className="hidden lg:table-cell"
+                    label="Modified"
+                    onClick={() => sort("updatedAt")}
+                  />
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading && !documents.length && !items.length
+                  ? Array.from({ length: 4 }).map((_, index) => (
+                      <TableRow key={index}>
+                        <TableCell colSpan={5}>
+                          <Skeleton className="h-8 w-full" />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  : visible.map((row) =>
+                      "item" in row ? (
+                        <UploadRow
+                          item={row.item}
+                          key={row.item.id}
+                          onEdit={() => setSelectedItemId(row.item.id)}
+                          onRemove={() => removeItem(row.item.id)}
+                        />
+                      ) : (
+                        <DocumentRow
+                          document={row.document}
+                          key={row.document.documentId}
+                          onDelete={onDelete}
+                          onReindex={onReindex}
+                          onView={onView}
+                        />
+                      ),
+                    )}
+              </TableBody>
+            </Table>
+
+            {!loading && !visible.length ? (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyTitle>
+                    {query ? "No matching documents" : "No documents"}
+                  </EmptyTitle>
+                  <EmptyDescription>
+                    {query
+                      ? "Try a different search."
+                      : "Drop PDF, Markdown, or text files anywhere on this page."}
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : null}
           </div>
-        </div>
 
-        <div className="flex-1">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <SortableHead label="Document" onClick={() => sort("title")} />
-                <SortableHead label="Status" onClick={() => sort("status")} />
-                <SortableHead
-                  className="hidden md:table-cell"
-                  label="Uploaded"
-                  onClick={() => sort("createdAt")}
-                />
-                <SortableHead
-                  className="hidden lg:table-cell"
-                  label="Modified"
-                  onClick={() => sort("updatedAt")}
-                />
-                <TableHead className="w-32 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading && !documents.length
-                ? Array.from({ length: 4 }).map((_, index) => (
-                    <TableRow key={index}>
-                      <TableCell colSpan={5}>
-                        <Skeleton className="h-8 w-full" />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                : visible.map((document) => (
-                    <DocumentRow
-                      document={document}
-                      key={document.documentId}
-                      onDelete={onDelete}
-                      onReindex={onReindex}
-                      onView={onView}
+          <div className="flex items-center justify-between">
+            <CardDescription>
+              {totalCount
+                ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalCount)} of ${totalCount}`
+                : "0 documents"}
+            </CardDescription>
+            {pageCount > 1 ? (
+              <Pagination className="w-auto">
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      aria-disabled={page === 1}
+                      className={cn(
+                        page === 1 && "pointer-events-none opacity-50",
+                      )}
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setPage((current) => Math.max(1, current - 1));
+                      }}
+                      text=""
                     />
-                  ))}
-            </TableBody>
-          </Table>
+                  </PaginationItem>
+                  <PaginationItem>
+                    <PaginationNext
+                      aria-disabled={page === pageCount}
+                      className={cn(
+                        page === pageCount && "pointer-events-none opacity-50",
+                      )}
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setPage((current) => Math.min(pageCount, current + 1));
+                      }}
+                      text=""
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
 
-          {!loading && !visible.length && (
-            <div className="flex min-h-60 flex-col items-center justify-center px-6 text-center">
-              <FileText className="size-5 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">
-                {query ? "No matching documents" : "No documents yet"}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {query
-                  ? "Try a different search."
-                  : "Drop files into the queue, then sync them."}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between border-t border-border px-3 py-2.5">
-          <p className="text-xs text-muted-foreground">
-            {filtered.length
-              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, filtered.length)} of ${filtered.length}`
-              : "0 documents"}
-          </p>
-          {pageCount > 1 && (
-            <Pagination className="mx-0 w-auto">
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationPrevious
-                    aria-disabled={page === 1}
-                    className={cn(
-                      page === 1 && "pointer-events-none opacity-50",
-                    )}
-                    href="#"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      setPage((current) => Math.max(1, current - 1));
-                    }}
-                    text=""
-                  />
-                </PaginationItem>
-                <PaginationItem>
-                  <PaginationNext
-                    aria-disabled={page === pageCount}
-                    className={cn(
-                      page === pageCount && "pointer-events-none opacity-50",
-                    )}
-                    href="#"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      setPage((current) => Math.min(pageCount, current + 1));
-                    }}
-                    text=""
-                  />
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      <UploadMetadataSheet
+        item={selectedItem}
+        onClose={() => setSelectedItemId(null)}
+        onUpdate={updateItem}
+        syncing={syncing}
+      />
+    </>
   );
 }
 
@@ -245,15 +568,65 @@ function SortableHead({
 }) {
   return (
     <TableHead className={className}>
-      <Button
-        className="-ml-3 h-8 px-3 text-xs"
-        onClick={onClick}
-        variant="ghost"
-      >
+      <Button onClick={onClick} size="sm" variant="ghost">
         {label}
-        <ArrowDownUp className="size-3" />
+        <ArrowDownUp data-icon="inline-end" />
       </Button>
     </TableHead>
+  );
+}
+
+function UploadRow({
+  item,
+  onEdit,
+  onRemove,
+}: {
+  item: UploadQueueItem;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  return (
+    <TableRow>
+      <TableCell>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate font-medium">{item.title}</span>
+          <span className="truncate text-muted-foreground">
+            {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+          </span>
+          {item.error ? (
+            <span className="truncate text-destructive">{item.error}</span>
+          ) : null}
+        </div>
+      </TableCell>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
+            <Spinner />
+          ) : null}
+          <Badge variant="outline">{item.state}</Badge>
+        </div>
+      </TableCell>
+      <TableCell className="hidden md:table-cell">—</TableCell>
+      <TableCell className="hidden lg:table-cell">—</TableCell>
+      <TableCell>
+        <div className="flex justify-end gap-1">
+          <ActionButton
+            disabled={item.state === "SYNCING"}
+            label="Edit metadata"
+            onClick={onEdit}
+          >
+            <Pencil />
+          </ActionButton>
+          <ActionButton
+            disabled={item.state === "SYNCING"}
+            label="Remove file"
+            onClick={onRemove}
+          >
+            <Trash2 />
+          </ActionButton>
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -268,57 +641,50 @@ function DocumentRow({
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
 }) {
-  const optimistic = document.documentId.startsWith("temp_");
   const updatedAt = Date.parse(document.updatedAt ?? document.createdAt ?? "");
   const stalled =
     isActiveStatus(document.status) &&
     Date.now() - updatedAt > STALLED_AFTER_MS;
   return (
     <TableRow>
-      <TableCell className="max-w-64">
-        <p className="truncate font-medium">
-          {document.title || document.documentId}
-        </p>
-        <p className="mt-1 truncate text-xs text-muted-foreground">
-          {document.mimeType || document.documentId}
-        </p>
-        {document.lastError && (
-          <p className="mt-1 truncate text-xs text-destructive">
-            {document.lastError}
-          </p>
-        )}
+      <TableCell>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate font-medium">
+            {document.title || document.documentId}
+          </span>
+          <span className="truncate text-muted-foreground">
+            {document.mimeType || document.documentId}
+          </span>
+          {document.lastError ? (
+            <span className="truncate text-destructive">
+              {document.lastError}
+            </span>
+          ) : null}
+        </div>
       </TableCell>
       <TableCell>
-        <span
-          className={cn(
-            "font-mono text-xs",
-            document.status === "FAILED" && "text-destructive",
-            document.status === "EMBEDDED" && "text-emerald-400",
-            stalled && "text-amber-400",
-          )}
+        <Badge
+          variant={document.status === "FAILED" ? "destructive" : "outline"}
         >
           {document.status}
-        </span>
+        </Badge>
       </TableCell>
-      <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
+      <TableCell className="hidden md:table-cell">
         {formatDate(document.createdAt)}
       </TableCell>
-      <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
+      <TableCell className="hidden lg:table-cell">
         {formatDate(document.updatedAt)}
       </TableCell>
       <TableCell>
         <div className="flex justify-end gap-1">
           <ActionButton
-            disabled={optimistic}
             label="View details"
             onClick={() => onView(document.documentId)}
           >
             <Eye />
           </ActionButton>
           <ActionButton
-            disabled={
-              optimistic || (isActiveStatus(document.status) && !stalled)
-            }
+            disabled={isActiveStatus(document.status) && !stalled}
             label="Reindex"
             onClick={() => onReindex(document.documentId)}
           >
@@ -330,7 +696,6 @@ function DocumentRow({
                 <AlertDialogTrigger asChild>
                   <Button
                     aria-label="Delete document"
-                    disabled={optimistic}
                     size="icon-sm"
                     variant="ghost"
                   >
@@ -362,6 +727,86 @@ function DocumentRow({
         </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function UploadMetadataSheet({
+  item,
+  onClose,
+  onUpdate,
+  syncing,
+}: {
+  item: UploadQueueItem | null;
+  onClose: () => void;
+  onUpdate: (id: string, values: Partial<UploadQueueItem>) => void;
+  syncing: boolean;
+}) {
+  return (
+    <Sheet onOpenChange={(open) => !open && onClose()} open={!!item}>
+      <SheetContent className="overflow-y-auto">
+        {item ? (
+          <SheetHeader>
+            <SheetTitle>{item.file.name}</SheetTitle>
+            <SheetDescription>
+              {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+            </SheetDescription>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor={`title-${item.id}`}>Title</FieldLabel>
+                <Input
+                  disabled={syncing}
+                  id={`title-${item.id}`}
+                  onChange={(event) =>
+                    onUpdate(item.id, { title: event.target.value })
+                  }
+                  value={item.title}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`authors-${item.id}`}>Authors</FieldLabel>
+                <Input
+                  disabled={syncing}
+                  id={`authors-${item.id}`}
+                  onChange={(event) =>
+                    onUpdate(item.id, { authors: event.target.value })
+                  }
+                  placeholder="Alice, Bob"
+                  value={item.authors}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`year-${item.id}`}>Year</FieldLabel>
+                <Input
+                  disabled={syncing}
+                  id={`year-${item.id}`}
+                  onChange={(event) =>
+                    onUpdate(item.id, { year: event.target.value })
+                  }
+                  placeholder="2026"
+                  type="number"
+                  value={item.year}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor={`tags-${item.id}`}>Tags</FieldLabel>
+                <Input
+                  disabled={syncing}
+                  id={`tags-${item.id}`}
+                  onChange={(event) =>
+                    onUpdate(item.id, { tags: event.target.value })
+                  }
+                  placeholder="research, product"
+                  value={item.tags}
+                />
+                <FieldDescription>
+                  Separate values with commas.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+          </SheetHeader>
+        ) : null}
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -397,6 +842,20 @@ function ActionButton({
 function getSortValue(document: Document, key: SortKey): string {
   if (key === "title") return document.title || document.documentId;
   return document[key] || "";
+}
+
+function splitList(value: string): string[] | undefined {
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length ? items : undefined;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDate(value: string | undefined): string {

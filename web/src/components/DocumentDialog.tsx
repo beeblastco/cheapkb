@@ -1,76 +1,89 @@
+import { Badge } from "@/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/client";
 import type { Document } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 export function DocumentDialog({
+  document,
   data,
+  loading,
   onClose,
 }: {
+  document: Document | null;
   data: Record<string, unknown> | null;
+  loading: boolean;
   onClose: () => void;
 }) {
-  const document = data?.document as Document | undefined;
-  if (!document) return null;
-  const tags = Array.isArray(document.tags)
-    ? document.tags.join(", ")
-    : document.tags;
-  const authors = Array.isArray(document.authors)
-    ? document.authors.join(", ")
-    : document.authors;
-  const fields = [
-    ["ID", document.documentId] as const,
-    ["Status", document.status] as const,
-    ["MIME type", document.mimeType] as const,
-    ["Chunks", String(Number(data?.chunkCount) || 0)] as const,
-    ["Created", formatDate(document.createdAt)] as const,
-    ["Updated", formatDate(document.updatedAt)] as const,
-    ["Tags", tags] as const,
-    ["Authors", authors] as const,
-    ["Last error", document.lastError] as const,
-  ].filter(
-    ([, value]) => value !== undefined && value !== null && value !== "",
-  );
+  const detailedDocument = (data?.document as Document | undefined) || document;
+  const tags = Array.isArray(detailedDocument?.tags)
+    ? detailedDocument.tags.join(", ")
+    : detailedDocument?.tags;
+  const authors = Array.isArray(detailedDocument?.authors)
+    ? detailedDocument.authors.join(", ")
+    : detailedDocument?.authors;
+  const fields = detailedDocument
+    ? [
+        ["ID", detailedDocument.documentId],
+        ["MIME type", detailedDocument.mimeType],
+        ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
+        ["Created", formatDate(detailedDocument.createdAt)],
+        ["Updated", formatDate(detailedDocument.updatedAt)],
+        ["Tags", tags],
+        ["Authors", authors],
+        ["Last error", detailedDocument.lastError],
+      ].filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      )
+    : [];
 
   return (
-    <Dialog onOpenChange={(open) => !open && onClose()} open>
-      <DialogContent className="max-h-[80vh] max-w-2xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{document.title || document.documentId}</DialogTitle>
-          <DialogDescription>
-            Document metadata and processing details
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {fields.map(([label, value]) => (
-            <div
-              className={cn(
-                label === "ID" || label === "Tags" || label === "Authors"
-                  ? "sm:col-span-2"
-                  : "",
-              )}
-              key={label}
+    <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
+      <SheetContent className="overflow-y-auto">
+        {detailedDocument ? (
+          <SheetHeader>
+            <SheetTitle>
+              {detailedDocument.title || detailedDocument.documentId}
+            </SheetTitle>
+            <SheetDescription>Document details</SheetDescription>
+            <Badge
+              variant={
+                detailedDocument.status === "FAILED" ? "destructive" : "outline"
+              }
             >
-              <p className="text-xs text-muted-foreground">{label}</p>
-              <p
-                className={cn(
-                  "mt-1 break-words text-sm text-foreground",
-                  label === "ID" && "font-mono text-xs",
-                  label === "Last error" && "text-destructive",
-                )}
-              >
-                {String(value)}
-              </p>
-            </div>
-          ))}
-        </div>
-      </DialogContent>
-    </Dialog>
+              {detailedDocument.status}
+            </Badge>
+            {loading ? (
+              <FieldGroup>
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </FieldGroup>
+            ) : (
+              <FieldGroup>
+                {fields.map(([label, value]) => (
+                  <Field key={String(label)}>
+                    <FieldLabel>{label}</FieldLabel>
+                    <FieldDescription>{String(value)}</FieldDescription>
+                  </Field>
+                ))}
+              </FieldGroup>
+            )}
+          </SheetHeader>
+        ) : null}
+      </SheetContent>
+    </Sheet>
   );
 }
