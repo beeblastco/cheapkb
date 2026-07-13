@@ -63,9 +63,12 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback((message: string, type: Toast["type"] = "info") => {
-    setBanner({ message, type });
-  }, []);
+  const notify = useCallback(
+    (message: string, type: Toast["type"] = "info") => {
+      setBanner({ message, type });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!banner) return;

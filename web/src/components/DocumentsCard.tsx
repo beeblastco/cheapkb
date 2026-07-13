@@ -296,10 +296,7 @@ function DocumentRow({
   return (
     <TableRow>
       <TableCell className="overflow-hidden">
-        <p
-          className="truncate font-medium"
-          title={title}
-        >
+        <p className="truncate font-medium" title={title}>
           {title}
         </p>
         <p
