@@ -2,6 +2,7 @@ import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
+import { Banner } from "@/components/Banner";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -22,15 +23,22 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, ShooIdentity } from "@/lib/types";
+import type { Document, ShooIdentity, Toast } from "@/lib/types";
 import { LogIn } from "lucide-react";
-import { toast } from "sonner";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function Guest({ onSignIn }: { onSignIn: () => void }) {
+function Guest({
+  banner,
+  onDismissBanner,
+  onSignIn,
+}: {
+  banner: Toast | null;
+  onDismissBanner: () => void;
+  onSignIn: () => void;
+}) {
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col">
+      <div className="flex min-h-dvh flex-col">
         <Header />
         <main className="flex flex-1 items-center justify-center px-4">
           <Card className="w-full max-w-sm">
@@ -47,6 +55,7 @@ function Guest({ onSignIn }: { onSignIn: () => void }) {
             </CardFooter>
           </Card>
         </main>
+        <Banner toast={banner} onDismiss={onDismissBanner} />
       </div>
     </TooltipProvider>
   );
@@ -63,6 +72,7 @@ function App() {
     string,
     unknown
   > | null>(null);
+  const [banner, setBanner] = useState<Toast | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
@@ -72,11 +82,17 @@ function App() {
   }, [documents]);
 
   const notify = useCallback(
-    (message: string, type: "info" | "error" | "success" = "info") => {
-      toast[type](message);
+    (message: string, type: Toast["type"] = "info") => {
+      setBanner({ message, type });
     },
     [],
   );
+
+  useEffect(() => {
+    if (!banner) return;
+    const timer = window.setTimeout(() => setBanner(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [banner]);
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -125,7 +141,11 @@ function App() {
   }, [identity?.token, loadDocuments]);
 
   useEffect(() => {
-    if (!documents.some((document) => isActiveStatus(document.status))) return;
+    const hasInflight = documents.some(
+      (document) =>
+        isActiveStatus(document.status) || document.status === "DELETING",
+    );
+    if (!hasInflight) return;
     const timer = window.setInterval(() => loadDocuments(false), 3000);
     return () => window.clearInterval(timer);
   }, [documents, loadDocuments]);
@@ -188,48 +208,81 @@ function App() {
   }
 
   async function deleteDocument(documentId: string) {
-    const previous = documentsRef.current;
-    const next = previous.filter(
-      (document) => document.documentId !== documentId,
+    const now = new Date().toISOString();
+    const deletedSnapshot = documentsRef.current.find(
+      (document) => document.documentId === documentId,
     );
-    setDocuments(next);
-    writePendingDocuments(next);
+    setDocuments((current) =>
+      current.map((document) =>
+        document.documentId === documentId
+          ? {
+              ...document,
+              lastError: null,
+              status: "DELETING",
+              updatedAt: now,
+            }
+          : document,
+      ),
+    );
     try {
       await request("DELETE", `/documents/${documentId}`);
-      notify("Document deleted", "success");
+      await loadDocuments();
     } catch (error) {
-      setDocuments(previous);
-      writePendingDocuments(previous);
-      notify((error as Error).message, "error");
+      const message = (error as Error).message;
+      const current = documentsRef.current;
+      let restored: Document[];
+      if (!deletedSnapshot) {
+        restored = current;
+      } else if (
+        current.some((document) => document.documentId === documentId)
+      ) {
+        restored = current.map((document) =>
+          document.documentId === documentId ? deletedSnapshot : document,
+        );
+      } else {
+        restored = [deletedSnapshot, ...current];
+      }
+      setDocuments(restored);
+      writePendingDocuments(restored);
+      notify(message, "error");
     }
   }
 
   if (!identity?.token) {
-    return <Guest onSignIn={signIn} />;
+    return (
+      <Guest
+        banner={banner}
+        onDismissBanner={() => setBanner(null)}
+        onSignIn={signIn}
+      />
+    );
   }
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen">
+      <div className="flex min-h-dvh flex-col">
         <Header identity={identity} onSignOut={signOut} />
-        <main className="container mx-auto grid items-start gap-4 px-4 py-4 lg:grid-cols-12">
-          <div className="lg:col-span-8 xl:col-span-9">
-            <DocumentsCard
-              documents={documents}
-              loading={loadingDocuments}
-              token={identity.token}
-              setDocuments={setDocuments}
-              loadDocuments={loadDocuments}
-              notify={notify}
-              onDelete={deleteDocument}
-              onReindex={reindexDocument}
-              onView={showDocument}
-            />
-          </div>
-          <div className="lg:col-span-4 xl:col-span-3">
-            <QueryCard request={request} onView={showDocument} />
+        <main className="flex w-full flex-1 flex-col">
+          <div className="mx-auto grid w-full max-w-[1440px] flex-1 items-start gap-3 px-3 py-3 sm:px-4 lg:grid-cols-12 lg:px-6">
+            <div className="flex flex-col gap-3 lg:col-span-8 xl:col-span-9">
+              <DocumentsCard
+                documents={documents}
+                loading={loadingDocuments}
+                token={identity.token}
+                setDocuments={setDocuments}
+                loadDocuments={loadDocuments}
+                notify={notify}
+                onDelete={deleteDocument}
+                onReindex={reindexDocument}
+                onView={showDocument}
+              />
+            </div>
+            <div className="lg:col-span-4 xl:col-span-3">
+              <QueryCard request={request} onView={showDocument} />
+            </div>
           </div>
         </main>
+        <Banner toast={banner} onDismiss={() => setBanner(null)} />
         <DocumentDialog
           data={selectedDocumentData}
           document={selectedDocument}

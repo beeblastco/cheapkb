@@ -8,6 +8,7 @@ export type DocumentStatus =
   | "CHUNKED"
   | "EMBEDDING"
   | "EMBEDDED"
+  | "DELETING"
   | "FAILED";
 
 export interface Document {

@@ -231,6 +231,18 @@ export function mergeDocuments(
         Date.parse(
           serverDocument.updatedAt ?? serverDocument.createdAt ?? "",
         ) || 0;
+      if (document.status === "DELETING") {
+        const maxAge = FAILED_DOCUMENT_MAX_AGE_MS;
+        const isRecent = Date.now() - localUpdatedAt < maxAge;
+        if (isRecent) {
+          merged.push(document);
+          serverById.delete(document.documentId);
+        } else {
+          merged.push(serverDocument);
+          serverById.delete(document.documentId);
+        }
+        continue;
+      }
       const keepLocalFailure =
         document.status === "FAILED" && localUpdatedAt > serverUpdatedAt;
       merged.push(
