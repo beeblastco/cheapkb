@@ -62,7 +62,7 @@ export function getIdentity(): ShooIdentity | null {
 }
 
 export function getUserProfile(identity: ShooIdentity): UserProfile {
-  const fallback = identity.userId || "User";
+  const fallback = "Account";
   try {
     const payload = identity.token.split(".")[1];
     const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
@@ -73,9 +73,15 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
       character.charCodeAt(0),
     );
     const claims = JSON.parse(new TextDecoder().decode(bytes));
-    const name = String(claims.name || claims.email || fallback);
+    const email = String(claims.email || "");
+    const name = String(
+      claims.name ||
+        [claims.given_name, claims.family_name].filter(Boolean).join(" ") ||
+        email ||
+        fallback,
+    );
     return {
-      email: String(claims.email || ""),
+      email,
       initials: name
         .split(/\s+/)
         .map((part: string) => part[0])
@@ -88,7 +94,7 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
   } catch {
     return {
       email: "",
-      initials: fallback.slice(0, 2).toUpperCase(),
+      initials: "A",
       name: fallback,
       picture: "",
     };
@@ -204,11 +210,19 @@ export function mergeDocuments(
   serverDocuments: Document[],
 ): Document[] {
   const merged: Document[] = [];
-  const serverById = new Map(
-    serverDocuments.map((document) => [document.documentId, document]),
-  );
+  const currentById = new Map<string, Document>();
+  const serverById = new Map<string, Document>();
 
   for (const document of currentDocuments) {
+    if (!document.documentId.startsWith("temp_")) {
+      currentById.set(document.documentId, document);
+    }
+  }
+  for (const document of serverDocuments) {
+    serverById.set(document.documentId, document);
+  }
+
+  for (const document of currentById.values()) {
     const serverDocument = serverById.get(document.documentId);
     if (serverDocument) {
       const localUpdatedAt =

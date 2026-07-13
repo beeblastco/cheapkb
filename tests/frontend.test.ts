@@ -215,6 +215,21 @@ describe("frontend", () => {
       expect(documents).toEqual([]);
       expect(localStorage.getItem(PENDING_DOCUMENTS_KEY)).toBeNull();
     });
+
+    it("renders one row when polling returns an optimistic document", () => {
+      const documents = mergeDocuments(
+        [
+          { documentId: "doc-1", status: "QUEUED" },
+          { documentId: "doc-1", status: "UPLOADED" },
+          { documentId: "temp_1", status: "UPLOADING" },
+        ],
+        [{ documentId: "doc-1", status: "PARSING" }],
+      );
+
+      expect(documents).toEqual([
+        expect.objectContaining({ documentId: "doc-1", status: "PARSING" }),
+      ]);
+    });
   });
 
   describe("document helpers", () => {
@@ -254,10 +269,6 @@ describe("frontend", () => {
         stdio: "pipe",
       });
       const sourceHtml = fs.readFileSync("web/index.html", "utf8");
-      const uploadSource = fs.readFileSync(
-        "web/src/components/UploadCard.tsx",
-        "utf8",
-      );
       const documentsSource = fs.readFileSync(
         "web/src/components/DocumentsCard.tsx",
         "utf8",
@@ -274,10 +285,11 @@ describe("frontend", () => {
       expect(sourceHtml).toContain("script-src 'self'");
       expect(sourceHtml).toContain("script-src 'self' https://shoo.dev");
       expect(sourceHtml).toContain("https://lh3.googleusercontent.com");
+      expect(sourceHtml).toContain('data-shoo-pii="true"');
       expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
-      expect(uploadSource).toContain("multiple");
-      expect(uploadSource).toContain('window.addEventListener("drop"');
-      expect(uploadSource).toContain("Sync all");
+      expect(documentsSource).toContain("multiple");
+      expect(documentsSource).toContain('window.addEventListener("drop"');
+      expect(documentsSource).toContain("Sync all");
       expect(documentsSource).not.toContain("STATUS_LABELS");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);

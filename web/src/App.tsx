@@ -4,9 +4,14 @@ import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
 import { Banner } from "@/components/Banner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { UploadCard } from "@/components/UploadCard";
 import {
   apiCall,
   getIdentity,
@@ -35,20 +40,19 @@ function Guest({
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
         <Header />
-        <main className="flex flex-1 items-center justify-center px-5 py-16">
-          <Card className="w-full max-w-sm border-border/80 bg-card/70 shadow-2xl shadow-black/20">
-            <CardContent className="px-6 text-center">
-              <h1 className="text-2xl font-semibold tracking-tight">
-                Your documents, searchable.
-              </h1>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Sign in to sync sources, follow ingestion, and search your
-                private knowledge base.
-              </p>
-              <Button className="mt-6 w-full" onClick={onSignIn}>
-                <LogIn /> Continue with Google
+        <main className="flex flex-1 items-center justify-center px-4">
+          <Card className="w-full max-w-sm">
+            <CardHeader>
+              <CardTitle>Sign in</CardTitle>
+              <CardDescription>
+                Continue to your private knowledge base.
+              </CardDescription>
+            </CardHeader>
+            <CardFooter>
+              <Button className="w-full" onClick={onSignIn}>
+                <LogIn data-icon="inline-start" /> Continue with Google
               </Button>
-            </CardContent>
+            </CardFooter>
           </Card>
         </main>
         <Banner toast={banner} onDismiss={onDismissBanner} />
@@ -61,12 +65,17 @@ function App() {
   const [identity, setIdentity] = useState<ShooIdentity | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
-  const [selectedDocument, setSelectedDocument] = useState<Record<
+  const [selectedDocument, setSelectedDocument] = useState<Document | null>(
+    null,
+  );
+  const [selectedDocumentData, setSelectedDocumentData] = useState<Record<
     string,
     unknown
   > | null>(null);
   const [banner, setBanner] = useState<Toast | null>(null);
+  const [loadingDocument, setLoadingDocument] = useState(false);
   const documentsRef = useRef(documents);
+  const documentRequest = useRef(0);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -150,12 +159,33 @@ function App() {
   }
 
   async function showDocument(documentId: string) {
+    const requestId = documentRequest.current + 1;
+    documentRequest.current = requestId;
+    const document = documentsRef.current.find(
+      (current) => current.documentId === documentId,
+    );
+    setSelectedDocument(
+      document || { documentId, status: "", title: documentId },
+    );
+    setSelectedDocumentData(null);
+    setLoadingDocument(true);
     try {
       const data = await request("GET", `/documents/${documentId}`);
-      setSelectedDocument(data);
+      if (requestId === documentRequest.current) {
+        setSelectedDocumentData(data);
+      }
     } catch (error) {
       notify((error as Error).message, "error");
+    } finally {
+      if (requestId === documentRequest.current) setLoadingDocument(false);
     }
+  }
+
+  function closeDocument() {
+    documentRequest.current += 1;
+    setSelectedDocument(null);
+    setSelectedDocumentData(null);
+    setLoadingDocument(false);
   }
 
   async function reindexDocument(documentId: string) {
@@ -233,15 +263,13 @@ function App() {
         <main className="flex w-full flex-1 flex-col">
           <div className="mx-auto grid w-full max-w-[1440px] flex-1 items-start gap-3 px-3 py-3 sm:px-4 lg:grid-cols-12 lg:px-6">
             <div className="flex flex-col gap-3 lg:col-span-8 xl:col-span-9">
-              <UploadCard
+              <DocumentsCard
+                documents={documents}
+                loading={loadingDocuments}
                 token={identity.token}
                 setDocuments={setDocuments}
                 loadDocuments={loadDocuments}
                 notify={notify}
-              />
-              <DocumentsCard
-                documents={documents}
-                loading={loadingDocuments}
                 onDelete={deleteDocument}
                 onReindex={reindexDocument}
                 onView={showDocument}
@@ -254,8 +282,10 @@ function App() {
         </main>
         <Banner toast={banner} onDismiss={() => setBanner(null)} />
         <DocumentDialog
-          data={selectedDocument}
-          onClose={() => setSelectedDocument(null)}
+          data={selectedDocumentData}
+          document={selectedDocument}
+          loading={loadingDocument}
+          onClose={closeDocument}
         />
       </div>
     </TooltipProvider>

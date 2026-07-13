@@ -10,6 +10,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -57,58 +58,62 @@ export function Header({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-border/70 bg-background/90 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:px-6">
-          <div>
-            <p className="text-base font-semibold tracking-tight">cheapkb</p>
-          </div>
+      <header className="sticky top-0 z-40 border-b bg-background">
+        <div className="container mx-auto flex h-16 items-center justify-between px-4">
+          <p className="font-semibold">cheapkb</p>
 
           {profile ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button className="h-10 gap-2 px-2" variant="ghost">
+                <Button variant="ghost">
                   <Avatar size="sm">
-                    <AvatarImage alt={profile.name} src={profile.picture} />
+                    {profile.picture ? (
+                      <AvatarImage alt={profile.name} src={profile.picture} />
+                    ) : null}
                     <AvatarFallback>{profile.initials}</AvatarFallback>
                   </Avatar>
-                  <span className="hidden max-w-40 truncate text-sm sm:block">
-                    {profile.name}
+                  <span className="hidden max-w-48 truncate sm:block">
+                    {profile.email || profile.name}
                   </span>
-                  <ChevronDown className="size-3.5 text-muted-foreground" />
+                  <ChevronDown data-icon="inline-end" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuContent align="end">
                 <DropdownMenuLabel>
-                  <span className="block truncate font-medium text-foreground">
-                    {profile.name}
-                  </span>
-                  <span className="mt-0.5 block truncate font-normal">
-                    {profile.email || identity?.userId}
-                  </span>
+                  <div className="flex flex-col gap-1">
+                    <span className="truncate">{profile.name}</span>
+                    <span className="truncate font-normal text-muted-foreground">
+                      {profile.email || "Google account"}
+                    </span>
+                  </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => setDialog("settings")}>
-                  <Settings /> Settings
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setDialog("terms")}>
-                  <SlidersHorizontal /> Terms and conditions
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setDialog("privacy")}>
-                  <FileLock /> Privacy policy
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <a
-                    href="https://github.com/beeblastco/cheapkb/issues"
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    <Contact /> Contact
-                  </a>
-                </DropdownMenuItem>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => setDialog("settings")}>
+                    <Settings /> Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setDialog("terms")}>
+                    <SlidersHorizontal /> Terms and conditions
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setDialog("privacy")}>
+                    <FileLock /> Privacy policy
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <a
+                      href="https://github.com/beeblastco/cheapkb/issues"
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <Contact /> Contact
+                    </a>
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={onSignOut} variant="destructive">
-                  <LogOut /> Log out
-                </DropdownMenuItem>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={onSignOut} variant="destructive">
+                    <LogOut /> Log out
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
