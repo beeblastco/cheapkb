@@ -68,6 +68,7 @@ import {
 import {
   extractMetadata,
   getFileMimeType,
+  getStatusBadgeVariant,
   isActiveStatus,
   uploadDocument,
   writePendingDocuments,
@@ -445,12 +446,10 @@ export function DocumentsCard({
                   />
                   <SortableHead label="Status" onClick={() => sort("status")} />
                   <SortableHead
-                    className="hidden md:table-cell"
                     label="Uploaded"
                     onClick={() => sort("createdAt")}
                   />
                   <SortableHead
-                    className="hidden lg:table-cell"
                     label="Modified"
                     onClick={() => sort("updatedAt")}
                   />
@@ -663,18 +662,12 @@ function DocumentRow({
         </div>
       </TableCell>
       <TableCell>
-        <Badge
-          variant={document.status === "FAILED" ? "destructive" : "outline"}
-        >
+        <Badge variant={getStatusBadgeVariant(document.status)}>
           {document.status}
         </Badge>
       </TableCell>
-      <TableCell className="hidden md:table-cell">
-        {formatDate(document.createdAt)}
-      </TableCell>
-      <TableCell className="hidden lg:table-cell">
-        {formatDate(document.updatedAt)}
-      </TableCell>
+      <TableCell>{formatDate(document.createdAt)}</TableCell>
+      <TableCell>{formatDate(document.updatedAt)}</TableCell>
       <TableCell>
         <div className="flex justify-end gap-1">
           <ActionButton
