@@ -39,8 +39,8 @@ export function DocumentDialog({
         ["ID", detailedDocument.documentId],
         ["MIME type", detailedDocument.mimeType],
         ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
-        ["Created", formatDate(detailedDocument.createdAt)],
-        ["Updated", formatDate(detailedDocument.updatedAt)],
+        ["Uploaded", formatDate(detailedDocument.createdAt)],
+        ["Modified", formatDate(detailedDocument.updatedAt)],
         ["Tags", tags],
         ["Authors", authors],
         ["Last error", detailedDocument.lastError],
@@ -51,7 +51,7 @@ export function DocumentDialog({
 
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
-      <SheetContent>
+      <SheetContent className="overflow-y-auto">
         {detailedDocument ? (
           <SheetHeader>
             <SheetTitle>
