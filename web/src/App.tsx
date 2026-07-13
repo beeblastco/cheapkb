@@ -22,7 +22,15 @@ import type { Document, ShooIdentity, Toast } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function Guest({ onSignIn }: { onSignIn: () => void }) {
+function Guest({
+  banner,
+  onDismissBanner,
+  onSignIn,
+}: {
+  banner: Toast | null;
+  onDismissBanner: () => void;
+  onSignIn: () => void;
+}) {
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
@@ -43,6 +51,7 @@ function Guest({ onSignIn }: { onSignIn: () => void }) {
             </CardContent>
           </Card>
         </main>
+        <Banner toast={banner} onDismiss={onDismissBanner} />
       </div>
     </TooltipProvider>
   );
@@ -169,7 +178,10 @@ function App() {
   }
 
   async function deleteDocument(documentId: string) {
-    const previous = documentsRef.current;
+    const now = new Date().toISOString();
+    const deletedSnapshot = documentsRef.current.find(
+      (document) => document.documentId === documentId,
+    );
     setDocuments((current) =>
       current.map((document) =>
         document.documentId === documentId
@@ -177,7 +189,7 @@ function App() {
               ...document,
               lastError: null,
               status: "DELETING",
-              updatedAt: new Date().toISOString(),
+              updatedAt: now,
             }
           : document,
       ),
@@ -186,14 +198,32 @@ function App() {
       await request("DELETE", `/documents/${documentId}`);
       await loadDocuments();
     } catch (error) {
-      setDocuments(previous);
-      writePendingDocuments(previous);
-      notify((error as Error).message, "error");
+      const message = (error as Error).message;
+      const current = documentsRef.current;
+      let restored: Document[];
+      if (!deletedSnapshot) {
+        restored = current;
+      } else if (current.some((document) => document.documentId === documentId)) {
+        restored = current.map((document) =>
+          document.documentId === documentId ? deletedSnapshot : document,
+        );
+      } else {
+        restored = [deletedSnapshot, ...current];
+      }
+      setDocuments(restored);
+      writePendingDocuments(restored);
+      notify(message, "error");
     }
   }
 
   if (!identity?.token) {
-    return <Guest onSignIn={signIn} />;
+    return (
+      <Guest
+        banner={banner}
+        onDismissBanner={() => setBanner(null)}
+        onSignIn={signIn}
+      />
+    );
   }
 
   return (

@@ -142,7 +142,7 @@ export function DocumentsCard({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 [&_[data-slot=table-container]]:!overflow-visible">
+        <div className="min-h-0 flex-1">
           <Table className="table-fixed">
             <colgroup>
               <col className="w-[40%]" />
