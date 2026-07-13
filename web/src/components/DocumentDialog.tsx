@@ -5,9 +5,41 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/client";
 import type { Document } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+const FAILED_STATUSES = new Set(["FAILED"]);
+const READY_STATUSES = new Set(["EMBEDDED"]);
+const ACTIVE_STATUSES = new Set([
+  "UPLOADING",
+  "UPLOADED",
+  "QUEUED",
+  "PARSING",
+  "PARSED",
+  "CHUNKING",
+  "CHUNKED",
+  "EMBEDDING",
+  "DELETING",
+]);
+
+function statusVariant(
+  status: string | undefined,
+): "default" | "secondary" | "destructive" | "outline" {
+  if (!status) return "outline";
+  if (FAILED_STATUSES.has(status)) return "destructive";
+  if (READY_STATUSES.has(status)) return "default";
+  if (ACTIVE_STATUSES.has(status)) return "secondary";
+  return "outline";
+}
+
+function humanize(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
 
 export function DocumentDialog({
   data,
@@ -25,17 +57,23 @@ export function DocumentDialog({
     ? document.authors.join(", ")
     : document.authors;
   const fields = [
-    ["ID", document.documentId] as const,
-    ["Status", document.status] as const,
-    ["MIME type", document.mimeType] as const,
-    ["Chunks", String(Number(data?.chunkCount) || 0)] as const,
-    ["Created", formatDate(document.createdAt)] as const,
-    ["Updated", formatDate(document.updatedAt)] as const,
-    ["Tags", tags] as const,
-    ["Authors", authors] as const,
-    ["Last error", document.lastError] as const,
+    ["ID", document.documentId, "default"] as const,
+    [
+      "Status",
+      { status: document.status, variant: statusVariant(document.status) },
+      "status",
+    ] as const,
+    ["MIME type", document.mimeType, "default"] as const,
+    ["Chunks", String(Number(data?.chunkCount) || 0), "default"] as const,
+    ["Created", formatDate(document.createdAt), "default"] as const,
+    ["Updated", formatDate(document.updatedAt), "default"] as const,
+    ["Tags", tags, "default"] as const,
+    ["Authors", authors, "default"] as const,
+    ["Last error", document.lastError, "error"] as const,
   ].filter(
-    ([, value]) => value !== undefined && value !== null && value !== "",
+    ([, value]) =>
+      (typeof value === "string" && value !== "") ||
+      (value && typeof value === "object" && "status" in value),
   );
 
   return (
@@ -48,7 +86,7 @@ export function DocumentDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 sm:grid-cols-2">
-          {fields.map(([label, value]) => (
+          {fields.map(([label, value, kind]) => (
             <div
               className={cn(
                 label === "ID" || label === "Tags" || label === "Authors"
@@ -58,15 +96,25 @@ export function DocumentDialog({
               key={label}
             >
               <p className="text-xs text-muted-foreground">{label}</p>
-              <p
-                className={cn(
-                  "mt-1 wrap-break-word text-sm text-foreground",
-                  label === "ID" && "font-mono text-xs",
-                  label === "Last error" && "text-destructive",
-                )}
-              >
-                {String(value)}
-              </p>
+              {kind === "status" && value && typeof value === "object" ? (
+                <div className="mt-1">
+                  <Badge variant={value.variant}>
+                    {humanize(value.status)}
+                  </Badge>
+                </div>
+              ) : kind === "error" && value ? (
+                <p className="mt-1 wrap-break-word text-sm text-destructive">
+                  {String(value)}
+                </p>
+              ) : label === "ID" ? (
+                <p className="mt-1 wrap-break-word font-mono text-xs text-foreground">
+                  {String(value)}
+                </p>
+              ) : (
+                <p className="mt-1 wrap-break-word text-sm text-foreground">
+                  {String(value)}
+                </p>
+              )}
             </div>
           ))}
         </div>

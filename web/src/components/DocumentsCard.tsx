@@ -9,8 +9,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import {
   Pagination,
@@ -34,12 +42,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { isActiveStatus } from "@/lib/client";
-import type { Document } from "@/lib/types";
+import type { Document, DocumentStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownUp,
   Eye,
   FileText,
+  Loader2,
   LoaderCircle,
   RefreshCw,
   Search,
@@ -133,23 +142,28 @@ export function DocumentsCard({
           </div>
         </div>
 
-        <div className="flex-1">
-          <Table>
+        <div className="min-h-0 flex-1 [&_[data-slot=table-container]]:!overflow-visible">
+          <Table className="table-fixed">
+            <colgroup>
+              <col className="w-[40%]" />
+              <col className="w-auto" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-32" />
+            </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <SortableHead label="Document" onClick={() => sort("title")} />
                 <SortableHead label="Status" onClick={() => sort("status")} />
                 <SortableHead
-                  className="hidden md:table-cell"
                   label="Uploaded"
                   onClick={() => sort("createdAt")}
                 />
                 <SortableHead
-                  className="hidden lg:table-cell"
                   label="Modified"
                   onClick={() => sort("updatedAt")}
                 />
-                <TableHead className="w-32 text-right">Actions</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -174,17 +188,21 @@ export function DocumentsCard({
           </Table>
 
           {!loading && !visible.length && (
-            <div className="flex min-h-60 flex-col items-center justify-center px-6 text-center">
-              <FileText className="size-5 text-muted-foreground" />
-              <p className="mt-3 text-sm font-medium">
-                {query ? "No matching documents" : "No documents yet"}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {query
-                  ? "Try a different search."
-                  : "Drop files into the queue, then sync them."}
-              </p>
-            </div>
+            <Empty className="border-0">
+              <EmptyMedia variant="icon">
+                <FileText />
+              </EmptyMedia>
+              <EmptyHeader>
+                <EmptyTitle>
+                  {query ? "No matching documents" : "No documents yet"}
+                </EmptyTitle>
+                <EmptyDescription>
+                  {query
+                    ? "Try a different search."
+                    : "Drop files into the queue, then sync them."}
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
         </div>
 
@@ -273,37 +291,43 @@ function DocumentRow({
   const stalled =
     isActiveStatus(document.status) &&
     Date.now() - updatedAt > STALLED_AFTER_MS;
+  const title = document.title || document.documentId;
+  const subtitle = document.mimeType || document.documentId;
   return (
     <TableRow>
-      <TableCell className="max-w-64">
-        <p className="truncate font-medium">
-          {document.title || document.documentId}
+      <TableCell className="overflow-hidden">
+        <p
+          className="truncate font-medium"
+          title={title}
+        >
+          {title}
         </p>
-        <p className="mt-1 truncate text-xs text-muted-foreground">
-          {document.mimeType || document.documentId}
+        <p
+          className="mt-1 truncate text-xs text-muted-foreground"
+          title={subtitle}
+        >
+          {subtitle}
         </p>
         {document.lastError && (
-          <p className="mt-1 truncate text-xs text-destructive">
+          <p
+            className="mt-1 truncate text-xs text-destructive"
+            title={document.lastError}
+          >
             {document.lastError}
           </p>
         )}
       </TableCell>
       <TableCell>
-        <span
-          className={cn(
-            "font-mono text-xs",
-            document.status === "FAILED" && "text-destructive",
-            document.status === "EMBEDDED" && "text-emerald-400",
-            stalled && "text-amber-400",
-          )}
-        >
-          {document.status}
-        </span>
+        <StatusBadge
+          optimistic={optimistic}
+          stalled={stalled}
+          status={document.status as DocumentStatus}
+        />
       </TableCell>
-      <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
+      <TableCell className="truncate text-xs text-muted-foreground">
         {formatDate(document.createdAt)}
       </TableCell>
-      <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
+      <TableCell className="truncate text-xs text-muted-foreground">
         {formatDate(document.updatedAt)}
       </TableCell>
       <TableCell>
@@ -330,7 +354,7 @@ function DocumentRow({
                 <AlertDialogTrigger asChild>
                   <Button
                     aria-label="Delete document"
-                    disabled={optimistic}
+                    disabled={optimistic || document.status === "DELETING"}
                     size="icon-sm"
                     variant="ghost"
                   >
@@ -363,6 +387,58 @@ function DocumentRow({
       </TableCell>
     </TableRow>
   );
+}
+
+function StatusBadge({
+  optimistic,
+  stalled,
+  status,
+}: {
+  optimistic: boolean;
+  stalled: boolean;
+  status: DocumentStatus | string;
+}) {
+  if (optimistic) {
+    return (
+      <Badge variant="secondary">
+        <Loader2 className="size-3 animate-spin motion-reduce:animate-none" />
+        Uploading
+      </Badge>
+    );
+  }
+  if (status === "FAILED") {
+    return <Badge variant="destructive">Failed</Badge>;
+  }
+  if (status === "EMBEDDED") {
+    return <Badge variant="default">Ready</Badge>;
+  }
+  if (stalled) {
+    return <Badge variant="destructive">Stalled</Badge>;
+  }
+  if (isActiveStatus(status)) {
+    return (
+      <Badge variant="secondary">
+        <LoaderCircle className="size-3 animate-spin motion-reduce:animate-none" />
+        {humanize(status)}
+      </Badge>
+    );
+  }
+  if (status === "DELETING") {
+    return (
+      <Badge variant="secondary">
+        <LoaderCircle className="size-3 animate-spin motion-reduce:animate-none" />
+        Deleting
+      </Badge>
+    );
+  }
+  return <Badge variant="outline">{humanize(status)}</Badge>;
+}
+
+function humanize(status: string): string {
+  return status
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function ActionButton({

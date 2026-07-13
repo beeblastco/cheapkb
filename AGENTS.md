@@ -19,3 +19,7 @@ Naming convention AWS Services: <project>-<service_name>-<account_id>-<region>. 
 Put all defined const, types, interface at the beginning of the scripts. Next should be the export or main logic of the script. At the bottom of the scripts should be private, internal functions that use inisde the file. All the functions types should be group together or place next together, for example: all async functions should be placed in a rows, next will be all function, etc... Follow strictly this structure behaviour when writing, edit or delete code. Only add comments into key sections, keep comments max 2 lines with clear explaination.
 
 Always check for lint, typescript errors and warnings. Use prettier to format the code.
+
+No use of sonner, toast, etc... UX, UI should be visible and interactive through the main components.
+
+Don't try to add custom gap an stuff as the current shadcn/ui already include the theme and style itself. Try to use default first, only add custom gap, margin, padding when specifically asked

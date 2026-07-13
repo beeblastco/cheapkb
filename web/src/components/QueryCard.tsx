@@ -87,7 +87,7 @@ export function QueryCard({
   const groups = groupResults(latestTurn?.results || []);
 
   return (
-    <Card className="min-h-[calc(100vh-6rem)] gap-0 overflow-hidden py-0 lg:sticky lg:top-20">
+    <Card className="min-h-[calc(100dvh-6rem)] gap-0 overflow-hidden py-0 lg:sticky lg:top-20">
       <CardHeader className="flex-row items-center justify-between border-b border-border py-4">
         <div>
           <CardTitle>Ask cheapkb</CardTitle>
@@ -107,7 +107,7 @@ export function QueryCard({
         </Select>
       </CardHeader>
 
-      <CardContent className="flex min-h-[calc(100vh-10.1rem)] flex-col p-0">
+      <CardContent className="flex min-h-[calc(100dvh-10.1rem)] flex-col p-0">
         <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-6 p-4">
             {!turns.length && !loading && (

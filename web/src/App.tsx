@@ -2,6 +2,7 @@ import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
+import { Banner } from "@/components/Banner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -17,15 +18,14 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, ShooIdentity } from "@/lib/types";
+import type { Document, ShooIdentity, Toast } from "@/lib/types";
 import { LogIn } from "lucide-react";
-import { toast } from "sonner";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col">
+      <div className="flex min-h-dvh flex-col">
         <Header />
         <main className="flex flex-1 items-center justify-center px-5 py-16">
           <Card className="w-full max-w-sm border-border/80 bg-card/70 shadow-2xl shadow-black/20">
@@ -56,18 +56,22 @@ function App() {
     string,
     unknown
   > | null>(null);
+  const [banner, setBanner] = useState<Toast | null>(null);
   const documentsRef = useRef(documents);
 
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback(
-    (message: string, type: "info" | "error" | "success" = "info") => {
-      toast[type](message);
-    },
-    [],
-  );
+  const notify = useCallback((message: string, type: Toast["type"] = "info") => {
+    setBanner({ message, type });
+  }, []);
+
+  useEffect(() => {
+    if (!banner) return;
+    const timer = window.setTimeout(() => setBanner(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [banner]);
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -116,7 +120,11 @@ function App() {
   }, [identity?.token, loadDocuments]);
 
   useEffect(() => {
-    if (!documents.some((document) => isActiveStatus(document.status))) return;
+    const hasInflight = documents.some(
+      (document) =>
+        isActiveStatus(document.status) || document.status === "DELETING",
+    );
+    if (!hasInflight) return;
     const timer = window.setInterval(() => loadDocuments(false), 3000);
     return () => window.clearInterval(timer);
   }, [documents, loadDocuments]);
@@ -159,14 +167,21 @@ function App() {
 
   async function deleteDocument(documentId: string) {
     const previous = documentsRef.current;
-    const next = previous.filter(
-      (document) => document.documentId !== documentId,
+    setDocuments((current) =>
+      current.map((document) =>
+        document.documentId === documentId
+          ? {
+              ...document,
+              lastError: null,
+              status: "DELETING",
+              updatedAt: new Date().toISOString(),
+            }
+          : document,
+      ),
     );
-    setDocuments(next);
-    writePendingDocuments(next);
     try {
       await request("DELETE", `/documents/${documentId}`);
-      notify("Document deleted", "success");
+      await loadDocuments();
     } catch (error) {
       setDocuments(previous);
       writePendingDocuments(previous);
@@ -180,11 +195,11 @@ function App() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen">
+      <div className="flex min-h-dvh flex-col">
         <Header identity={identity} onSignOut={signOut} />
-        <main className="mx-auto w-full max-w-[1600px] px-3 py-3 sm:px-4 lg:px-6">
-          <div className="grid items-start gap-3 lg:grid-cols-12">
-            <div className="space-y-3 lg:col-span-8 xl:col-span-9">
+        <main className="flex w-full flex-1 flex-col">
+          <div className="mx-auto grid w-full max-w-[1440px] flex-1 items-start gap-3 px-3 py-3 sm:px-4 lg:grid-cols-12 lg:px-6">
+            <div className="flex flex-col gap-3 lg:col-span-8 xl:col-span-9">
               <UploadCard
                 token={identity.token}
                 setDocuments={setDocuments}
@@ -204,6 +219,7 @@ function App() {
             </div>
           </div>
         </main>
+        <Banner toast={banner} onDismiss={() => setBanner(null)} />
         <DocumentDialog
           data={selectedDocument}
           onClose={() => setSelectedDocument(null)}

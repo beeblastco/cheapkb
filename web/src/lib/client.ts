@@ -217,6 +217,11 @@ export function mergeDocuments(
         Date.parse(
           serverDocument.updatedAt ?? serverDocument.createdAt ?? "",
         ) || 0;
+      if (document.status === "DELETING") {
+        merged.push(document);
+        serverById.delete(document.documentId);
+        continue;
+      }
       const keepLocalFailure =
         document.status === "FAILED" && localUpdatedAt > serverUpdatedAt;
       merged.push(
