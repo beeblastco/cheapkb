@@ -1,3 +1,5 @@
+import type { Badge } from "@/components/ui/badge";
+import type React from "react";
 import type {
   Document,
   QueryResult,
@@ -203,6 +205,15 @@ export async function apiCall(
 
 export function isActiveStatus(status: string): boolean {
   return (ACTIVE_STATUSES as readonly string[]).includes(status);
+}
+
+export function getStatusBadgeVariant(
+  status: string,
+): React.ComponentProps<typeof Badge>["variant"] {
+  if (status === "FAILED") return "destructive";
+  if (status === "EMBEDDED") return "default";
+  if (isActiveStatus(status) || status === "DELETING") return "secondary";
+  return "outline";
 }
 
 export function mergeDocuments(

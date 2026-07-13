@@ -68,6 +68,7 @@ import {
 import {
   extractMetadata,
   getFileMimeType,
+  getStatusBadgeVariant,
   isActiveStatus,
   uploadDocument,
   writePendingDocuments,
@@ -90,15 +91,6 @@ const STALLED_AFTER_MS = 5 * 60 * 1000;
 const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
 
 type SortKey = "title" | "status" | "createdAt" | "updatedAt";
-
-type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
-
-function statusVariant(status: string): BadgeVariant {
-  if (status === "FAILED") return "destructive";
-  if (status === "EMBEDDED") return "default";
-  if (isActiveStatus(status) || status === "DELETING") return "secondary";
-  return "outline";
-}
 
 export function DocumentsCard({
   documents,
@@ -670,7 +662,7 @@ function DocumentRow({
         </div>
       </TableCell>
       <TableCell>
-        <Badge variant={statusVariant(document.status)}>
+        <Badge variant={getStatusBadgeVariant(document.status)}>
           {document.status}
         </Badge>
       </TableCell>

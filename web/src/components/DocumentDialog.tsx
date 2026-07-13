@@ -13,7 +13,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate } from "@/lib/client";
+import { formatDate, getStatusBadgeVariant } from "@/lib/client";
 import type { Document } from "@/lib/types";
 
 export function DocumentDialog({
@@ -58,15 +58,7 @@ export function DocumentDialog({
               {detailedDocument.title || detailedDocument.documentId}
             </SheetTitle>
             <SheetDescription>Document details</SheetDescription>
-            <Badge
-              variant={
-                detailedDocument.status === "FAILED"
-                  ? "destructive"
-                  : detailedDocument.status === "EMBEDDED"
-                    ? "default"
-                    : "outline"
-              }
-            >
+            <Badge variant={getStatusBadgeVariant(detailedDocument.status)}>
               {detailedDocument.status}
             </Badge>
             {loading ? (
