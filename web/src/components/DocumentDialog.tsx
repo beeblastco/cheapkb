@@ -51,7 +51,7 @@ export function DocumentDialog({
 
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
-      <SheetContent className="overflow-y-auto">
+      <SheetContent>
         {detailedDocument ? (
           <SheetHeader>
             <SheetTitle>
@@ -60,7 +60,11 @@ export function DocumentDialog({
             <SheetDescription>Document details</SheetDescription>
             <Badge
               variant={
-                detailedDocument.status === "FAILED" ? "destructive" : "outline"
+                detailedDocument.status === "FAILED"
+                  ? "destructive"
+                  : detailedDocument.status === "EMBEDDED"
+                    ? "default"
+                    : "outline"
               }
             >
               {detailedDocument.status}

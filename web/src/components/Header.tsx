@@ -59,7 +59,7 @@ export function Header({
   return (
     <>
       <header className="sticky top-0 z-40 border-b bg-background">
-        <div className="container mx-auto flex h-16 items-center justify-between px-4">
+        <div className="flex h-16 w-full items-center justify-between px-4">
           <p className="font-semibold">cheapkb</p>
 
           {profile ? (

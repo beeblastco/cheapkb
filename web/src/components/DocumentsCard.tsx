@@ -91,6 +91,15 @@ const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
 
 type SortKey = "title" | "status" | "createdAt" | "updatedAt";
 
+type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
+
+function statusVariant(status: string): BadgeVariant {
+  if (status === "FAILED") return "destructive";
+  if (status === "EMBEDDED") return "default";
+  if (isActiveStatus(status) || status === "DELETING") return "secondary";
+  return "outline";
+}
+
 export function DocumentsCard({
   documents,
   loading,
@@ -663,9 +672,7 @@ function DocumentRow({
         </div>
       </TableCell>
       <TableCell>
-        <Badge
-          variant={document.status === "FAILED" ? "destructive" : "outline"}
-        >
+        <Badge variant={statusVariant(document.status)}>
           {document.status}
         </Badge>
       </TableCell>
