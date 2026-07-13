@@ -233,7 +233,9 @@ function App() {
       let restored: Document[];
       if (!deletedSnapshot) {
         restored = current;
-      } else if (current.some((document) => document.documentId === documentId)) {
+      } else if (
+        current.some((document) => document.documentId === documentId)
+      ) {
         restored = current.map((document) =>
           document.documentId === documentId ? deletedSnapshot : document,
         );
