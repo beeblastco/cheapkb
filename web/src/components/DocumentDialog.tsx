@@ -60,7 +60,7 @@ export function DocumentDialog({
               <p className="text-xs text-muted-foreground">{label}</p>
               <p
                 className={cn(
-                  "mt-1 break-words text-sm text-foreground",
+                  "mt-1 wrap-break-word text-sm text-foreground",
                   label === "ID" && "font-mono text-xs",
                   label === "Last error" && "text-destructive",
                 )}
