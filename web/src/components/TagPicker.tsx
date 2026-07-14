@@ -1,4 +1,5 @@
-import { TagSwatch } from "@/components/TagBadge";
+import { TagBadge, TagSwatch } from "@/components/TagBadge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -61,9 +62,8 @@ export function TagPicker({
   const [pendingDelete, setPendingDelete] = useState<Tag | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  // Recoloring swaps the popup's contents instead of opening a nested menu:
-  // Base UI's Combobox builds no FloatingTree, so a portalled menu inside the
-  // popup reads as an outside press and dismisses the popup that renders it.
+  // Swaps the popup's contents rather than nesting a menu: Combobox builds no
+  // FloatingTree, so a portalled menu would dismiss the popup rendering it.
   const [recoloring, setRecoloring] = useState<Tag | null>(null);
   const anchor = useComboboxAnchor();
 
@@ -191,7 +191,9 @@ export function TagPicker({
           ) : (
             <>
               {error ? (
-                <p className="px-3 py-2 text-xs text-destructive">{error}</p>
+                <Alert variant="destructive">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
               ) : null}
               <ComboboxEmpty>
                 {tags.length
@@ -220,14 +222,7 @@ export function TagPicker({
                   >
                     <Plus className="text-muted-foreground" />
                     <span className="text-muted-foreground">Create</span>
-                    <span
-                      className={cn(
-                        "min-w-0 truncate rounded-md px-2 text-xs",
-                        TAG_BADGE_CLASSES[DEFAULT_TAG_COLOR],
-                      )}
-                    >
-                      {query}
-                    </span>
+                    <TagBadge color={DEFAULT_TAG_COLOR} name={query} />
                   </ComboboxItem>
                 ) : null}
               </ComboboxList>
@@ -331,6 +326,7 @@ function TagRow({
   );
 }
 
+// Padding matches ComboboxList so the panel aligns with the list it replaces.
 function ColorPanel({
   current,
   name,
@@ -343,7 +339,7 @@ function ColorPanel({
   onPick: (color: TagColor) => void;
 }) {
   return (
-    <div className="flex flex-col p-1">
+    <div className="flex flex-col p-1.5">
       <div className="flex items-center">
         <Button
           aria-label="Back to tags"

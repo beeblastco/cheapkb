@@ -1,8 +1,7 @@
 import type { TagColor } from "./types";
 
-// Tailwind scans for literal class names, so these maps are spelled out rather
-// than built as `bg-tag-${color}` — a template literal would be stripped from
-// the generated stylesheet.
+// Spelled out because Tailwind scans for literal class names: a template
+// literal like `bg-tag-${color}` is stripped from the generated stylesheet.
 export const TAG_BADGE_CLASSES: Record<TagColor, string> = {
   gray: "bg-tag-gray text-tag-gray-foreground",
   brown: "bg-tag-brown text-tag-brown-foreground",

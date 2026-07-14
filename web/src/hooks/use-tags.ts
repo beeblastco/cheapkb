@@ -108,9 +108,11 @@ export function useTags(token: string): TagVocabulary {
       try {
         await updateTagColorRequest(token, name, color);
       } catch (recolorError) {
+        // Only undo while the tag still holds the color this call set, so a
+        // newer recolor that already succeeded is not reverted to a stale one.
         setTags((current) =>
           current.map((tag) =>
-            byName(tag.name) === byName(name) && previous
+            byName(tag.name) === byName(name) && previous && tag.color === color
               ? { ...tag, color: previous }
               : tag,
           ),
