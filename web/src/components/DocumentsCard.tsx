@@ -79,7 +79,6 @@ import type { Document, UploadQueueItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownUp,
-  Eye,
   FilePlus2,
   Pencil,
   RefreshCw,
@@ -718,12 +717,6 @@ function DocumentRow({
         onKeyDown={(event) => event.stopPropagation()}
       >
         <div className="flex justify-end gap-1">
-          <ActionButton
-            label="View details"
-            onClick={() => onView(document.documentId)}
-          >
-            <Eye />
-          </ActionButton>
           <ActionButton
             disabled={isActiveStatus(document.status) && !stalled}
             label="Reindex"

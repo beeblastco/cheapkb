@@ -18,11 +18,11 @@ import {
 import { getUserProfile } from "@/lib/client";
 import type { ShooIdentity } from "@/lib/types";
 import {
-  Contact,
-  FileLock,
+  HelpCircle,
   LogOut,
+  Scale,
   Settings,
-  SlidersHorizontal,
+  Shield,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -62,8 +62,9 @@ export function Header({
 
           {profile ? (
             <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
+            <DropdownMenuTrigger
+              className="cursor-pointer!"
+              render={
                   <Button
                     className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
                     variant="ghost"
@@ -96,10 +97,10 @@ export function Header({
                 </DropdownMenuGroup>
                 <DropdownMenuGroup>
                   <DropdownMenuItem onClick={() => setDialog("terms")}>
-                    <SlidersHorizontal /> Terms and conditions
+                    <Scale /> Terms and conditions
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setDialog("privacy")}>
-                    <FileLock /> Privacy policy
+                    <Shield /> Privacy policy
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     render={
@@ -110,7 +111,7 @@ export function Header({
                       />
                     }
                   >
-                    <Contact /> Contact
+                    <HelpCircle /> Help
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuGroup>
