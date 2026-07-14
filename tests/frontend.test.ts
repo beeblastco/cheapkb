@@ -293,7 +293,13 @@ describe("frontend", () => {
       expect(documentsSource).toContain(
         'Table className="min-w-3xl table-fixed"',
       );
-      expect(documentsSource).toContain("overflow-y-auto");
+      expect(documentsSource).toContain(
+        'TableHeader className="sticky top-0 z-10 bg-card"',
+      );
+      expect(documentsSource).toContain("bg-transparent!");
+      expect(documentsSource).toContain("text-inherit!");
+      expect(documentsSource).toContain('className="cursor-pointer"');
+      expect(documentsSource).toContain('event.key !== "Enter"');
       expect(documentsSource).not.toContain("STATUS_LABELS");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);

@@ -436,9 +436,9 @@ export function DocumentsCard({
             </InputGroupAddon>
           </InputGroup>
 
-          <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden *:data-[slot=table-container]:h-full">
             <Table className="min-w-3xl table-fixed">
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   <SortableHead
                     className="w-1/2"
@@ -464,49 +464,53 @@ export function DocumentsCard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !documents.length && !items.length
-                  ? Array.from({ length: 4 }).map((_, index) => (
-                      <TableRow key={index}>
-                        <TableCell colSpan={5}>
-                          <Skeleton className="h-8 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  : visible.map((row) =>
-                      "item" in row ? (
-                        <UploadRow
-                          item={row.item}
-                          key={row.item.id}
-                          onEdit={() => setSelectedItemId(row.item.id)}
-                          onRemove={() => removeItem(row.item.id)}
-                        />
-                      ) : (
-                        <DocumentRow
-                          document={row.document}
-                          key={row.document.documentId}
-                          onDelete={onDelete}
-                          onReindex={onReindex}
-                          onView={onView}
-                        />
-                      ),
-                    )}
+                {loading && !documents.length && !items.length ? (
+                  Array.from({ length: 4 }).map((_, index) => (
+                    <TableRow key={index}>
+                      <TableCell colSpan={5}>
+                        <Skeleton className="h-8 w-full" />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : visible.length ? (
+                  visible.map((row) =>
+                    "item" in row ? (
+                      <UploadRow
+                        item={row.item}
+                        key={row.item.id}
+                        onEdit={() => setSelectedItemId(row.item.id)}
+                        onRemove={() => removeItem(row.item.id)}
+                      />
+                    ) : (
+                      <DocumentRow
+                        document={row.document}
+                        key={row.document.documentId}
+                        onDelete={onDelete}
+                        onReindex={onReindex}
+                        onView={onView}
+                      />
+                    ),
+                  )
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={5}>
+                      <Empty>
+                        <EmptyHeader>
+                          <EmptyTitle>
+                            {query ? "No matching documents" : "No documents"}
+                          </EmptyTitle>
+                          <EmptyDescription>
+                            {query
+                              ? "Try a different search."
+                              : "Drop PDF, Markdown, or text files anywhere on this page."}
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
-
-            {!loading && !visible.length ? (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyTitle>
-                    {query ? "No matching documents" : "No documents"}
-                  </EmptyTitle>
-                  <EmptyDescription>
-                    {query
-                      ? "Try a different search."
-                      : "Drop PDF, Markdown, or text files anywhere on this page."}
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            ) : null}
           </div>
         </CardContent>
         <CardFooter className="justify-between">
@@ -574,7 +578,7 @@ function SortableHead({
   return (
     <TableHead className={className}>
       <Button
-        className="w-full justify-start px-0"
+        className="justify-start bg-transparent! px-0 text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
         onClick={onClick}
         size="sm"
         variant="ghost"
@@ -596,7 +600,17 @@ function UploadRow({
   onRemove: () => void;
 }) {
   return (
-    <TableRow>
+    <TableRow
+      aria-label={`Edit ${item.title}`}
+      className="cursor-pointer"
+      onClick={onEdit}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onEdit();
+      }}
+      tabIndex={0}
+    >
       <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">{item.title}</span>
@@ -618,7 +632,11 @@ function UploadRow({
       </TableCell>
       <TableCell className="truncate">—</TableCell>
       <TableCell className="truncate">—</TableCell>
-      <TableCell className="max-w-0">
+      <TableCell
+        className="max-w-0"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <div className="flex justify-end gap-1">
           <ActionButton
             disabled={item.state === "SYNCING"}
@@ -656,7 +674,17 @@ function DocumentRow({
     isActiveStatus(document.status) &&
     Date.now() - updatedAt > STALLED_AFTER_MS;
   return (
-    <TableRow>
+    <TableRow
+      aria-label={`View ${document.title || document.documentId}`}
+      className="cursor-pointer"
+      onClick={() => onView(document.documentId)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onView(document.documentId);
+      }}
+      tabIndex={0}
+    >
       <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">
@@ -683,7 +711,10 @@ function DocumentRow({
       <TableCell className="truncate">
         {formatDate(document.updatedAt)}
       </TableCell>
-      <TableCell>
+      <TableCell
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <div className="flex justify-end gap-1">
           <ActionButton
             label="View details"

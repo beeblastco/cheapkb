@@ -18,7 +18,6 @@ import {
 import { getUserProfile } from "@/lib/client";
 import type { ShooIdentity } from "@/lib/types";
 import {
-  ChevronDown,
   Contact,
   FileLock,
   LogOut,
@@ -58,22 +57,21 @@ export function Header({
   return (
     <>
       <header className="sticky top-0 z-40 bg-background">
-        <div className="flex h-16 w-full items-center justify-between px-4">
+        <div className="flex h-16 w-full items-center justify-between px-3">
           <p className="font-semibold">cheapkb</p>
 
           {profile ? (
             <DropdownMenu>
-              <DropdownMenuTrigger render={<Button variant="ghost" />}>
+              <DropdownMenuTrigger render={<Button className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0" variant="ghost" />}>
+                <span className="hidden max-w-48 truncate sm:block">
+                  {profile.email || profile.name}
+                </span>
                 <Avatar size="sm">
                   {profile.picture ? (
                     <AvatarImage alt={profile.name} src={profile.picture} />
                   ) : null}
                   <AvatarFallback>{profile.initials}</AvatarFallback>
                 </Avatar>
-                <span className="hidden max-w-48 truncate sm:block">
-                  {profile.email || profile.name}
-                </span>
-                <ChevronDown data-icon="inline-end" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuGroup>
