@@ -5,7 +5,8 @@ import {
   updateTagColor as updateTagColorRequest,
 } from "@/lib/client";
 import { DEFAULT_TAG_COLOR, type Tag, type TagColor } from "@/lib/types";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useState } from "react";
 
 export interface TagVocabulary {
   tags: Tag[];
@@ -16,27 +17,94 @@ export interface TagVocabulary {
   deleteTag: (name: string) => Promise<void>;
 }
 
-// Owns the user's tag vocabulary. Mutations apply locally first and undo only
-// their own tag on failure, so a concurrent success is never clobbered.
-export function useTags(token: string): TagVocabulary {
-  const [tags, setTags] = useState<Tag[]>([]);
-  const [error, setError] = useState<string | null>(null);
+// Shared by every tag mutation so a settled one can tell whether others are
+// still in flight before refetching.
+const TAG_MUTATION_KEY = ["tags"];
+const NO_TAGS: Tag[] = [];
 
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    listTags(token)
-      .then((loaded) => {
-        if (!cancelled) setTags(sortByName(loaded));
-      })
-      .catch((loadError) => {
-        // An empty list and a failed load look identical without this.
-        if (!cancelled) setError((loadError as Error).message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+// Owns the user's tag vocabulary. Mutations apply to the cache immediately and
+// a refetch after the last one settles reconciles them against the server.
+export function useTags(token: string): TagVocabulary {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const queryKey = useMemo(() => ["tags", token], [token]);
+
+  const { data: tags = NO_TAGS, error: loadError } = useQuery({
+    queryKey,
+    queryFn: () => listTags(token),
+    enabled: Boolean(token),
+    select: sortByName,
+  });
+
+  // Snapshot and restore the whole list: a refetch follows every mutation, so
+  // anything this rollback overwrites is corrected from the server.
+  const optimistic = useCallback(
+    (apply: (current: Tag[]) => Tag[]) => async () => {
+      setError(null);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<Tag[]>(queryKey) ?? NO_TAGS;
+      queryClient.setQueryData<Tag[]>(queryKey, (current = NO_TAGS) =>
+        apply(current),
+      );
+      return { previous };
+    },
+    [queryClient, queryKey],
+  );
+
+  const rollback = useCallback(
+    (caught: unknown, _variables: unknown, context?: { previous: Tag[] }) => {
+      if (context) queryClient.setQueryData(queryKey, context.previous);
+      setError((caught as Error).message);
+    },
+    [queryClient, queryKey],
+  );
+
+  const settle = useCallback(() => {
+    // The last mutation refetches, so server order decides the outcome rather
+    // than whichever response happened to arrive last.
+    if (queryClient.isMutating({ mutationKey: TAG_MUTATION_KEY }) === 1) {
+      return queryClient.invalidateQueries({ queryKey });
+    }
+  }, [queryClient, queryKey]);
+
+  const createMutation = useMutation({
+    mutationKey: TAG_MUTATION_KEY,
+    mutationFn: ({ name, color }: { name: string; color: TagColor }) =>
+      createTagRequest(token, name, color),
+    onMutate: ({ name, color }) =>
+      optimistic((current) =>
+        current.some((tag) => byName(tag.name) === byName(name))
+          ? current
+          : [...current, { name, color }],
+      )(),
+    onError: rollback,
+    onSettled: settle,
+  });
+
+  const recolorMutation = useMutation({
+    mutationKey: TAG_MUTATION_KEY,
+    mutationFn: ({ name, color }: { name: string; color: TagColor }) =>
+      updateTagColorRequest(token, name, color),
+    onMutate: ({ name, color }) =>
+      optimistic((current) =>
+        current.map((tag) =>
+          byName(tag.name) === byName(name) ? { ...tag, color } : tag,
+        ),
+      )(),
+    onError: rollback,
+    onSettled: settle,
+  });
+
+  const deleteMutation = useMutation({
+    mutationKey: TAG_MUTATION_KEY,
+    mutationFn: (name: string) => deleteTagRequest(token, name),
+    onMutate: (name) =>
+      optimistic((current) =>
+        current.filter((tag) => byName(tag.name) !== byName(name)),
+      )(),
+    onError: rollback,
+    onSettled: settle,
+  });
 
   const colorMap = useMemo(() => {
     const map = new Map<string, TagColor>();
@@ -50,113 +118,34 @@ export function useTags(token: string): TagVocabulary {
   );
 
   const createTag = useCallback(
-    async (name: string, color: TagColor = DEFAULT_TAG_COLOR) => {
-      // Unique per call and copied by object spread, so rollback finds the entry
-      // this request added even after a recolor replaced the object.
-      const marker = Symbol("optimisticCreate");
-      const optimistic = { name, color, [marker]: true } as Tag;
-      let inserted = false;
-      setError(null);
-      setTags((current) => {
-        if (current.some((tag) => byName(tag.name) === byName(name))) {
-          return current;
-        }
-        inserted = true;
-        return sortByName([...current, optimistic]);
-      });
-
-      try {
-        const saved = await createTagRequest(token, name, color);
-        setTags((current) => {
-          const mine = current.find((tag) => marker in tag);
-          // Inserted then gone means deleted in flight: honour that, do not
-          // resurrect it. Never inserted means another entry already stands in.
-          if (inserted && !mine) return current;
-          // The server owns canonical casing, but a recolor that landed while
-          // this was in flight is newer than the color in this response.
-          const reconciled =
-            mine && mine.color !== color
-              ? { ...saved, color: mine.color }
-              : saved;
-          return sortByName([
-            ...current.filter(
-              (tag) =>
-                !(marker in tag) && byName(tag.name) !== byName(saved.name),
-            ),
-            reconciled,
-          ]);
-        });
-        return saved;
-      } catch (createError) {
-        // Only this call's entry: a canonical tag another create stored under
-        // the same name is not ours to withdraw.
-        setTags((current) => current.filter((tag) => !(marker in tag)));
-        setError((createError as Error).message);
-        throw createError;
-      }
-    },
-    [token],
+    (name: string, color: TagColor = DEFAULT_TAG_COLOR) =>
+      createMutation.mutateAsync({ name, color }),
+    [createMutation],
   );
 
   const recolorTag = useCallback(
     async (name: string, color: TagColor) => {
-      let previous: TagColor | undefined;
-      setError(null);
-      setTags((current) =>
-        current.map((tag) => {
-          if (byName(tag.name) !== byName(name)) return tag;
-          previous = tag.color;
-          return { ...tag, color };
-        }),
-      );
-
-      try {
-        await updateTagColorRequest(token, name, color);
-      } catch (recolorError) {
-        // Only undo while the tag still holds the color this call set, so a
-        // newer recolor that already succeeded is not reverted to a stale one.
-        setTags((current) =>
-          current.map((tag) =>
-            byName(tag.name) === byName(name) && previous && tag.color === color
-              ? { ...tag, color: previous }
-              : tag,
-          ),
-        );
-        setError((recolorError as Error).message);
-        throw recolorError;
-      }
+      await recolorMutation.mutateAsync({ name, color });
     },
-    [token],
+    [recolorMutation],
   );
 
   const deleteTag = useCallback(
     async (name: string) => {
-      let removed: Tag | undefined;
-      setError(null);
-      setTags((current) => {
-        removed = current.find((tag) => byName(tag.name) === byName(name));
-        return current.filter((tag) => byName(tag.name) !== byName(name));
-      });
-
-      try {
-        await deleteTagRequest(token, name);
-      } catch (deleteError) {
-        if (removed) {
-          const restored = removed;
-          setTags((current) =>
-            current.some((tag) => byName(tag.name) === byName(restored.name))
-              ? current
-              : sortByName([...current, restored]),
-          );
-        }
-        setError((deleteError as Error).message);
-        throw deleteError;
-      }
+      await deleteMutation.mutateAsync(name);
     },
-    [token],
+    [deleteMutation],
   );
 
-  return { tags, error, colorOf, createTag, recolorTag, deleteTag };
+  return {
+    tags,
+    // An empty list and a failed load look identical without this.
+    error: error ?? (loadError ? (loadError as Error).message : null),
+    colorOf,
+    createTag,
+    recolorTag,
+    deleteTag,
+  };
 }
 
 function byName(name: string) {

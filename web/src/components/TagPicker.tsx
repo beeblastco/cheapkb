@@ -31,7 +31,7 @@ import {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Check, Palette, Plus, Trash2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 // The "create" row lives in the same item list as real tags so it is reachable
 // by keyboard. The leading NUL keeps a tag named "create:x" from colliding.
@@ -65,6 +65,10 @@ export function TagPicker({
   // Swaps the popup's contents rather than nesting a menu: Combobox builds no
   // FloatingTree, so a portalled menu would dismiss the popup rendering it.
   const [recoloring, setRecoloring] = useState<Tag | null>(null);
+  // The row's buttons sit inside a role=option, so assistive tech cannot reach
+  // them. Shortcuts act on the highlighted tag to keep both actions available.
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const shortcutHintId = useId();
   const anchor = useComboboxAnchor();
 
   // Async reconciliation must read the selection as it is when the request
@@ -141,6 +145,20 @@ export function TagPicker({
     onChange(withoutTag(valueRef.current, tag.name));
   }
 
+  function handleShortcut(event: React.KeyboardEvent) {
+    if (!event.ctrlKey || recoloring) return;
+    const tag = tags.find((candidate) => candidate.name === highlighted);
+    if (!tag) return;
+    if (event.key === "k") {
+      event.preventDefault();
+      setRecoloring(tag);
+    } else if (event.key === "Backspace") {
+      event.preventDefault();
+      setDeleteError(null);
+      setPendingDelete(tag);
+    }
+  }
+
   return (
     <>
       <Combobox
@@ -152,6 +170,7 @@ export function TagPicker({
         items={recoloring ? [] : items}
         multiple
         onInputValueChange={setInputValue}
+        onItemHighlighted={(item) => setHighlighted(item ?? null)}
         onOpenChange={(open) => {
           if (!open) setRecoloring(null);
         }}
@@ -172,10 +191,17 @@ export function TagPicker({
             }
           </ComboboxValue>
           <ComboboxChipsInput
+            aria-describedby={shortcutHintId}
+            aria-keyshortcuts="Control+K Control+Backspace"
             aria-label="Find or create a tag"
+            onKeyDown={handleShortcut}
             placeholder={value.length ? "" : "Type to find or create a tag…"}
           />
         </ComboboxChips>
+        <span className="sr-only" id={shortcutHintId}>
+          Type to find or create a tag. With a tag highlighted, press Control+K
+          to change its color or Control+Backspace to delete it.
+        </span>
 
         <ComboboxContent anchor={anchor}>
           {recoloring ? (
