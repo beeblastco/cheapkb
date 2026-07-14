@@ -290,6 +290,10 @@ describe("frontend", () => {
       expect(documentsSource).toContain("multiple");
       expect(documentsSource).toContain('window.addEventListener("drop"');
       expect(documentsSource).toContain("Sync all");
+      expect(documentsSource).toContain(
+        'Table className="min-w-3xl table-fixed"',
+      );
+      expect(documentsSource).toContain("overflow-y-auto");
       expect(documentsSource).not.toContain("STATUS_LABELS");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);

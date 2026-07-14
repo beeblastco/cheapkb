@@ -13,7 +13,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { getUserProfile } from "@/lib/client";
@@ -64,52 +63,53 @@ export function Header({
 
           {profile ? (
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost">
-                  <Avatar size="sm">
-                    {profile.picture ? (
-                      <AvatarImage alt={profile.name} src={profile.picture} />
-                    ) : null}
-                    <AvatarFallback>{profile.initials}</AvatarFallback>
-                  </Avatar>
-                  <span className="hidden max-w-48 truncate sm:block">
-                    {profile.email || profile.name}
-                  </span>
-                  <ChevronDown data-icon="inline-end" />
-                </Button>
+              <DropdownMenuTrigger render={<Button variant="ghost" />}>
+                <Avatar size="sm">
+                  {profile.picture ? (
+                    <AvatarImage alt={profile.name} src={profile.picture} />
+                  ) : null}
+                  <AvatarFallback>{profile.initials}</AvatarFallback>
+                </Avatar>
+                <span className="hidden max-w-48 truncate sm:block">
+                  {profile.email || profile.name}
+                </span>
+                <ChevronDown data-icon="inline-end" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>
-                  <div className="flex flex-col gap-1">
-                    <span className="truncate">{profile.name}</span>
-                    <span className="truncate font-normal text-muted-foreground">
-                      {profile.email || "Google account"}
-                    </span>
-                  </div>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
                 <DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={() => setDialog("settings")}>
+                  <DropdownMenuLabel>
+                    <div className="flex flex-col gap-1">
+                      <span className="truncate">{profile.name}</span>
+                      <span className="truncate font-normal text-muted-foreground">
+                        {profile.email || "Google account"}
+                      </span>
+                    </div>
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem onClick={() => setDialog("settings")}>
                     <Settings /> Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setDialog("terms")}>
-                    <SlidersHorizontal /> Terms and conditions
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => setDialog("privacy")}>
-                    <FileLock /> Privacy policy
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <a
-                      href="https://github.com/beeblastco/cheapkb/issues"
-                      rel="noreferrer"
-                      target="_blank"
-                    >
-                      <Contact /> Contact
-                    </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuGroup>
-                  <DropdownMenuItem onSelect={onSignOut} variant="destructive">
+                  <DropdownMenuItem onClick={() => setDialog("terms")}>
+                    <SlidersHorizontal /> Terms and conditions
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setDialog("privacy")}>
+                    <FileLock /> Privacy policy
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    render={
+                      <a
+                        href="https://github.com/beeblastco/cheapkb/issues"
+                        rel="noreferrer"
+                        target="_blank"
+                      />
+                    }
+                  >
+                    <Contact /> Contact
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onClick={onSignOut} variant="destructive">
                     <LogOut /> Log out
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
