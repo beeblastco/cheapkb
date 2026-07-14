@@ -180,7 +180,7 @@ describe("PATCH /documents/{id}", () => {
     it("updates the META row", async () => {
       await update(patchEvent({ tags: ["research"] }));
 
-      const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      const call = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
       expect(call.Key).toEqual({ pk: "DOC#doc-1", sk: "META" });
       expect(call.ExpressionAttributeValues![":tags"]).toEqual(["research"]);
     });
@@ -272,6 +272,117 @@ describe("PATCH /documents/{id}", () => {
       );
     });
 
+    it("holds an UPDATING lease across propagation and restores the status after", async () => {
+      await update(patchEvent({ tags: ["research"] }));
+
+      const [acquire, finalize] = dynamoMock
+        .commandCalls(UpdateCommand)
+        .map((call) => call.args[0].input);
+      // The lease must be taken before any store is touched and carry the
+      // displaced status, or a takeover could not restore it.
+      expect(acquire.ExpressionAttributeValues![":updating"]).toBe("UPDATING");
+      expect(acquire.ExpressionAttributeValues![":restoreTo"]).toBe("EMBEDDED");
+      expect(acquire.ExpressionAttributeValues!).not.toHaveProperty(":tags");
+      // Tags land only once every store agreed.
+      expect(finalize.ExpressionAttributeValues![":restoreTo"]).toBe(
+        "EMBEDDED",
+      );
+      expect(finalize.UpdateExpression).toContain("REMOVE previousStatus");
+    });
+
+    it("keeps gsi1pk in step with status through the lease", async () => {
+      await update(patchEvent({ tags: ["research"] }));
+
+      const [acquire, finalize] = dynamoMock
+        .commandCalls(UpdateCommand)
+        .map((call) => call.args[0].input);
+      // Every status write in the pipeline mirrors status into gsi1pk. Nothing
+      // queries that index yet, so only this test would catch them diverging.
+      expect(acquire.ExpressionAttributeValues![":gsi1pk"]).toBe(
+        "STATUS#UPDATING",
+      );
+      expect(finalize.ExpressionAttributeValues![":gsi1pk"]).toBe(
+        "STATUS#EMBEDDED",
+      );
+    });
+
+    it("restores the original status rather than assuming EMBEDDED", async () => {
+      dynamoMock
+        .on(GetCommand)
+        .resolves(embeddedDocument({ status: "FAILED" }));
+
+      await update(patchEvent({ tags: ["research"] }));
+
+      const finalize = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
+      expect(finalize.ExpressionAttributeValues![":restoreTo"]).toBe("FAILED");
+    });
+
+    it("rejects a second edit that reads while the first is propagating", async () => {
+      // The loser's read sees UPDATING, which is not editable, so it never
+      // reaches the store rewrites the winner is midway through.
+      dynamoMock.on(GetCommand).resolves(
+        embeddedDocument({
+          status: "UPDATING",
+          previousStatus: "EMBEDDED",
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(409);
+      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+      expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
+    });
+
+    it("takes over a lease abandoned by a dead handler", async () => {
+      dynamoMock.on(GetCommand).resolves(
+        embeddedDocument({
+          status: "UPDATING",
+          previousStatus: "EMBEDDED",
+          // Older than the TTL, so no live handler can still hold it.
+          updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        }),
+      );
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(200);
+      // Restoring UPDATING would strand the document as permanently uneditable.
+      const finalize = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
+      expect(finalize.ExpressionAttributeValues![":restoreTo"]).toBe(
+        "EMBEDDED",
+      );
+    });
+
+    it("releases the lease when propagation fails so the document stays editable", async () => {
+      vectorsMock.on(PutVectorsCommand).rejects(new Error("vector store down"));
+
+      await expect(update(patchEvent({ tags: ["research"] }))).rejects.toThrow(
+        "vector store down",
+      );
+
+      const release = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
+      expect(release.ExpressionAttributeValues![":restoreTo"]).toBe("EMBEDDED");
+      // The row must not advertise tags the vectors never received.
+      expect(release.ExpressionAttributeValues!).not.toHaveProperty(":tags");
+    });
+
+    it("only releases a lease it still owns", async () => {
+      await update(patchEvent({ tags: ["research"] }));
+
+      const [acquire, finalize] = dynamoMock
+        .commandCalls(UpdateCommand)
+        .map((call) => call.args[0].input);
+      // A successor that took over an expired lease is also UPDATING, so
+      // matching status alone would let a late handler clobber its edit.
+      expect(finalize.ConditionExpression).toContain("updatedAt = :heldSince");
+      expect(finalize.ExpressionAttributeValues![":heldSince"]).toBe(
+        acquire.ExpressionAttributeValues![":now"],
+      );
+    });
+
     it("returns 409 when the pipeline claims the document mid-update", async () => {
       dynamoMock.on(UpdateCommand).rejects(
         new ConditionalCheckFailedException({
@@ -326,7 +437,7 @@ describe("PATCH /documents/{id}", () => {
         patchEvent({ tags: ["  Research  ", "RESEARCH", "product"] }),
       );
 
-      const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      const call = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
       expect(call.ExpressionAttributeValues![":tags"]).toEqual([
         "Research",
         "product",

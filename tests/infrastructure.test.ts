@@ -29,7 +29,17 @@ describe("infrastructure hardening", () => {
   });
 
   it("scopes the update function's storage access to chunk objects", () => {
-    expect(config).toContain("${storage.arn}/chunks/*");
+    // Other functions are legitimately scoped to chunks/*, so a bare substring
+    // check would still pass if AdminUpdate regressed to the whole bucket.
+    const block = config.slice(
+      config.indexOf('new sst.aws.Function("AdminUpdate"') + 1,
+    );
+    const adminUpdateFn = block.slice(
+      0,
+      block.indexOf("new sst.aws.Function("),
+    );
+    expect(adminUpdateFn).toContain("${storage.arn}/chunks/*");
+    expect(adminUpdateFn).not.toContain("${storage.arn}/*");
   });
 
   it("refuses to provision into the wrong AWS account", () => {

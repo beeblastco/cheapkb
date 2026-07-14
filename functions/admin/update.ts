@@ -27,9 +27,19 @@ const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 // A running pipeline copies tags into chunks itself, so an edit mid-flight
 // would race it. Only settled documents can be retagged.
 const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED", "CHUNKED", "PARSED"]);
+const UPDATING_STATUS = "UPDATING";
+// A handler killed mid-propagation cannot release its lease, so an abandoned one
+// must expire or the document would stay uneditable forever. The function times
+// out at 60s, well inside this.
+const LEASE_TTL_MS = 5 * 60 * 1000;
 // Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
 // timeout if run one at a time.
 const CHUNK_REWRITE_CONCURRENCY = 8;
+
+interface Lease {
+  restoreTo: string;
+  heldSince: string;
+}
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -54,41 +64,52 @@ export async function handler(event: any) {
   if (document.userId !== userId) {
     return json(403, { error: "You do not have access to this document" });
   }
-  if (!EDITABLE_STATUSES.has(document.status)) {
+  if (!isEditable(document)) {
     return json(409, {
       error: `Cannot edit metadata while the document is ${document.status}`,
     });
   }
 
   const tags = normalizeTags(body.tags);
-  const now = new Date().toISOString();
-  const claimed = await claimDocument(document, userId, tags, now);
-  if (!claimed) {
+  // Holding the lease across propagation is what serializes concurrent edits.
+  // A revision check alone only rejects a request that read before the winner
+  // claimed; one that read during propagation would pass and interleave its
+  // rewrites, leaving chunks split between two edits' tags.
+  const lease = await acquireLease(document, userId);
+  if (!lease) {
     return json(409, { error: "Document changed while updating; retry" });
   }
 
-  // Tags live in the META row, the chunk JSON a re-embed reads, and the vector
-  // metadata search filters on. All three must agree or a reindex undoes this.
-  const chunkItems = await listDocumentChunkItems(
-    documentId,
-    dynamo,
-    TableName,
-  );
-  await updateChunkObjects(chunkItems, tags);
-  const updatedVectors = await retagDocumentVectors(
-    chunkItems,
-    tags,
-    vectors,
-    VectorBucketName,
-    VectorIndexName,
-  );
+  try {
+    // Tags live in the META row, the chunk JSON a re-embed reads, and the vector
+    // metadata search filters on. All three must agree or a reindex undoes this.
+    const chunkItems = await listDocumentChunkItems(
+      documentId,
+      dynamo,
+      TableName,
+    );
+    await updateChunkObjects(chunkItems, tags);
+    const updatedVectors = await retagDocumentVectors(
+      chunkItems,
+      tags,
+      vectors,
+      VectorBucketName,
+      VectorIndexName,
+    );
 
-  return json(200, {
-    documentId,
-    tags: tags ?? [],
-    updatedVectors,
-    updatedAt: now,
-  });
+    const updatedAt = await finalizeLease(document, lease, tags);
+    return json(200, {
+      documentId,
+      tags: tags ?? [],
+      updatedVectors,
+      updatedAt,
+    });
+  } catch (error) {
+    // The META row still holds the old tags, so releasing the lease reports the
+    // edit as not applied. Retrying re-propagates and converges.
+    await releaseLease(document, lease);
+    throw error;
+  }
 }
 
 function json(statusCode: number, body: unknown) {
@@ -99,40 +120,121 @@ function json(statusCode: number, body: unknown) {
   };
 }
 
-// Uses updatedAt as a revision token: conditioning on status alone would let two
-// concurrent edits both pass and interleave their S3 and vector writes.
-async function claimDocument(
+function isEditable(document: any): boolean {
+  if (EDITABLE_STATUSES.has(document.status)) return true;
+  return isLeaseExpired(document);
+}
+
+// An UPDATING row whose lease has outlived the function's own timeout belongs to
+// a handler that died before releasing it, so it is safe to take over.
+function isLeaseExpired(document: any): boolean {
+  if (document.status !== UPDATING_STATUS) return false;
+  const heldSince = Date.parse(document.updatedAt ?? "");
+  return !Number.isFinite(heldSince) || Date.now() - heldSince > LEASE_TTL_MS;
+}
+
+// Returns the lease, or null if it was not taken. updatedAt doubles as the
+// revision token and the lease timestamp.
+async function acquireLease(
   document: any,
   userId: string,
-  tags: string[] | null,
-  now: string,
-): Promise<boolean> {
+): Promise<Lease | null> {
+  // Taking over an expired lease must not restore UPDATING as a real status;
+  // the dead handler recorded what it displaced.
+  const restoreTo =
+    document.status === UPDATING_STATUS
+      ? (document.previousStatus ?? "EMBEDDED")
+      : document.status;
   const revisionMatches = document.updatedAt
     ? "updatedAt = :revision"
     : "attribute_not_exists(updatedAt)";
+  const heldSince = new Date().toISOString();
 
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName,
         Key: { pk: document.pk, sk: document.sk },
-        UpdateExpression: "SET tags = :tags, updatedAt = :now",
+        // gsi1pk mirrors status everywhere else in the pipeline; leaving it
+        // behind would hand a stale status to the first query that uses it.
+        UpdateExpression:
+          "SET #s = :updating, gsi1pk = :gsi1pk, gsi1sk = :now, previousStatus = :restoreTo, updatedAt = :now",
         ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches}`,
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
-          ":tags": tags,
-          ":now": now,
+          ":updating": UPDATING_STATUS,
+          ":gsi1pk": `STATUS#${UPDATING_STATUS}`,
+          ":restoreTo": restoreTo,
+          ":now": heldSince,
           ":userId": userId,
           ":expected": document.status,
           ...(document.updatedAt ? { ":revision": document.updatedAt } : {}),
         },
       }),
     );
-    return true;
+    return { restoreTo, heldSince };
   } catch (error) {
-    if (error instanceof ConditionalCheckFailedException) return false;
+    if (error instanceof ConditionalCheckFailedException) return null;
     throw error;
   }
+}
+
+// Tags land only once every store agreed, so a failure leaves the row reporting
+// the edit as not applied rather than advertising tags the vectors lack.
+async function finalizeLease(
+  document: any,
+  lease: Lease,
+  tags: string[] | null,
+): Promise<string> {
+  const now = new Date().toISOString();
+  await releaseWith(
+    document,
+    lease,
+    "SET tags = :tags, #s = :restoreTo, gsi1pk = :gsi1pk, gsi1sk = :now, updatedAt = :now REMOVE previousStatus",
+    { ":tags": tags, ":now": now },
+  );
+  return now;
+}
+
+async function releaseLease(document: any, lease: Lease) {
+  try {
+    await releaseWith(
+      document,
+      lease,
+      "SET #s = :restoreTo, gsi1pk = :gsi1pk, gsi1sk = :now, updatedAt = :now REMOVE previousStatus",
+      { ":now": new Date().toISOString() },
+    );
+  } catch {
+    // The original failure is the one worth reporting; an unreleased lease
+    // expires on its own.
+  }
+}
+
+// Conditioned on the lease still being ours. A lease that outlived its TTL can
+// be taken over by another request, and that successor's row is also UPDATING,
+// so matching the status alone would let a late handler clobber its edit.
+async function releaseWith(
+  document: any,
+  lease: Lease,
+  updateExpression: string,
+  values: Record<string, unknown>,
+) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: document.pk, sk: document.sk },
+      UpdateExpression: updateExpression,
+      ConditionExpression: "#s = :updating AND updatedAt = :heldSince",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ...values,
+        ":restoreTo": lease.restoreTo,
+        ":gsi1pk": `STATUS#${lease.restoreTo}`,
+        ":updating": UPDATING_STATUS,
+        ":heldSince": lease.heldSince,
+      },
+    }),
+  );
 }
 
 async function updateChunkObjects(chunkItems: any[], tags: string[] | null) {
