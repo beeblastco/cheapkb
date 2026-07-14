@@ -7,8 +7,9 @@ import { cn } from "@/lib/utils";
 function Separator({
   className,
   orientation = "horizontal",
+  decorative,
   ...props
-}: SeparatorPrimitive.Props) {
+}: SeparatorPrimitive.Props & { decorative?: boolean }) {
   return (
     <SeparatorPrimitive
       data-slot="separator"
@@ -17,6 +18,7 @@ function Separator({
         "shrink-0 bg-border data-horizontal:h-px data-horizontal:w-full data-vertical:w-px data-vertical:self-stretch",
         className,
       )}
+      {...(decorative && { "aria-hidden": "true", role: "none" })}
       {...props}
     />
   );

@@ -609,6 +609,7 @@ function UploadRow({
         event.preventDefault();
         onEdit();
       }}
+      role="button"
       tabIndex={0}
     >
       <TableCell className="max-w-0">
@@ -683,6 +684,7 @@ function DocumentRow({
         event.preventDefault();
         onView(document.documentId);
       }}
+      role="button"
       tabIndex={0}
     >
       <TableCell className="max-w-0">

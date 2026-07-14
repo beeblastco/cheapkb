@@ -110,10 +110,7 @@ function BubbleReactions({
   align = "end",
   className,
   ...props
-}: React.ComponentProps<"div"> & {
-  align?: "start" | "end";
-  side?: "top" | "bottom";
-}) {
+}: React.ComponentProps<"div"> & VariantProps<typeof bubbleReactionsVariants>) {
   return (
     <div
       data-slot="bubble-reactions"
