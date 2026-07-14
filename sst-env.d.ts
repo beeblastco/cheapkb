@@ -14,10 +14,6 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
-    "AdminJob": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
     "AdminList": {
       "name": string
       "type": "sst.aws.Function"
@@ -81,6 +77,10 @@ declare module "sst" {
     "Upload": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "Web": {
+      "type": "sst.aws.StaticSite"
+      "url": string
     }
   }
 }

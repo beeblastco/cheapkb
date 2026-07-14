@@ -59,8 +59,3 @@ export interface UploadQueueItem {
   title: string;
   year: string;
 }
-
-export interface Toast {
-  message: string;
-  type: "info" | "error" | "success";
-}

@@ -16,10 +16,13 @@ const jwks = createRemoteJWKSet(
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export async function verifyShooToken(idToken: string, appOrigin: string) {
-  const audience = `origin:${new URL(appOrigin).origin}`;
+  const audiences = [
+    `origin:${new URL(appOrigin).origin}`,
+    "origin:http://localhost:5173",
+  ];
   const { payload } = await jwtVerify(idToken, jwks, {
     issuer: SHOO_ISSUER,
-    audience,
+    audience: audiences,
   });
   if (typeof payload.pairwise_sub !== "string") {
     throw new Error("Shoo token missing pairwise_sub");

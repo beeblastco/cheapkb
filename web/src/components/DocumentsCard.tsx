@@ -73,7 +73,7 @@ import {
   uploadDocument,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, Toast, UploadQueueItem } from "@/lib/types";
+import type { Document, UploadQueueItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownUp,
@@ -108,7 +108,7 @@ export function DocumentsCard({
   token: string;
   setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
   loadDocuments: (showLoading?: boolean) => Promise<void>;
-  notify: (message: string, type?: Toast["type"]) => void;
+  notify: (message: string, type?: string) => void;
   onDelete: (documentId: string) => void;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
@@ -178,13 +178,13 @@ export function DocumentsCard({
           current.map((currentItem) =>
             currentItem.id === item.id
               ? {
-                  ...currentItem,
-                  authors: metadata.authors.join(", "),
-                  progress: "Ready to sync",
-                  state: "READY",
-                  title: metadata.title || currentItem.title,
-                  year: metadata.year?.toString() || "",
-                }
+                ...currentItem,
+                authors: metadata.authors.join(", "),
+                progress: "Ready to sync",
+                state: "READY",
+                title: metadata.title || currentItem.title,
+                year: metadata.year?.toString() || "",
+              }
               : currentItem,
           ),
         );
@@ -242,8 +242,8 @@ export function DocumentsCard({
       .filter((document) =>
         value
           ? [document.title, document.documentId, document.status]
-              .filter(Boolean)
-              .some((field) => field!.toLowerCase().includes(value))
+            .filter(Boolean)
+            .some((field) => field!.toLowerCase().includes(value))
           : true,
       )
       .sort((left, right) => {
@@ -258,8 +258,8 @@ export function DocumentsCard({
     return items.filter((item) =>
       value
         ? [item.title, item.file.name, item.state].some((field) =>
-            field.toLowerCase().includes(value),
-          )
+          field.toLowerCase().includes(value),
+        )
         : true,
     );
   }, [items, query]);
@@ -384,7 +384,7 @@ export function DocumentsCard({
           <p>Drop files to add them</p>
         </div>
       ) : null}
-      <Card className="min-h-[calc(100vh-6rem)]">
+      <Card className="h-full">
         <CardHeader className="flex-row items-center justify-between">
           <div>
             <CardTitle>Documents</CardTitle>
@@ -459,30 +459,30 @@ export function DocumentsCard({
               <TableBody>
                 {loading && !documents.length && !items.length
                   ? Array.from({ length: 4 }).map((_, index) => (
-                      <TableRow key={index}>
-                        <TableCell colSpan={5}>
-                          <Skeleton className="h-8 w-full" />
-                        </TableCell>
-                      </TableRow>
-                    ))
+                    <TableRow key={index}>
+                      <TableCell colSpan={5}>
+                        <Skeleton className="h-8 w-full" />
+                      </TableCell>
+                    </TableRow>
+                  ))
                   : visible.map((row) =>
-                      "item" in row ? (
-                        <UploadRow
-                          item={row.item}
-                          key={row.item.id}
-                          onEdit={() => setSelectedItemId(row.item.id)}
-                          onRemove={() => removeItem(row.item.id)}
-                        />
-                      ) : (
-                        <DocumentRow
-                          document={row.document}
-                          key={row.document.documentId}
-                          onDelete={onDelete}
-                          onReindex={onReindex}
-                          onView={onView}
-                        />
-                      ),
-                    )}
+                    "item" in row ? (
+                      <UploadRow
+                        item={row.item}
+                        key={row.item.id}
+                        onEdit={() => setSelectedItemId(row.item.id)}
+                        onRemove={() => removeItem(row.item.id)}
+                      />
+                    ) : (
+                      <DocumentRow
+                        document={row.document}
+                        key={row.document.documentId}
+                        onDelete={onDelete}
+                        onReindex={onReindex}
+                        onView={onView}
+                      />
+                    ),
+                  )}
               </TableBody>
             </Table>
 

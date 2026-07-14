@@ -2,7 +2,6 @@ import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
-import { Banner } from "@/components/Banner";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,19 +22,11 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, ShooIdentity, Toast } from "@/lib/types";
+import type { Document, ShooIdentity } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function Guest({
-  banner,
-  onDismissBanner,
-  onSignIn,
-}: {
-  banner: Toast | null;
-  onDismissBanner: () => void;
-  onSignIn: () => void;
-}) {
+function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
@@ -55,7 +46,6 @@ function Guest({
             </CardFooter>
           </Card>
         </main>
-        <Banner toast={banner} onDismiss={onDismissBanner} />
       </div>
     </TooltipProvider>
   );
@@ -72,7 +62,6 @@ function App() {
     string,
     unknown
   > | null>(null);
-  const [banner, setBanner] = useState<Toast | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
@@ -81,18 +70,7 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback(
-    (message: string, type: Toast["type"] = "info") => {
-      setBanner({ message, type });
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!banner) return;
-    const timer = window.setTimeout(() => setBanner(null), 5000);
-    return () => window.clearTimeout(timer);
-  }, [banner]);
+  const notify = useCallback((_message: string, _type?: string) => {}, []);
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -249,22 +227,16 @@ function App() {
   }
 
   if (!identity?.token) {
-    return (
-      <Guest
-        banner={banner}
-        onDismissBanner={() => setBanner(null)}
-        onSignIn={signIn}
-      />
-    );
+    return <Guest onSignIn={signIn} />;
   }
 
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
         <Header identity={identity} onSignOut={signOut} />
-        <main className="flex w-full flex-1 flex-col">
-          <div className="mx-auto grid w-full max-w-[1440px] flex-1 items-start gap-3 px-3 py-3 sm:px-4 lg:grid-cols-12 lg:px-6">
-            <div className="flex flex-col gap-3 lg:col-span-8 xl:col-span-9">
+        <main className="flex min-h-0 w-full flex-1 flex-col">
+          <div className="mx-auto grid min-h-0 w-full max-w-380 flex-1 items-stretch gap-3 p-3 lg:grid-cols-12">
+            <div className="min-h-0 lg:col-span-8 xl:col-span-9">
               <DocumentsCard
                 documents={documents}
                 loading={loadingDocuments}
@@ -277,12 +249,11 @@ function App() {
                 onView={showDocument}
               />
             </div>
-            <div className="lg:col-span-4 xl:col-span-3">
+            <div className="min-h-0 lg:col-span-4 xl:col-span-3">
               <QueryCard request={request} onView={showDocument} />
             </div>
           </div>
         </main>
-        <Banner toast={banner} onDismiss={() => setBanner(null)} />
         <DocumentDialog
           data={selectedDocumentData}
           document={selectedDocument}

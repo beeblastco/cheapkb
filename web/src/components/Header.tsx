@@ -58,7 +58,7 @@ export function Header({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b bg-background">
+      <header className="sticky top-0 z-40 bg-background">
         <div className="flex h-16 w-full items-center justify-between px-4">
           <p className="font-semibold">cheapkb</p>
 
@@ -108,7 +108,6 @@ export function Header({
                     </a>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator />
                 <DropdownMenuGroup>
                   <DropdownMenuItem onSelect={onSignOut} variant="destructive">
                     <LogOut /> Log out
