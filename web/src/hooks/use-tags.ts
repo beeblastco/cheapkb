@@ -52,12 +52,15 @@ export function useTags(token: string): TagVocabulary {
   const createTag = useCallback(
     async (name: string, color: TagColor = DEFAULT_TAG_COLOR) => {
       const optimistic: Tag = { name, color };
+      let inserted = false;
       setError(null);
-      setTags((current) =>
-        current.some((tag) => byName(tag.name) === byName(name))
-          ? current
-          : sortByName([...current, optimistic]),
-      );
+      setTags((current) => {
+        if (current.some((tag) => byName(tag.name) === byName(name))) {
+          return current;
+        }
+        inserted = true;
+        return sortByName([...current, optimistic]);
+      });
 
       try {
         const saved = await createTagRequest(token, name, color);
@@ -74,8 +77,15 @@ export function useTags(token: string): TagVocabulary {
         );
         return saved;
       } catch (createError) {
-        // Identity, not name: only the entry this call added is withdrawn.
-        setTags((current) => current.filter((tag) => tag !== optimistic));
+        // Only withdraw a tag this call added; an existing one it matched stays.
+        // By name too, since recoloring it meanwhile replaces the object.
+        if (inserted) {
+          setTags((current) =>
+            current.filter(
+              (tag) => tag !== optimistic && byName(tag.name) !== byName(name),
+            ),
+          );
+        }
         setError((createError as Error).message);
         throw createError;
       }
