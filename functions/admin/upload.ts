@@ -14,7 +14,10 @@ const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES ?? "10485760", 10);
+const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "10485760",
+  10,
+);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
