@@ -15,6 +15,19 @@ describe("infrastructure hardening", () => {
     expect(config).toContain('"s3vectors:GetVectors"');
   });
 
+  it("exposes metadata updates through a PATCH route the browser can reach", () => {
+    expect(config).toContain('api.route("PATCH /documents/{id}"');
+    // Without PATCH in the CORS allowlist the browser preflight fails and the
+    // route is unreachable from the web app even though it deployed fine.
+    expect(config).toContain(
+      'allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]',
+    );
+  });
+
+  it("grants vector writes only to the embed and update functions", () => {
+    expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(2);
+  });
+
   it("expires noncurrent object versions", () => {
     expect(config).toContain("BucketLifecycleConfigurationV2");
     expect(config).toContain("noncurrentDays: 7");

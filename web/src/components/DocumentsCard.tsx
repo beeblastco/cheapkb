@@ -77,6 +77,7 @@ import {
   getStatusBadgeVariant,
   isActiveStatus,
   listTags,
+  updateDocumentTags,
   uploadDocument,
   writePendingDocuments,
 } from "@/lib/client";
@@ -100,6 +101,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  Tag as TagIcon,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -107,6 +109,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const PAGE_SIZE = 50;
 const STALLED_AFTER_MS = 5 * 60 * 1000;
 const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
+// Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
+// have its tags overwritten by the run in progress.
+const EDITABLE_TAG_STATUSES = new Set([
+  "EMBEDDED",
+  "FAILED",
+  "CHUNKED",
+  "PARSED",
+]);
 
 type DocumentTableRow =
   | { document: Document; kind: "document" }
@@ -178,6 +188,9 @@ export function DocumentsCard({
   });
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [tags, setTags] = useState<Tag[]>([]);
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(
+    null,
+  );
   const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const itemsRef = useRef(items);
@@ -228,6 +241,25 @@ export function DocumentsCard({
       }
     },
     [notify, token],
+  );
+
+  const handleUpdateDocumentTags = useCallback(
+    async (documentId: string, nextTags: string[]) => {
+      try {
+        const saved = await updateDocumentTags(token, documentId, nextTags);
+        setDocuments((current) =>
+          current.map((document) =>
+            document.documentId === documentId
+              ? { ...document, tags: saved }
+              : document,
+          ),
+        );
+      } catch (error) {
+        notify((error as Error).message, "error");
+        throw error;
+      }
+    },
+    [notify, setDocuments, token],
   );
 
   const addFiles = useCallback(
@@ -383,6 +415,9 @@ export function DocumentsCard({
   const selectedCount = selectedDocumentIds.length + selectedUploadIds.length;
   const hasSelectablePageRows = visible.some((row) => row.getCanSelect());
   const selectedItem = items.find((item) => item.id === selectedItemId) || null;
+  const editingDocument =
+    documents.find((document) => document.documentId === editingDocumentId) ||
+    null;
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
@@ -680,6 +715,7 @@ export function DocumentsCard({
                         document={original.document}
                         key={row.id}
                         onDelete={onDelete}
+                        onEditTags={setEditingDocumentId}
                         onReindex={onReindex}
                         onSelectedChange={row.toggleSelected}
                         onView={onView}
@@ -762,6 +798,15 @@ export function DocumentsCard({
         onDeleteTag={handleDeleteTag}
         onUpdate={updateItem}
         syncing={syncing}
+        tags={tags}
+      />
+
+      <DocumentTagsSheet
+        document={editingDocument}
+        onClose={() => setEditingDocumentId(null)}
+        onCreateTag={handleCreateTag}
+        onDeleteTag={handleDeleteTag}
+        onSave={handleUpdateDocumentTags}
         tags={tags}
       />
     </>
@@ -890,6 +935,7 @@ function UploadRow({
 function DocumentRow({
   document,
   onDelete,
+  onEditTags,
   onReindex,
   onSelectedChange,
   onView,
@@ -897,6 +943,7 @@ function DocumentRow({
 }: {
   document: Document;
   onDelete: (documentId: string) => Promise<boolean>;
+  onEditTags: (documentId: string) => void;
   onReindex: (documentId: string) => void;
   onSelectedChange: (selected?: boolean) => void;
   onView: (documentId: string) => void;
@@ -963,6 +1010,13 @@ function DocumentRow({
       >
         <div className="flex justify-end gap-1">
           <ActionButton
+            disabled={!EDITABLE_TAG_STATUSES.has(document.status)}
+            label="Edit tags"
+            onClick={() => onEditTags(document.documentId)}
+          >
+            <TagIcon />
+          </ActionButton>
+          <ActionButton
             disabled={isActiveStatus(document.status) && !stalled}
             label="Reindex"
             onClick={() => onReindex(document.documentId)}
@@ -1010,6 +1064,86 @@ function DocumentRow({
         </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function DocumentTagsSheet({
+  document,
+  onClose,
+  onCreateTag,
+  onDeleteTag,
+  onSave,
+  tags,
+}: {
+  document: Document | null;
+  onClose: () => void;
+  onCreateTag: (name: string) => Promise<void>;
+  onDeleteTag: (name: string) => Promise<void>;
+  onSave: (documentId: string, tags: string[]) => Promise<void>;
+  tags: Tag[];
+}) {
+  const [value, setValue] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  // Re-seed whenever a different document is opened, so the picker starts from
+  // that document's stored tags rather than the previous one's edits.
+  useEffect(() => {
+    setValue(document?.tags ?? []);
+  }, [document]);
+
+  if (!document) return null;
+
+  const dirty = JSON.stringify(value) !== JSON.stringify(document.tags ?? []);
+
+  async function save() {
+    if (!document || saving) return;
+    setSaving(true);
+    try {
+      await onSave(document.documentId, value);
+      onClose();
+    } catch {
+      // The parent surfaces the error; keep the sheet open so the edit is not
+      // silently lost.
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
+      <SheetContent className="overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle>{document.title || document.documentId}</SheetTitle>
+          <SheetDescription>
+            Tags are reapplied to this document's search index when you save.
+          </SheetDescription>
+          <FieldGroup>
+            <Field data-disabled={saving || undefined}>
+              <FieldLabel>Tags</FieldLabel>
+              <TagPicker
+                disabled={saving}
+                onChange={setValue}
+                onCreate={onCreateTag}
+                onDeleteTag={onDeleteTag}
+                tags={tags}
+                value={value}
+              />
+              <FieldDescription>
+                Select from your tags or create a new one.
+              </FieldDescription>
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button disabled={saving} onClick={onClose} variant="outline">
+                Cancel
+              </Button>
+              <Button disabled={saving || !dirty} onClick={() => void save()}>
+                {saving ? "Saving…" : "Save tags"}
+              </Button>
+            </div>
+          </FieldGroup>
+        </SheetHeader>
+      </SheetContent>
+    </Sheet>
   );
 }
 

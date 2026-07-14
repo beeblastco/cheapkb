@@ -6,6 +6,8 @@ import {
 } from "@aws-sdk/client-s3";
 import {
   DeleteVectorsCommand,
+  GetVectorsCommand,
+  PutVectorsCommand,
   type S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import {
@@ -149,13 +151,16 @@ export async function checkRateLimit(
   return { allowed: false, remaining: 0 };
 }
 
-export async function deleteDocumentVectors(
+// GetVectors accepts at most 100 keys per call; PutVectors and DeleteVectors
+// allow 500. Reading is the narrower constraint, so the retag loop steps in
+// GetVectors-sized batches.
+const VECTOR_GET_BATCH = 100;
+const VECTOR_DELETE_BATCH = 500;
+
+export async function listDocumentChunkItems(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
-  vectorClient: S3VectorsClient,
   tableName: string,
-  vectorBucketName: string,
-  vectorIndexName: string,
 ): Promise<any[]> {
   const chunkItems: any[] = [];
   let lastKey: Record<string, any> | undefined;
@@ -176,18 +181,102 @@ export async function deleteDocumentVectors(
     lastKey = chunkRecords.LastEvaluatedKey;
   } while (lastKey);
 
+  return chunkItems;
+}
+
+export async function deleteDocumentVectors(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  vectorClient: S3VectorsClient,
+  tableName: string,
+  vectorBucketName: string,
+  vectorIndexName: string,
+): Promise<any[]> {
+  const chunkItems = await listDocumentChunkItems(
+    documentId,
+    documentClient,
+    tableName,
+  );
+
   const vectorKeys = chunkItems.map((item) => item.chunkId).filter(Boolean);
-  for (let i = 0; i < vectorKeys.length; i += 500) {
+  for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
     await vectorClient.send(
       new DeleteVectorsCommand({
         vectorBucketName,
         indexName: vectorIndexName,
-        keys: vectorKeys.slice(i, i + 500),
+        keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
       }),
     );
   }
 
   return chunkItems;
+}
+
+/**
+ * Rewrites the `tags` metadata of every vector belonging to a document.
+ *
+ * S3 Vectors has no metadata-only update: PutVectors requires `data`, and it
+ * REPLACES the metadata document rather than merging it. So each vector is read
+ * back with its data and metadata, and re-put with everything preserved and
+ * only `tags` swapped. Dropping any other key here would silently break search
+ * -- most importantly `userId`, which every query filters on, so a vector that
+ * lost it would become invisible to its own owner.
+ *
+ * Reading float32 data back and re-putting it is lossless, so a document can be
+ * retagged repeatedly without degrading its embeddings.
+ */
+export async function retagDocumentVectors(
+  chunkItems: any[],
+  tags: string[] | null,
+  vectorClient: S3VectorsClient,
+  vectorBucketName: string,
+  vectorIndexName: string,
+): Promise<number> {
+  const vectorKeys = chunkItems.map((item) => item.chunkId).filter(Boolean);
+  let updated = 0;
+
+  for (let i = 0; i < vectorKeys.length; i += VECTOR_GET_BATCH) {
+    const keys = vectorKeys.slice(i, i + VECTOR_GET_BATCH);
+    const existing = await vectorClient.send(
+      new GetVectorsCommand({
+        vectorBucketName,
+        indexName: vectorIndexName,
+        keys,
+        returnData: true,
+        returnMetadata: true,
+      }),
+    );
+
+    const vectors = (existing.vectors ?? [])
+      // A chunk with no text is never embedded, so it has no vector to retag.
+      .filter((vector) => vector.key && vector.data)
+      .map((vector) => ({
+        key: vector.key!,
+        data: vector.data!,
+        metadata: applyTags(vector.metadata, tags),
+      }));
+    if (vectors.length === 0) continue;
+
+    await vectorClient.send(
+      new PutVectorsCommand({
+        vectorBucketName,
+        indexName: vectorIndexName,
+        vectors,
+      }),
+    );
+    updated += vectors.length;
+  }
+
+  return updated;
+}
+
+function applyTags(metadata: any, tags: string[] | null): Record<string, any> {
+  const next = { ...(metadata ?? {}) };
+  // Match the embed step, which omits the key entirely rather than storing an
+  // empty value, so retagged vectors keep the same shape as freshly built ones.
+  if (tags && tags.length > 0) next.tags = tags;
+  else delete next.tags;
+  return next;
 }
 
 const CHUNK_DELETE_BACKOFF_MS = 100;

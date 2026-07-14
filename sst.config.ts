@@ -40,7 +40,7 @@ export default $config({
       cors: {
         allowOrigins: ["*"],
         allowHeaders: ["Content-Type", "Authorization"],
-        allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       },
       transform: {
         api: (a) => {
@@ -516,6 +516,39 @@ export default $config({
       },
     });
 
+    const adminUpdateFn = new sst.aws.Function("AdminUpdate", {
+      handler: "./functions/admin/update.handler",
+      runtime: "nodejs22.x",
+      timeout: "60 seconds",
+      memory: "256 MB",
+      description:
+        "Update document metadata and propagate tags to chunks and vectors",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: ["s3:GetObject", "s3:PutObject"],
+          resources: [pulumi.interpolate`${storage.arn}/*`],
+        },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:Query",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [table.arn],
+        },
+        {
+          actions: ["s3vectors:GetVectors", "s3vectors:PutVectors"],
+          resources: [vectorIndexArn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("admin-update");
+        },
+      },
+    });
+
     const adminTagsFn = new sst.aws.Function("AdminTags", {
       handler: "./functions/admin/tags.handler",
       runtime: "nodejs22.x",
@@ -646,6 +679,7 @@ export default $config({
     api.route("GET /documents", adminListFn.arn);
     api.route("GET /documents/{id}", adminGetFn.arn);
     api.route("POST /documents/{id}/reindex", adminReindexFn.arn);
+    api.route("PATCH /documents/{id}", adminUpdateFn.arn);
     api.route("DELETE /documents/{id}", adminDeleteFn.arn);
     api.route("GET /tags", adminTagsFn.arn);
     api.route("POST /tags", adminTagsFn.arn);
