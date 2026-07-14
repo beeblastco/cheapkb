@@ -28,9 +28,8 @@ const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 // would race it. Only settled documents can be retagged.
 const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED", "CHUNKED", "PARSED"]);
 const UPDATING_STATUS = "UPDATING";
-// A handler killed mid-propagation cannot release its lease, so an abandoned one
-// must expire or the document would stay uneditable forever. The function times
-// out at 60s, well inside this.
+// A handler killed mid-propagation cannot release its lease, so an abandoned
+// one must expire or the document stays uneditable. It times out at 60s.
 const LEASE_TTL_MS = 5 * 60 * 1000;
 // Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
 // timeout if run one at a time.
@@ -71,10 +70,8 @@ export async function handler(event: any) {
   }
 
   const tags = normalizeTags(body.tags);
-  // Holding the lease across propagation is what serializes concurrent edits.
-  // A revision check alone only rejects a request that read before the winner
-  // claimed; one that read during propagation would pass and interleave its
-  // rewrites, leaving chunks split between two edits' tags.
+  // Held across propagation to serialize edits: a revision check alone lets one
+  // that read mid-propagation pass and split chunks between two edits' tags.
   const lease = await acquireLease(document, userId);
   if (!lease) {
     return json(409, { error: "Document changed while updating; retry" });
@@ -210,9 +207,8 @@ async function releaseLease(document: any, lease: Lease) {
   }
 }
 
-// Conditioned on the lease still being ours. A lease that outlived its TTL can
-// be taken over by another request, and that successor's row is also UPDATING,
-// so matching the status alone would let a late handler clobber its edit.
+// Conditioned on the lease still being ours: a successor that took over an
+// expired lease is also UPDATING, so status alone would let us clobber it.
 async function releaseWith(
   document: any,
   lease: Lease,
