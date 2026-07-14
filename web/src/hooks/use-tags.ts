@@ -55,26 +55,37 @@ export function useTags(token: string): TagVocabulary {
       // this request added even after a recolor replaced the object.
       const marker = Symbol("optimisticCreate");
       const optimistic = { name, color, [marker]: true } as Tag;
+      let inserted = false;
       setError(null);
-      setTags((current) =>
-        current.some((tag) => byName(tag.name) === byName(name))
-          ? current
-          : sortByName([...current, optimistic]),
-      );
+      setTags((current) => {
+        if (current.some((tag) => byName(tag.name) === byName(name))) {
+          return current;
+        }
+        inserted = true;
+        return sortByName([...current, optimistic]);
+      });
 
       try {
         const saved = await createTagRequest(token, name, color);
-        // The server owns canonical casing and may return an existing tag whose
-        // name or color differs from what we optimistically inserted.
-        setTags((current) =>
-          sortByName([
+        setTags((current) => {
+          const mine = current.find((tag) => marker in tag);
+          // Inserted then gone means deleted in flight: honour that, do not
+          // resurrect it. Never inserted means another entry already stands in.
+          if (inserted && !mine) return current;
+          // The server owns canonical casing, but a recolor that landed while
+          // this was in flight is newer than the color in this response.
+          const reconciled =
+            mine && mine.color !== color
+              ? { ...saved, color: mine.color }
+              : saved;
+          return sortByName([
             ...current.filter(
               (tag) =>
                 !(marker in tag) && byName(tag.name) !== byName(saved.name),
             ),
-            saved,
-          ]),
-        );
+            reconciled,
+          ]);
+        });
         return saved;
       } catch (createError) {
         // Only this call's entry: a canonical tag another create stored under
