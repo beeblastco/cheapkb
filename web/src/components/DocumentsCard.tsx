@@ -177,6 +177,7 @@ export function DocumentsCard({
     colorOf,
     createTag: handleCreateTag,
     deleteTag: handleDeleteTag,
+    error: tagError,
     recolorTag: handleRecolorTag,
     tags,
   } = tagVocabulary;
@@ -766,6 +767,7 @@ export function DocumentsCard({
         onRecolorTag={handleRecolorTag}
         onUpdate={updateItem}
         syncing={syncing}
+        tagError={tagError}
         tags={tags}
       />
 
@@ -777,6 +779,7 @@ export function DocumentsCard({
         onDeleteTag={handleDeleteTag}
         onRecolorTag={handleRecolorTag}
         onSave={handleUpdateDocumentTags}
+        tagError={tagError}
         tags={tags}
       />
     </>
@@ -1054,6 +1057,7 @@ function DocumentTagsSheet({
   onDeleteTag,
   onRecolorTag,
   onSave,
+  tagError,
   tags,
 }: {
   colorOf: (name: string) => TagColor;
@@ -1063,6 +1067,7 @@ function DocumentTagsSheet({
   onDeleteTag: (name: string) => Promise<void>;
   onRecolorTag: (name: string, color: TagColor) => Promise<void>;
   onSave: (documentId: string, tags: string[]) => Promise<void>;
+  tagError: string | null;
   tags: Tag[];
 }) {
   const [value, setValue] = useState<string[]>([]);
@@ -1110,6 +1115,7 @@ function DocumentTagsSheet({
               <TagPicker
                 colorOf={colorOf}
                 disabled={saving}
+                error={tagError}
                 onChange={setValue}
                 onCreate={onCreateTag}
                 onDeleteTag={onDeleteTag}
@@ -1150,6 +1156,7 @@ function UploadMetadataSheet({
   onRecolorTag,
   onUpdate,
   syncing,
+  tagError,
   tags,
 }: {
   colorOf: (name: string) => TagColor;
@@ -1160,6 +1167,7 @@ function UploadMetadataSheet({
   onRecolorTag: (name: string, color: TagColor) => Promise<void>;
   onUpdate: (id: string, values: Partial<UploadQueueItem>) => void;
   syncing: boolean;
+  tagError: string | null;
   tags: Tag[];
 }) {
   return (
@@ -1213,6 +1221,7 @@ function UploadMetadataSheet({
                 <TagPicker
                   colorOf={colorOf}
                   disabled={syncing}
+                  error={tagError}
                   onChange={(next) => onUpdate(item.id, { tags: next })}
                   onCreate={onCreateTag}
                   onDeleteTag={onDeleteTag}

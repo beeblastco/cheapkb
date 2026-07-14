@@ -1,7 +1,6 @@
 import { TagSwatch } from "@/components/TagBadge";
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -31,16 +30,16 @@ import {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Check, Palette, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 // The "create" row lives in the same item list as real tags so it is reachable
-// by keyboard. This prefix marks it apart from a tag name; the leading NUL
-// keeps a tag literally named "create:x" from colliding with it.
+// by keyboard. The leading NUL keeps a tag named "create:x" from colliding.
 const CREATE_PREFIX = "\u0000create:";
 
 export function TagPicker({
   value,
   tags,
+  error,
   colorOf,
   onChange,
   onCreate,
@@ -50,6 +49,7 @@ export function TagPicker({
 }: {
   value: string[];
   tags: Tag[];
+  error?: string | null;
   colorOf: (name: string) => TagColor;
   onChange: (next: string[]) => void;
   onCreate: (name: string) => Promise<Tag>;
@@ -59,11 +59,18 @@ export function TagPicker({
 }) {
   const [inputValue, setInputValue] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Tag | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // Recoloring swaps the popup's contents instead of opening a nested menu:
   // Base UI's Combobox builds no FloatingTree, so a portalled menu inside the
   // popup reads as an outside press and dismisses the popup that renders it.
   const [recoloring, setRecoloring] = useState<Tag | null>(null);
   const anchor = useComboboxAnchor();
+
+  // Async reconciliation must read the selection as it is when the request
+  // settles, not as it was when the request started.
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const query = inputValue.trim();
   const lowerQuery = query.toLowerCase();
@@ -103,35 +110,35 @@ export function TagPicker({
     }
 
     const name = createEntry.slice(CREATE_PREFIX.length);
-    const withoutSentinel = next.filter((entry) => entry !== createEntry);
-
-    // Select the new tag right away, then reconcile once the server confirms
-    // it. Selections made while this is in flight are lost on rollback, which
-    // only matters if the create fails.
-    onChange([...withoutSentinel, name]);
+    onChange(dedupe([...next.filter((entry) => entry !== createEntry), name]));
     void onCreate(name)
       .then((saved) => {
+        // The server owns canonical casing.
         if (saved.name !== name) {
-          // The server owns canonical casing.
-          onChange([...withoutSentinel, saved.name]);
+          onChange(replaceTag(valueRef.current, name, saved.name));
         }
       })
-      .catch(() => onChange(withoutSentinel));
+      .catch(() => {
+        onChange(withoutTag(valueRef.current, name));
+      });
   }
 
   async function confirmDelete() {
     const tag = pendingDelete;
     if (!tag) return;
-    setPendingDelete(null);
+    setDeleting(true);
+    setDeleteError(null);
     try {
       await onDeleteTag(tag.name);
-      // The tag is gone from the vocabulary, so drop it from this selection.
-      onChange(
-        value.filter((name) => name.toLowerCase() !== tag.name.toLowerCase()),
-      );
-    } catch {
-      // useTags restores the vocabulary and surfaces the error.
+    } catch (caught) {
+      // Stay open so the failure is visible next to the action that caused it.
+      setDeleteError((caught as Error).message);
+      return;
+    } finally {
+      setDeleting(false);
     }
+    setPendingDelete(null);
+    onChange(withoutTag(valueRef.current, tag.name));
   }
 
   return (
@@ -178,11 +185,14 @@ export function TagPicker({
               onBack={() => setRecoloring(null)}
               onPick={(color) => {
                 setRecoloring(null);
-                void onRecolor(recoloring.name, color);
+                void onRecolor(recoloring.name, color).catch(() => {});
               }}
             />
           ) : (
             <>
+              {error ? (
+                <p className="px-3 py-2 text-xs text-destructive">{error}</p>
+              ) : null}
               <ComboboxEmpty>
                 {tags.length
                   ? "No matching tag."
@@ -195,7 +205,10 @@ export function TagPicker({
                     disabled={disabled}
                     key={tag.name}
                     onRecolor={setRecoloring}
-                    onRequestDelete={setPendingDelete}
+                    onRequestDelete={(target) => {
+                      setDeleteError(null);
+                      setPendingDelete(target);
+                    }}
                     selected={selectedSet.has(tag.name.toLowerCase())}
                     tag={tag}
                   />
@@ -209,7 +222,7 @@ export function TagPicker({
                     <span className="text-muted-foreground">Create</span>
                     <span
                       className={cn(
-                        "min-w-0 truncate rounded-md px-2 py-0.5 text-xs",
+                        "min-w-0 truncate rounded-md px-2 text-xs",
                         TAG_BADGE_CLASSES[DEFAULT_TAG_COLOR],
                       )}
                     >
@@ -226,7 +239,11 @@ export function TagPicker({
       {/* Outside the Combobox: the popup closes when this opens, which would
           unmount the dialog with it. */}
       <AlertDialog
-        onOpenChange={(open) => !open && setPendingDelete(null)}
+        onOpenChange={(open) => {
+          if (open) return;
+          setPendingDelete(null);
+          setDeleteError(null);
+        }}
         open={!!pendingDelete}
       >
         <AlertDialogContent>
@@ -240,11 +257,20 @@ export function TagPicker({
               This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteError ? (
+            <p className="text-sm text-destructive">{deleteError}</p>
+          ) : null}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void confirmDelete()}>
-              Delete
-            </AlertDialogAction>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            {/* A plain Button, not AlertDialogAction: that renders a Close,
+                which would dismiss the dialog before a failure can show. */}
+            <Button
+              disabled={deleting}
+              onClick={() => void confirmDelete()}
+              variant="destructive"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -276,7 +302,7 @@ function TagRow({
       {/* The row itself selects the tag, so the action buttons have to keep
           their clicks from reaching it. */}
       <div
-        className="flex items-center gap-0.5"
+        className="flex items-center"
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
@@ -317,8 +343,8 @@ function ColorPanel({
   onPick: (color: TagColor) => void;
 }) {
   return (
-    <div className="flex flex-col p-1.5">
-      <div className="flex items-center gap-1 pb-1">
+    <div className="flex flex-col p-1">
+      <div className="flex items-center">
         <Button
           aria-label="Back to tags"
           onClick={onBack}
@@ -333,7 +359,7 @@ function ColorPanel({
       </div>
       {TAG_COLORS.map((option) => (
         <Button
-          className="justify-start gap-2.5 px-3 font-medium"
+          className="justify-start font-medium"
           key={option}
           onClick={() => onPick(option)}
           variant="ghost"
@@ -347,4 +373,28 @@ function ColorPanel({
       ))}
     </div>
   );
+}
+
+function dedupe(names: string[]): string[] {
+  const next: string[] = [];
+  for (const name of names) {
+    if (
+      !next.some((existing) => existing.toLowerCase() === name.toLowerCase())
+    ) {
+      next.push(name);
+    }
+  }
+  return next;
+}
+
+function replaceTag(names: string[], from: string, to: string): string[] {
+  return dedupe(
+    names.map((name) =>
+      name.toLowerCase() === from.toLowerCase() ? to : name,
+    ),
+  );
+}
+
+function withoutTag(names: string[], name: string): string[] {
+  return names.filter((entry) => entry.toLowerCase() !== name.toLowerCase());
 }

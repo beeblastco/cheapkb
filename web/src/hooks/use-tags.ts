@@ -9,30 +9,18 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 export interface TagVocabulary {
   tags: Tag[];
+  error: string | null;
   colorOf: (name: string) => TagColor;
   createTag: (name: string, color?: TagColor) => Promise<Tag>;
   recolorTag: (name: string, color: TagColor) => Promise<void>;
   deleteTag: (name: string) => Promise<void>;
 }
 
-const byName = (name: string) => name.toLowerCase();
-
-function sortByName(tags: Tag[]): Tag[] {
-  return [...tags].sort((a, b) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-  );
-}
-
-/**
- * Owns the user's tag vocabulary. Every mutation applies locally first and
- * rolls back to the pre-mutation list if the request fails, so the picker stays
- * responsive without waiting on the network.
- */
-export function useTags(
-  token: string,
-  notify: (message: string, tone: "error") => void,
-): TagVocabulary {
+// Owns the user's tag vocabulary. Mutations apply locally first and undo only
+// their own tag on failure, so a concurrent success is never clobbered.
+export function useTags(token: string): TagVocabulary {
   const [tags, setTags] = useState<Tag[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -41,7 +29,10 @@ export function useTags(
       .then((loaded) => {
         if (!cancelled) setTags(sortByName(loaded));
       })
-      .catch(() => {});
+      .catch((loadError) => {
+        // An empty list and a failed load look identical without this.
+        if (!cancelled) setError((loadError as Error).message);
+      });
     return () => {
       cancelled = true;
     };
@@ -61,13 +52,12 @@ export function useTags(
   const createTag = useCallback(
     async (name: string, color: TagColor = DEFAULT_TAG_COLOR) => {
       const optimistic: Tag = { name, color };
-      let rollback: Tag[] = [];
-      setTags((current) => {
-        rollback = current;
-        return current.some((tag) => byName(tag.name) === byName(name))
+      setError(null);
+      setTags((current) =>
+        current.some((tag) => byName(tag.name) === byName(name))
           ? current
-          : sortByName([...current, optimistic]);
-      });
+          : sortByName([...current, optimistic]),
+      );
 
       try {
         const saved = await createTagRequest(token, name, color);
@@ -75,59 +65,89 @@ export function useTags(
         // name or color differs from what we optimistically inserted.
         setTags((current) =>
           sortByName([
-            ...current.filter((tag) => byName(tag.name) !== byName(saved.name)),
+            ...current.filter(
+              (tag) =>
+                tag !== optimistic && byName(tag.name) !== byName(saved.name),
+            ),
             saved,
           ]),
         );
         return saved;
-      } catch (error) {
-        setTags(rollback);
-        notify((error as Error).message, "error");
-        throw error;
+      } catch (createError) {
+        // Identity, not name: only the entry this call added is withdrawn.
+        setTags((current) => current.filter((tag) => tag !== optimistic));
+        setError((createError as Error).message);
+        throw createError;
       }
     },
-    [notify, token],
+    [token],
   );
 
   const recolorTag = useCallback(
     async (name: string, color: TagColor) => {
-      let rollback: Tag[] = [];
-      setTags((current) => {
-        rollback = current;
-        return current.map((tag) =>
-          byName(tag.name) === byName(name) ? { ...tag, color } : tag,
-        );
-      });
+      let previous: TagColor | undefined;
+      setError(null);
+      setTags((current) =>
+        current.map((tag) => {
+          if (byName(tag.name) !== byName(name)) return tag;
+          previous = tag.color;
+          return { ...tag, color };
+        }),
+      );
 
       try {
         await updateTagColorRequest(token, name, color);
-      } catch (error) {
-        setTags(rollback);
-        notify((error as Error).message, "error");
-        throw error;
+      } catch (recolorError) {
+        setTags((current) =>
+          current.map((tag) =>
+            byName(tag.name) === byName(name) && previous
+              ? { ...tag, color: previous }
+              : tag,
+          ),
+        );
+        setError((recolorError as Error).message);
+        throw recolorError;
       }
     },
-    [notify, token],
+    [token],
   );
 
   const deleteTag = useCallback(
     async (name: string) => {
-      let rollback: Tag[] = [];
+      let removed: Tag | undefined;
+      setError(null);
       setTags((current) => {
-        rollback = current;
+        removed = current.find((tag) => byName(tag.name) === byName(name));
         return current.filter((tag) => byName(tag.name) !== byName(name));
       });
 
       try {
         await deleteTagRequest(token, name);
-      } catch (error) {
-        setTags(rollback);
-        notify((error as Error).message, "error");
-        throw error;
+      } catch (deleteError) {
+        if (removed) {
+          const restored = removed;
+          setTags((current) =>
+            current.some((tag) => byName(tag.name) === byName(restored.name))
+              ? current
+              : sortByName([...current, restored]),
+          );
+        }
+        setError((deleteError as Error).message);
+        throw deleteError;
       }
     },
-    [notify, token],
+    [token],
   );
 
-  return { tags, colorOf, createTag, recolorTag, deleteTag };
+  return { tags, error, colorOf, createTag, recolorTag, deleteTag };
+}
+
+function byName(name: string) {
+  return name.toLowerCase();
+}
+
+function sortByName(tags: Tag[]): Tag[] {
+  return [...tags].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
 }

@@ -26,7 +26,6 @@ import {
 import type { Document, ShooIdentity } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Toaster, toast } from "sonner";
 
 function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
@@ -72,15 +71,10 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  // Optimistic updates roll back on failure, so the reason has to be visible —
-  // otherwise a rejected change just silently reverts under the user.
-  const notify = useCallback((message: string, type?: string) => {
-    if (type === "error") toast.error(message);
-    else toast(message);
-  }, []);
+  const notify = useCallback((_message: string, _type?: string) => {}, []);
 
   // Lifted above DocumentsCard so the detail panel can color tags too.
-  const tagVocabulary = useTags(identity?.token ?? "", notify);
+  const tagVocabulary = useTags(identity?.token ?? "");
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -296,7 +290,6 @@ function App() {
           loading={loadingDocument}
           onClose={closeDocument}
         />
-        <Toaster position="bottom-right" />
       </div>
     </TooltipProvider>
   );

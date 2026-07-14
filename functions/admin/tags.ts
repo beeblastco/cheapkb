@@ -169,14 +169,16 @@ async function createTag(userId: string, event: any) {
     if (error.name !== "ConditionalCheckFailedException") throw error;
     // Lost a race with a concurrent create — return the canonical record.
     const raced = await dynamo.send(new GetCommand({ TableName, Key: key }));
+    // Deleted again before the read: nothing was stored, so do not report success.
+    if (!raced.Item) {
+      return json(409, { error: "Tag changed concurrently; please retry" });
+    }
     return json(200, {
-      tag: raced.Item
-        ? {
-            name: raced.Item.name,
-            color: parseColor(raced.Item.color) ?? DEFAULT_TAG_COLOR,
-            createdAt: raced.Item.createdAt,
-          }
-        : { name, color, createdAt: now },
+      tag: {
+        name: raced.Item.name,
+        color: parseColor(raced.Item.color) ?? DEFAULT_TAG_COLOR,
+        createdAt: raced.Item.createdAt,
+      },
     });
   }
 }

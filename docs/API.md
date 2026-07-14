@@ -104,3 +104,25 @@ Restart from the failed step. Returns `{ documentId, status: "QUEUED", restartFr
 ## DELETE /documents/:id
 
 Deletes the document record, all vectors, every S3 object version for chunks, parsed text, and the source file. Returns `{ documentId, deleted: true }`. Partial cleanup returns HTTP 500 with `{ documentId, deleted: false, warnings: [...] }` and preserves DynamoDB cleanup keys so the request can be retried.
+
+## GET /tags
+
+Returns `{ count, tags: [...] }` for the caller, sorted by name. Each tag has `name`, `color`, and `createdAt`. Tags stored before colors existed, or with a color outside the palette, read back as `gray`.
+
+`color` is one of `gray`, `brown`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `red`. Colors are stored as palette names, not CSS values, so the web app owns how each renders in light and dark mode.
+
+## POST /tags
+
+Body `{ name, color? }`. `color` defaults to `gray`. Returns `{ tag }`.
+
+Names are limited to 50 characters and 200 tags per user; the key is the lowercased name, so tags are case-insensitively unique but keep the casing they were created with. Creating a tag that already exists returns the stored record rather than overwriting it, so the request is idempotent and the existing casing and color win. Returns 400 for an empty name, an over-long name, or a color outside the palette, and 409 at the tag cap or when a concurrent write means the create could not be confirmed.
+
+## PATCH /tags/:name
+
+Body `{ color }`. Returns the updated `{ tag }`. Only the color can change; renaming is not supported.
+
+Returns 400 for a missing color or one outside the palette, and 404 if the tag no longer exists, so a recolor cannot recreate a tag deleted by another client.
+
+## DELETE /tags/:name
+
+Removes the tag from the caller's vocabulary. Returns `{ name, deleted: true }`. Documents already tagged with it keep the tag until they are edited.

@@ -187,6 +187,50 @@ describe("tag APIs", () => {
       expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
     });
 
+    it("returns the winner's record when a concurrent create wins the race", async () => {
+      dynamoMock
+        .on(GetCommand)
+        .resolvesOnce({})
+        .resolves({
+          Item: {
+            name: "Research",
+            color: "green",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+      dynamoMock.on(QueryCommand).resolves({ Count: 0 });
+      dynamoMock.on(PutCommand).rejects(
+        Object.assign(new Error("conditional"), {
+          name: "ConditionalCheckFailedException",
+        }),
+      );
+
+      const response = await tags(
+        withMethod("POST", { body: JSON.stringify({ name: "research" }) }),
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).tag.name).toBe("Research");
+    });
+
+    it("reports a conflict when the raced tag is gone rather than claiming success", async () => {
+      // The put lost the race and the winner was deleted before the re-read, so
+      // nothing is stored — reporting 200 would invent a tag that does not exist.
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Count: 0 });
+      dynamoMock.on(PutCommand).rejects(
+        Object.assign(new Error("conditional"), {
+          name: "ConditionalCheckFailedException",
+        }),
+      );
+
+      const response = await tags(
+        withMethod("POST", { body: JSON.stringify({ name: "research" }) }),
+      );
+
+      expect(response.statusCode).toBe(409);
+    });
+
     it("rejects creation once the per-user tag cap is reached", async () => {
       dynamoMock.on(GetCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Count: 200 });
