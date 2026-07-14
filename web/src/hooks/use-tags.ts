@@ -51,16 +51,16 @@ export function useTags(token: string): TagVocabulary {
 
   const createTag = useCallback(
     async (name: string, color: TagColor = DEFAULT_TAG_COLOR) => {
-      const optimistic: Tag = { name, color };
-      let inserted = false;
+      // Unique per call and copied by object spread, so rollback finds the entry
+      // this request added even after a recolor replaced the object.
+      const marker = Symbol("optimisticCreate");
+      const optimistic = { name, color, [marker]: true } as Tag;
       setError(null);
-      setTags((current) => {
-        if (current.some((tag) => byName(tag.name) === byName(name))) {
-          return current;
-        }
-        inserted = true;
-        return sortByName([...current, optimistic]);
-      });
+      setTags((current) =>
+        current.some((tag) => byName(tag.name) === byName(name))
+          ? current
+          : sortByName([...current, optimistic]),
+      );
 
       try {
         const saved = await createTagRequest(token, name, color);
@@ -70,22 +70,16 @@ export function useTags(token: string): TagVocabulary {
           sortByName([
             ...current.filter(
               (tag) =>
-                tag !== optimistic && byName(tag.name) !== byName(saved.name),
+                !(marker in tag) && byName(tag.name) !== byName(saved.name),
             ),
             saved,
           ]),
         );
         return saved;
       } catch (createError) {
-        // Only withdraw a tag this call added; an existing one it matched stays.
-        // By name too, since recoloring it meanwhile replaces the object.
-        if (inserted) {
-          setTags((current) =>
-            current.filter(
-              (tag) => tag !== optimistic && byName(tag.name) !== byName(name),
-            ),
-          );
-        }
+        // Only this call's entry: a canonical tag another create stored under
+        // the same name is not ours to withdraw.
+        setTags((current) => current.filter((tag) => !(marker in tag)));
         setError((createError as Error).message);
         throw createError;
       }
