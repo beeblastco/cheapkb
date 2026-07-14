@@ -27,11 +27,14 @@ Response:
   "uploadUrl": "https://...",
   "uploadFields": { "key": "...", "policy": "..." },
   "maxUploadBytes": 10485760,
-  "sourceKey": "raw/doc_.../paper.pdf"
+  "sourceKey": "raw/doc_.../paper.pdf",
+  "reused": false
 }
 ```
 
 Create a `FormData`, append every `uploadFields` entry, append the file as `file`, and `POST` it to `uploadUrl`. The S3 event triggers ingest automatically.
+
+The combination of user, sanitized filename, and MIME type is unique. A completed or failed match returns its existing `documentId`, `sourceKey`, and `reused: true`. Active matches return HTTP 409. Replacement cleanup starts only after S3 confirms the new object.
 
 ## POST /ingest
 

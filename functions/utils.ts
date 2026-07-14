@@ -1,8 +1,19 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
+  DeleteObjectsCommand,
+  ListObjectVersionsCommand,
+  type S3Client,
+} from "@aws-sdk/client-s3";
+import {
+  DeleteVectorsCommand,
+  type S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
+import {
+  BatchWriteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
+  QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -136,4 +147,147 @@ export async function checkRateLimit(
   }
 
   return { allowed: false, remaining: 0 };
+}
+
+export async function deleteDocumentVectors(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  vectorClient: S3VectorsClient,
+  tableName: string,
+  vectorBucketName: string,
+  vectorIndexName: string,
+): Promise<any[]> {
+  const chunkItems: any[] = [];
+  let lastKey: Record<string, any> | undefined;
+
+  do {
+    const chunkRecords = await documentClient.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: {
+          ":pk": `DOC#${documentId}`,
+          ":prefix": "CHUNK#",
+        },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    chunkItems.push(...(chunkRecords.Items ?? []));
+    lastKey = chunkRecords.LastEvaluatedKey;
+  } while (lastKey);
+
+  const vectorKeys = chunkItems.map((item) => item.chunkId).filter(Boolean);
+  for (let i = 0; i < vectorKeys.length; i += 500) {
+    await vectorClient.send(
+      new DeleteVectorsCommand({
+        vectorBucketName,
+        indexName: vectorIndexName,
+        keys: vectorKeys.slice(i, i + 500),
+      }),
+    );
+  }
+
+  return chunkItems;
+}
+
+const CHUNK_DELETE_BACKOFF_MS = 100;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function getDocument(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  tableName: string,
+) {
+  const result = await documentClient.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  return result.Item ?? null;
+}
+
+export async function deleteDocumentChunkRecords(
+  chunkItems: any[],
+  documentClient: DynamoDBDocumentClient,
+  tableName: string,
+) {
+  for (let i = 0; i < chunkItems.length; i += 25) {
+    let requests: any[] = chunkItems.slice(i, i + 25).map((item) => ({
+      DeleteRequest: { Key: { pk: item.pk, sk: item.sk } },
+    }));
+
+    for (let attempt = 0; requests.length > 0 && attempt < 3; attempt++) {
+      // Back off before resending throttled items so retries don't hammer the
+      // same throttling window.
+      if (attempt > 0)
+        await delay(2 ** (attempt - 1) * CHUNK_DELETE_BACKOFF_MS);
+      const response = await documentClient.send(
+        new BatchWriteCommand({
+          RequestItems: { [tableName]: requests },
+        }),
+      );
+      requests = response.UnprocessedItems?.[tableName] ?? [];
+    }
+
+    if (requests.length > 0) {
+      throw new Error("Failed to delete DynamoDB chunk records");
+    }
+  }
+}
+
+export async function deleteDocumentS3Data(
+  documentId: string,
+  s3Client: S3Client,
+  storageBucketName: string,
+) {
+  await deleteS3Prefix(`chunks/${documentId}/`, s3Client, storageBucketName);
+  await deleteS3Prefix(`parsed/${documentId}/`, s3Client, storageBucketName);
+}
+
+export async function deleteS3Prefix(
+  prefix: string,
+  s3Client: S3Client,
+  storageBucketName: string,
+): Promise<number> {
+  let keyMarker: string | undefined;
+  let versionIdMarker: string | undefined;
+  let count = 0;
+
+  do {
+    const list = await s3Client.send(
+      new ListObjectVersionsCommand({
+        Bucket: storageBucketName,
+        Prefix: prefix,
+        KeyMarker: keyMarker,
+        VersionIdMarker: versionIdMarker,
+      }),
+    );
+    const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
+    if (objects.length === 0) return count;
+
+    const response = await s3Client.send(
+      new DeleteObjectsCommand({
+        Bucket: storageBucketName,
+        Delete: {
+          Objects: objects.map((object) => ({
+            Key: object.Key!,
+            VersionId: object.VersionId,
+          })),
+          Quiet: true,
+        },
+      }),
+    );
+    if (response.Errors?.length) {
+      throw new Error("Failed to delete S3 versions");
+    }
+    count += objects.length;
+    keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
+    versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
+  } while (keyMarker);
+
+  return count;
 }

@@ -17,13 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { getUserProfile } from "@/lib/client";
 import type { ShooIdentity } from "@/lib/types";
-import {
-  HelpCircle,
-  LogOut,
-  Scale,
-  Settings,
-  Shield,
-} from "lucide-react";
+import { HelpCircle, LogOut, Scale, Settings, Shield } from "lucide-react";
 import { useState } from "react";
 
 const MENU_CONTENT = {
@@ -62,9 +56,9 @@ export function Header({
 
           {profile ? (
             <DropdownMenu>
-            <DropdownMenuTrigger
-              className="cursor-pointer!"
-              render={
+              <DropdownMenuTrigger
+                className="cursor-pointer!"
+                render={
                   <Button
                     className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
                     variant="ghost"

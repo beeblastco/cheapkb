@@ -23,6 +23,11 @@ export interface Document {
   updatedAt?: string;
 }
 
+export interface Tag {
+  name: string;
+  createdAt?: string;
+}
+
 export interface QueryResult {
   documentId: string;
   title?: string;
@@ -55,7 +60,7 @@ export interface UploadQueueItem {
   id: string;
   progress: string;
   state: "EXTRACTING" | "READY" | "SYNCING" | "FAILED";
-  tags: string;
+  tags: string[];
   title: string;
   year: string;
 }

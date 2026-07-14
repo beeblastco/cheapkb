@@ -8,6 +8,7 @@ import {
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import {
+  BatchWriteCommand,
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
@@ -19,7 +20,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
-vi.mock("../functions/utils", () => ({
+vi.mock("../functions/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../functions/utils")>()),
   extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
 }));
 
@@ -39,6 +41,7 @@ describe("document deletion", () => {
       Item: {
         documentId: "doc-1",
         userId: "owner",
+        dedupeKey: "dedupe-1",
         sourceKey: "raw/doc-1/file.pdf",
       },
     });
@@ -61,6 +64,7 @@ describe("document deletion", () => {
 
   it("deletes every S3 object version before metadata", async () => {
     dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(BatchWriteCommand).resolves({});
     dynamoMock.on(DeleteCommand).resolves({});
     s3Mock.on(ListObjectVersionsCommand).resolves({
       Versions: [{ Key: "raw/doc-1/file.pdf", VersionId: "version-1" }],
@@ -77,6 +81,6 @@ describe("document deletion", () => {
         "version-1",
       );
     }
-    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(1);
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(2);
   });
 });

@@ -5,6 +5,7 @@ import type {
   QueryResult,
   ResultGroup,
   ShooIdentity,
+  Tag,
   UserProfile,
 } from "./types";
 
@@ -41,6 +42,7 @@ interface UploadMetadata {
   uploadUrl: string;
   uploadFields: Record<string, string>;
   maxUploadBytes: number;
+  reused: boolean;
 }
 
 declare global {
@@ -201,6 +203,20 @@ export async function apiCall(
     throw new Error(data.error || `HTTP ${response.status}`);
   }
   return data;
+}
+
+export async function listTags(token: string): Promise<Tag[]> {
+  const data = await apiCall(token, "GET", "/tags");
+  return Array.isArray(data.tags) ? (data.tags as Tag[]) : [];
+}
+
+export async function createTag(token: string, name: string): Promise<Tag> {
+  const data = await apiCall(token, "POST", "/tags", { name });
+  return data.tag as Tag;
+}
+
+export async function deleteTag(token: string, name: string): Promise<void> {
+  await apiCall(token, "DELETE", `/tags/${encodeURIComponent(name)}`);
 }
 
 export function isActiveStatus(status: string): boolean {
@@ -377,9 +393,11 @@ export async function uploadDocument(
     });
     return metadata.documentId;
   } catch (error) {
-    try {
-      await apiCall(token, "DELETE", `/documents/${metadata.documentId}`);
-    } catch {}
+    if (!metadata.reused) {
+      try {
+        await apiCall(token, "DELETE", `/documents/${metadata.documentId}`);
+      } catch {}
+    }
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
     throw error;
   }
