@@ -101,7 +101,9 @@ export async function handler(event: any) {
       }),
     );
     const document = result?.Item;
-    if (!document) throw new Error("Document mapping is invalid");
+    // The mapping can outlive its META row if the document was deleted
+    // concurrently; respond cleanly instead of throwing an unstructured 500.
+    if (!document) return conflictResponse("Document mapping is invalid");
     if (!REPLACEABLE_STATUSES.has(document.status)) {
       return conflictResponse("Document is being processed");
     }

@@ -200,24 +200,34 @@ export function DocumentsCard({
 
   const handleCreateTag = useCallback(
     async (tagName: string) => {
-      const tag = await createTag(token, tagName);
-      setTags((current) =>
-        current.some((t) => t.name.toLowerCase() === tag.name.toLowerCase())
-          ? current
-          : [...current, tag],
-      );
+      try {
+        const tag = await createTag(token, tagName);
+        setTags((current) =>
+          current.some((t) => t.name.toLowerCase() === tag.name.toLowerCase())
+            ? current
+            : [...current, tag],
+        );
+      } catch (error) {
+        notify((error as Error).message, "error");
+        throw error;
+      }
     },
-    [token],
+    [notify, token],
   );
 
   const handleDeleteTag = useCallback(
     async (tagName: string) => {
-      await deleteTag(token, tagName);
-      setTags((current) =>
-        current.filter((t) => t.name.toLowerCase() !== tagName.toLowerCase()),
-      );
+      try {
+        await deleteTag(token, tagName);
+        setTags((current) =>
+          current.filter((t) => t.name.toLowerCase() !== tagName.toLowerCase()),
+        );
+      } catch (error) {
+        notify((error as Error).message, "error");
+        throw error;
+      }
     },
-    [token],
+    [notify, token],
   );
 
   const addFiles = useCallback(
@@ -1125,7 +1135,12 @@ function getSearchValue(row: DocumentTableRow): string {
       .join(" ")
       .toLowerCase();
   }
-  return [row.document.title, row.document.documentId, row.document.status]
+  return [
+    row.document.title,
+    row.document.documentId,
+    row.document.status,
+    ...(row.document.tags ?? []),
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

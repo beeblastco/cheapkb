@@ -527,6 +527,7 @@ export default $config({
         {
           actions: [
             "dynamodb:Query",
+            "dynamodb:GetItem",
             "dynamodb:PutItem",
             "dynamodb:DeleteItem",
           ],

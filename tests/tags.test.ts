@@ -1,6 +1,7 @@
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -68,6 +69,8 @@ describe("tag APIs", () => {
 
   describe("POST /tags", () => {
     it("creates a tag under the user partition with a normalized key", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Count: 0 });
       dynamoMock.on(PutCommand).resolves({});
 
       const response = await tags(
@@ -88,19 +91,34 @@ describe("tag APIs", () => {
       expect(JSON.parse(response.body).tag.name).toBe("Research");
     });
 
-    it("treats creating an existing tag as idempotent success", async () => {
-      dynamoMock.on(PutCommand).rejects(
-        Object.assign(new Error("exists"), {
-          name: "ConditionalCheckFailedException",
-        }),
-      );
+    it("returns the stored canonical tag when a differently-cased duplicate is created", async () => {
+      dynamoMock.on(GetCommand).resolves({
+        Item: { name: "Research", createdAt: "2026-01-01T00:00:00.000Z" },
+      });
 
       const response = await tags(
-        withMethod("POST", { body: JSON.stringify({ name: "product" }) }),
+        withMethod("POST", { body: JSON.stringify({ name: "RESEARCH" }) }),
       );
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).tag.name).toBe("product");
+      // The already-stored casing/createdAt wins, not the request's casing.
+      expect(JSON.parse(response.body).tag).toEqual({
+        name: "Research",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+    });
+
+    it("rejects creation once the per-user tag cap is reached", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Count: 200 });
+
+      const response = await tags(
+        withMethod("POST", { body: JSON.stringify({ name: "overflow" }) }),
+      );
+
+      expect(response.statusCode).toBe(409);
+      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
     });
 
     it("rejects an empty tag name", async () => {

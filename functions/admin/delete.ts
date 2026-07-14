@@ -1,9 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DeleteObjectsCommand,
-  ListObjectVersionsCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DeleteCommand,
@@ -14,6 +10,7 @@ import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
+  deleteS3Prefix,
   extractUserId,
 } from "../utils";
 
@@ -85,7 +82,7 @@ export async function handler(event: any) {
   }
 
   try {
-    await deleteS3Prefix(doc.sourceKey);
+    await deleteS3Prefix(doc.sourceKey, s3, StorageBucketName);
   } catch (err: any) {
     errors.push(`source: ${err.message}`);
   }
@@ -136,38 +133,4 @@ export async function handler(event: any) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId, deleted: true }),
   };
-}
-
-async function deleteS3Prefix(prefix: string) {
-  let keyMarker: string | undefined;
-  let versionIdMarker: string | undefined;
-  do {
-    const list = await s3.send(
-      new ListObjectVersionsCommand({
-        Bucket: StorageBucketName,
-        Prefix: prefix,
-        KeyMarker: keyMarker,
-        VersionIdMarker: versionIdMarker,
-      }),
-    );
-    const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
-    if (objects.length === 0) break;
-
-    const response = await s3.send(
-      new DeleteObjectsCommand({
-        Bucket: StorageBucketName,
-        Delete: {
-          Objects: objects.map((object) => ({
-            Key: object.Key!,
-            VersionId: object.VersionId,
-          })),
-          Quiet: true,
-        },
-      }),
-    );
-    if (response.Errors?.length)
-      throw new Error("Failed to delete S3 versions");
-    keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
-    versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
-  } while (keyMarker);
 }

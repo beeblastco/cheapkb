@@ -2,6 +2,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -10,6 +11,7 @@ import { extractUserId } from "../utils";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const MAX_TAG_LENGTH = 50;
+const MAX_TAGS_PER_USER = 200;
 
 function json(statusCode: number, body: unknown) {
   return {
@@ -76,15 +78,43 @@ async function createTag(userId: string, event: any) {
     });
   }
 
+  const key = { pk: `USER#${userId}`, sk: `TAG#${name.toLowerCase()}` };
+
+  // Idempotent create: if the tag already exists, echo the stored canonical
+  // record (its original casing and createdAt) so POST and GET agree.
+  const existing = await dynamo.send(new GetCommand({ TableName, Key: key }));
+  if (existing.Item) {
+    return json(200, {
+      tag: { name: existing.Item.name, createdAt: existing.Item.createdAt },
+    });
+  }
+
+  // Bound how many tags a single user can accumulate.
+  const countRes = await dynamo.send(
+    new QueryCommand({
+      TableName,
+      Select: "COUNT",
+      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: {
+        ":pk": `USER#${userId}`,
+        ":prefix": "TAG#",
+      },
+    }),
+  );
+  if ((countRes.Count ?? 0) >= MAX_TAGS_PER_USER) {
+    return json(409, {
+      error: `Tag limit reached (${MAX_TAGS_PER_USER} per user)`,
+    });
+  }
+
   const now = new Date().toISOString();
-  const tag = { name, createdAt: now };
   try {
     await dynamo.send(
       new PutCommand({
         TableName,
         Item: {
-          pk: `USER#${userId}`,
-          sk: `TAG#${name.toLowerCase()}`,
+          pk: key.pk,
+          sk: key.sk,
           entityType: "Tag",
           name,
           createdAt: now,
@@ -92,17 +122,29 @@ async function createTag(userId: string, event: any) {
         ConditionExpression: "attribute_not_exists(pk)",
       }),
     );
+    return json(200, { tag: { name, createdAt: now } });
   } catch (error: any) {
-    // Tag already exists — treat create as idempotent.
     if (error.name !== "ConditionalCheckFailedException") throw error;
+    // Lost a race with a concurrent create — return the canonical record.
+    const raced = await dynamo.send(new GetCommand({ TableName, Key: key }));
+    return json(200, {
+      tag: raced.Item
+        ? { name: raced.Item.name, createdAt: raced.Item.createdAt }
+        : { name, createdAt: now },
+    });
   }
-
-  return json(200, { tag });
 }
 
 async function deleteTag(userId: string, event: any) {
   const raw = event.pathParameters?.name;
-  const name = raw ? decodeURIComponent(raw).trim() : "";
+  let decoded: string;
+  try {
+    decoded = raw ? decodeURIComponent(raw) : "";
+  } catch {
+    // Malformed percent-encoding is a client error, not a 500.
+    return json(400, { error: "Invalid tag name" });
+  }
+  const name = decoded.trim();
   if (!name) return json(400, { error: "Tag name is required" });
 
   await dynamo.send(

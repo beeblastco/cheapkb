@@ -5,15 +5,12 @@ import {
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
+  getDocument,
 } from "../utils";
 
 const s3 = new S3Client({});
@@ -46,7 +43,7 @@ export async function handler(event: any) {
     const documentId = parts[1];
     const now = new Date().toISOString();
 
-    let doc = await getDocument(documentId);
+    let doc = await getDocument(documentId, dynamo, TableName);
     if (!doc) {
       console.log(`[ingest-adapter] Document ${documentId} not found`);
       continue;
@@ -126,16 +123,6 @@ export async function handler(event: any) {
   }
 }
 
-async function getDocument(documentId: string) {
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  return result.Item ?? null;
-}
-
 async function finalizeReplacement(documentId: string, doc: any, now: string) {
   const chunkItems = await deleteDocumentVectors(
     documentId,
@@ -148,29 +135,37 @@ async function finalizeReplacement(documentId: string, doc: any, now: string) {
   await deleteDocumentS3Data(documentId, s3, StorageBucketName);
   await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
 
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
-      ConditionExpression: "replacementToken = :token AND #s = :previousStatus",
-      ExpressionAttributeNames: { "#s": "status", "#year": "year" },
-      ExpressionAttributeValues: {
-        ":uploaded": "UPLOADED",
-        ":filename": doc.pendingFilename,
-        ":title": doc.pendingTitle,
-        ":tags": doc.pendingTags,
-        ":authors": doc.pendingAuthors,
-        ":year": doc.pendingYear,
-        ":now": now,
-        ":gsi1pk": "STATUS#UPLOADED",
-        ":token": doc.replacementToken,
-        ":previousStatus": doc.replacementPreviousStatus,
-      },
-    }),
-  );
-  return true;
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+        ConditionExpression:
+          "replacementToken = :token AND #s = :previousStatus",
+        ExpressionAttributeNames: { "#s": "status", "#year": "year" },
+        ExpressionAttributeValues: {
+          ":uploaded": "UPLOADED",
+          ":filename": doc.pendingFilename,
+          ":title": doc.pendingTitle,
+          ":tags": doc.pendingTags,
+          ":authors": doc.pendingAuthors,
+          ":year": doc.pendingYear,
+          ":now": now,
+          ":gsi1pk": "STATUS#UPLOADED",
+          ":token": doc.replacementToken,
+          ":previousStatus": doc.replacementPreviousStatus,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    // A duplicate/concurrent S3 event for the same replacement loses the
+    // conditional write; treat it as a stale event rather than crashing.
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
+  }
 }
 
 async function queueDocument(documentId: string, now: string) {

@@ -26,5 +26,8 @@ describe("infrastructure hardening", () => {
     expect(
       config.match(/"dynamodb:BatchWriteItem"/g)?.length,
     ).toBeGreaterThanOrEqual(3);
+    // The transactional replacement write must be scoped to a single function's
+    // policy, not leaked into any other Lambda's permissions.
+    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(1);
   });
 });

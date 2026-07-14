@@ -65,6 +65,9 @@ export function TagPicker({
       await onCreate(trimmed);
       select(trimmed);
       setInput("");
+    } catch {
+      // The parent surfaces the error to the user; swallow the rejection here
+      // so it doesn't become an unhandled promise rejection.
     } finally {
       setBusy(false);
     }
@@ -74,8 +77,10 @@ export function TagPicker({
     if (busy) return;
     setBusy(true);
     try {
-      deselect(name);
       await onDeleteTag(name);
+      deselect(name);
+    } catch {
+      // The parent surfaces the error to the user; swallow the rejection here.
     } finally {
       setBusy(false);
     }

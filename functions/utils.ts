@@ -190,6 +190,26 @@ export async function deleteDocumentVectors(
   return chunkItems;
 }
 
+const CHUNK_DELETE_BACKOFF_MS = 100;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function getDocument(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  tableName: string,
+) {
+  const result = await documentClient.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  return result.Item ?? null;
+}
+
 export async function deleteDocumentChunkRecords(
   chunkItems: any[],
   documentClient: DynamoDBDocumentClient,
@@ -201,6 +221,10 @@ export async function deleteDocumentChunkRecords(
     }));
 
     for (let attempt = 0; requests.length > 0 && attempt < 3; attempt++) {
+      // Back off before resending throttled items so retries don't hammer the
+      // same throttling window.
+      if (attempt > 0)
+        await delay(2 ** (attempt - 1) * CHUNK_DELETE_BACKOFF_MS);
       const response = await documentClient.send(
         new BatchWriteCommand({
           RequestItems: { [tableName]: requests },
@@ -224,13 +248,14 @@ export async function deleteDocumentS3Data(
   await deleteS3Prefix(`parsed/${documentId}/`, s3Client, storageBucketName);
 }
 
-async function deleteS3Prefix(
+export async function deleteS3Prefix(
   prefix: string,
   s3Client: S3Client,
   storageBucketName: string,
-) {
+): Promise<number> {
   let keyMarker: string | undefined;
   let versionIdMarker: string | undefined;
+  let count = 0;
 
   do {
     const list = await s3Client.send(
@@ -242,7 +267,7 @@ async function deleteS3Prefix(
       }),
     );
     const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
-    if (objects.length === 0) return;
+    if (objects.length === 0) return count;
 
     const response = await s3Client.send(
       new DeleteObjectsCommand({
@@ -259,7 +284,10 @@ async function deleteS3Prefix(
     if (response.Errors?.length) {
       throw new Error("Failed to delete S3 versions");
     }
+    count += objects.length;
     keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
     versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
   } while (keyMarker);
+
+  return count;
 }
