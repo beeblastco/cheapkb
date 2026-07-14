@@ -13,8 +13,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -178,13 +180,13 @@ export function DocumentsCard({
           current.map((currentItem) =>
             currentItem.id === item.id
               ? {
-                ...currentItem,
-                authors: metadata.authors.join(", "),
-                progress: "Ready to sync",
-                state: "READY",
-                title: metadata.title || currentItem.title,
-                year: metadata.year?.toString() || "",
-              }
+                  ...currentItem,
+                  authors: metadata.authors.join(", "),
+                  progress: "Ready to sync",
+                  state: "READY",
+                  title: metadata.title || currentItem.title,
+                  year: metadata.year?.toString() || "",
+                }
               : currentItem,
           ),
         );
@@ -242,8 +244,8 @@ export function DocumentsCard({
       .filter((document) =>
         value
           ? [document.title, document.documentId, document.status]
-            .filter(Boolean)
-            .some((field) => field!.toLowerCase().includes(value))
+              .filter(Boolean)
+              .some((field) => field!.toLowerCase().includes(value))
           : true,
       )
       .sort((left, right) => {
@@ -258,8 +260,8 @@ export function DocumentsCard({
     return items.filter((item) =>
       value
         ? [item.title, item.file.name, item.state].some((field) =>
-          field.toLowerCase().includes(value),
-        )
+            field.toLowerCase().includes(value),
+          )
         : true,
     );
   }, [items, query]);
@@ -384,15 +386,13 @@ export function DocumentsCard({
           <p>Drop files to add them</p>
         </div>
       ) : null}
-      <Card className="h-full">
-        <CardHeader className="flex-row items-center justify-between">
-          <div>
-            <CardTitle>Documents</CardTitle>
-            <CardDescription>
-              {documents.length + items.length} total · 50 per page
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
+      <Card className="h-full min-w-0">
+        <CardHeader>
+          <CardTitle>Documents</CardTitle>
+          <CardDescription>
+            {documents.length + items.length} total · 50 per page
+          </CardDescription>
+          <CardAction className="flex items-center gap-2">
             {loading ? <Spinner /> : null}
             <Button
               disabled={syncing}
@@ -410,7 +410,7 @@ export function DocumentsCard({
               )}
               Sync all{readyCount ? ` (${readyCount})` : ""}
             </Button>
-          </div>
+          </CardAction>
           <input
             ref={fileInput}
             accept=".pdf,.txt,.md"
@@ -423,49 +423,57 @@ export function DocumentsCard({
             type="file"
           />
         </CardHeader>
-        <CardContent className="flex flex-1 flex-col gap-4">
+        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
           <InputGroup className="max-w-sm">
-            <InputGroupAddon>
-              <Search />
-            </InputGroupAddon>
             <InputGroupInput
               aria-label="Search documents"
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search documents"
               value={query}
             />
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
           </InputGroup>
 
-          <div className="flex-1 overflow-x-auto">
-            <Table>
-              <TableHeader>
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden *:data-[slot=table-container]:h-full">
+            <Table className="min-w-3xl table-fixed">
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   <SortableHead
+                    className="w-1/2"
                     label="Document"
                     onClick={() => sort("title")}
                   />
-                  <SortableHead label="Status" onClick={() => sort("status")} />
                   <SortableHead
+                    className="w-1/8"
+                    label="Status"
+                    onClick={() => sort("status")}
+                  />
+                  <SortableHead
+                    className="w-1/8"
                     label="Uploaded"
                     onClick={() => sort("createdAt")}
                   />
                   <SortableHead
+                    className="w-1/8"
                     label="Modified"
                     onClick={() => sort("updatedAt")}
                   />
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="w-1/8 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !documents.length && !items.length
-                  ? Array.from({ length: 4 }).map((_, index) => (
+                {loading && !documents.length && !items.length ? (
+                  Array.from({ length: 4 }).map((_, index) => (
                     <TableRow key={index}>
                       <TableCell colSpan={5}>
                         <Skeleton className="h-8 w-full" />
                       </TableCell>
                     </TableRow>
                   ))
-                  : visible.map((row) =>
+                ) : visible.length ? (
+                  visible.map((row) =>
                     "item" in row ? (
                       <UploadRow
                         item={row.item}
@@ -482,68 +490,70 @@ export function DocumentsCard({
                         onView={onView}
                       />
                     ),
-                  )}
+                  )
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={5}>
+                      <Empty>
+                        <EmptyHeader>
+                          <EmptyTitle>
+                            {query ? "No matching documents" : "No documents"}
+                          </EmptyTitle>
+                          <EmptyDescription>
+                            {query
+                              ? "Try a different search."
+                              : "Drop PDF, Markdown, or text files anywhere on this page."}
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    </TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
-
-            {!loading && !visible.length ? (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyTitle>
-                    {query ? "No matching documents" : "No documents"}
-                  </EmptyTitle>
-                  <EmptyDescription>
-                    {query
-                      ? "Try a different search."
-                      : "Drop PDF, Markdown, or text files anywhere on this page."}
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            ) : null}
-          </div>
-
-          <div className="flex items-center justify-between">
-            <CardDescription>
-              {totalCount
-                ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalCount)} of ${totalCount}`
-                : "0 documents"}
-            </CardDescription>
-            {pageCount > 1 ? (
-              <Pagination className="w-auto">
-                <PaginationContent>
-                  <PaginationItem>
-                    <PaginationPrevious
-                      aria-disabled={page === 1}
-                      className={cn(
-                        page === 1 && "pointer-events-none opacity-50",
-                      )}
-                      href="#"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        setPage((current) => Math.max(1, current - 1));
-                      }}
-                      text=""
-                    />
-                  </PaginationItem>
-                  <PaginationItem>
-                    <PaginationNext
-                      aria-disabled={page === pageCount}
-                      className={cn(
-                        page === pageCount && "pointer-events-none opacity-50",
-                      )}
-                      href="#"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        setPage((current) => Math.min(pageCount, current + 1));
-                      }}
-                      text=""
-                    />
-                  </PaginationItem>
-                </PaginationContent>
-              </Pagination>
-            ) : null}
           </div>
         </CardContent>
+        <CardFooter className="justify-between">
+          <CardDescription>
+            {totalCount
+              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalCount)} of ${totalCount}`
+              : "0 documents"}
+          </CardDescription>
+          {pageCount > 1 ? (
+            <Pagination className="w-auto">
+              <PaginationContent>
+                <PaginationItem>
+                  <PaginationPrevious
+                    aria-disabled={page === 1}
+                    className={cn(
+                      page === 1 && "pointer-events-none opacity-50",
+                    )}
+                    href="#"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setPage((current) => Math.max(1, current - 1));
+                    }}
+                    text=""
+                  />
+                </PaginationItem>
+                <PaginationItem>
+                  <PaginationNext
+                    aria-disabled={page === pageCount}
+                    className={cn(
+                      page === pageCount && "pointer-events-none opacity-50",
+                    )}
+                    href="#"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setPage((current) => Math.min(pageCount, current + 1));
+                    }}
+                    text=""
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          ) : null}
+        </CardFooter>
       </Card>
 
       <UploadMetadataSheet
@@ -567,7 +577,12 @@ function SortableHead({
 }) {
   return (
     <TableHead className={className}>
-      <Button onClick={onClick} size="sm" variant="ghost">
+      <Button
+        className="justify-start bg-transparent! px-0 text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
+        onClick={onClick}
+        size="sm"
+        variant="ghost"
+      >
         {label}
         <ArrowDownUp data-icon="inline-end" />
       </Button>
@@ -585,8 +600,19 @@ function UploadRow({
   onRemove: () => void;
 }) {
   return (
-    <TableRow>
-      <TableCell>
+    <TableRow
+      aria-label={`Edit ${item.title}`}
+      className="cursor-pointer"
+      onClick={onEdit}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onEdit();
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">{item.title}</span>
           <span className="truncate text-muted-foreground">
@@ -597,7 +623,7 @@ function UploadRow({
           ) : null}
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className="max-w-0">
         <div className="flex items-center gap-2">
           {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
             <Spinner />
@@ -605,9 +631,13 @@ function UploadRow({
           <Badge variant="outline">{item.state}</Badge>
         </div>
       </TableCell>
-      <TableCell className="hidden md:table-cell">—</TableCell>
-      <TableCell className="hidden lg:table-cell">—</TableCell>
-      <TableCell>
+      <TableCell className="truncate">—</TableCell>
+      <TableCell className="truncate">—</TableCell>
+      <TableCell
+        className="max-w-0"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <div className="flex justify-end gap-1">
           <ActionButton
             disabled={item.state === "SYNCING"}
@@ -645,8 +675,19 @@ function DocumentRow({
     isActiveStatus(document.status) &&
     Date.now() - updatedAt > STALLED_AFTER_MS;
   return (
-    <TableRow>
-      <TableCell>
+    <TableRow
+      aria-label={`View ${document.title || document.documentId}`}
+      className="cursor-pointer"
+      onClick={() => onView(document.documentId)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onView(document.documentId);
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">
             {document.title || document.documentId}
@@ -666,9 +707,16 @@ function DocumentRow({
           {document.status}
         </Badge>
       </TableCell>
-      <TableCell>{formatDate(document.createdAt)}</TableCell>
-      <TableCell>{formatDate(document.updatedAt)}</TableCell>
-      <TableCell>
+      <TableCell className="truncate">
+        {formatDate(document.createdAt)}
+      </TableCell>
+      <TableCell className="truncate">
+        {formatDate(document.updatedAt)}
+      </TableCell>
+      <TableCell
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <div className="flex justify-end gap-1">
           <ActionButton
             label="View details"
@@ -685,17 +733,21 @@ function DocumentRow({
           </ActionButton>
           <AlertDialog>
             <Tooltip>
-              <TooltipTrigger asChild>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    aria-label="Delete document"
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <Trash2 />
-                  </Button>
-                </AlertDialogTrigger>
-              </TooltipTrigger>
+              <AlertDialogTrigger
+                render={
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label="Delete document"
+                        size="icon-sm"
+                        variant="ghost"
+                      />
+                    }
+                  />
+                }
+              >
+                <Trash2 />
+              </AlertDialogTrigger>
               <TooltipContent>Delete</TooltipContent>
             </Tooltip>
             <AlertDialogContent>
@@ -744,7 +796,7 @@ function UploadMetadataSheet({
               {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
             </SheetDescription>
             <FieldGroup>
-              <Field>
+              <Field data-disabled={syncing || undefined}>
                 <FieldLabel htmlFor={`title-${item.id}`}>Title</FieldLabel>
                 <Input
                   disabled={syncing}
@@ -755,7 +807,7 @@ function UploadMetadataSheet({
                   value={item.title}
                 />
               </Field>
-              <Field>
+              <Field data-disabled={syncing || undefined}>
                 <FieldLabel htmlFor={`authors-${item.id}`}>Authors</FieldLabel>
                 <Input
                   disabled={syncing}
@@ -767,7 +819,7 @@ function UploadMetadataSheet({
                   value={item.authors}
                 />
               </Field>
-              <Field>
+              <Field data-disabled={syncing || undefined}>
                 <FieldLabel htmlFor={`year-${item.id}`}>Year</FieldLabel>
                 <Input
                   disabled={syncing}
@@ -780,7 +832,7 @@ function UploadMetadataSheet({
                   value={item.year}
                 />
               </Field>
-              <Field>
+              <Field data-disabled={syncing || undefined}>
                 <FieldLabel htmlFor={`tags-${item.id}`}>Tags</FieldLabel>
                 <Input
                   disabled={syncing}
@@ -816,16 +868,18 @@ function ActionButton({
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          aria-label={label}
-          disabled={disabled}
-          onClick={onClick}
-          size="icon-sm"
-          variant="ghost"
-        >
-          {children}
-        </Button>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            disabled={disabled}
+            onClick={onClick}
+            size="icon-sm"
+            variant="ghost"
+          />
+        }
+      >
+        {children}
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>

@@ -36,17 +36,17 @@ export function DocumentDialog({
     : detailedDocument?.authors;
   const fields = detailedDocument
     ? [
-      ["ID", detailedDocument.documentId],
-      ["MIME type", detailedDocument.mimeType],
-      ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
-      ["Uploaded", formatDate(detailedDocument.createdAt)],
-      ["Modified", formatDate(detailedDocument.updatedAt)],
-      ["Tags", tags],
-      ["Authors", authors],
-      ["Last error", detailedDocument.lastError],
-    ].filter(
-      ([, value]) => value !== undefined && value !== null && value !== "",
-    )
+        ["ID", detailedDocument.documentId],
+        ["MIME type", detailedDocument.mimeType],
+        ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
+        ["Uploaded", formatDate(detailedDocument.createdAt)],
+        ["Modified", formatDate(detailedDocument.updatedAt)],
+        ["Tags", tags],
+        ["Authors", authors],
+        ["Last error", detailedDocument.lastError],
+      ].filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      )
     : [];
 
   return (

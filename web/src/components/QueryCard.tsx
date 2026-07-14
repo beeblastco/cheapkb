@@ -39,6 +39,11 @@ const SUGGESTIONS = [
   "What are the main themes?",
   "Find the most relevant evidence",
 ];
+const TOP_K_OPTIONS = [
+  { label: "3 results", value: "3" },
+  { label: "5 results", value: "5" },
+  { label: "10 results", value: "10" },
+];
 
 interface ChatTurn {
   error: string;
@@ -64,8 +69,7 @@ export function QueryCard({
   const [topK, setTopK] = useState("5");
   const [loading, setLoading] = useState(false);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function submit() {
     const question = query.trim();
     if (!question || loading) return;
     setCurrentQuestion(question);
@@ -102,7 +106,7 @@ export function QueryCard({
   }
 
   return (
-    <Card className="flex h-full flex-col">
+    <Card className="h-full">
       <CardContent className="min-h-0 flex-1 overflow-hidden">
         <MessageScrollerProvider>
           <MessageScroller>
@@ -159,47 +163,52 @@ export function QueryCard({
             ))}
           </div>
         ) : null}
-        <form onSubmit={submit}>
-          <InputGroup>
-            <InputGroupTextarea
-              aria-label="Ask a question"
-              disabled={loading}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}
-              placeholder="Ask your documents…"
-              value={query}
-            />
-            <InputGroupAddon align="block-end">
-              <Select onValueChange={setTopK} value={topK}>
-                <SelectTrigger aria-label="Number of results" size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="3">3 results</SelectItem>
-                    <SelectItem value="5">5 results</SelectItem>
-                    <SelectItem value="10">10 results</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <InputGroupButton
-                aria-label="Send question"
-                className="ml-auto"
-                disabled={!query.trim() || loading}
-                size="icon-sm"
-                type="submit"
-                variant="default"
-              >
-                <ArrowUp />
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
-        </form>
+        <InputGroup>
+          <InputGroupTextarea
+            aria-label="Ask a question"
+            disabled={loading}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder="Ask your documents…"
+            value={query}
+          />
+          <InputGroupAddon align="block-end">
+            <Select
+              items={TOP_K_OPTIONS}
+              onValueChange={(value) => value && setTopK(value)}
+              value={topK}
+            >
+              <SelectTrigger aria-label="Number of results" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {TOP_K_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <InputGroupButton
+              aria-label="Send question"
+              className="ml-auto"
+              disabled={!query.trim() || loading}
+              onClick={() => void submit()}
+              size="icon-sm"
+              type="button"
+              variant="default"
+            >
+              <ArrowUp />
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
       </CardFooter>
     </Card>
   );

@@ -8,7 +8,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: 'Inter Variable', sans-serif;
+  --font-sans: "Inter Variable", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --color-background: oklch(0.147 0.004 49.25);
   --color-foreground: oklch(0.985 0.001 106.423);
@@ -94,7 +94,7 @@
 
   --radius-3xl: calc(var(--radius) * 2.2);
 
-  --radius-4xl: calc(var(--radius) * 2.6)
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 @layer base {
