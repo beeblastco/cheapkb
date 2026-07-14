@@ -3,6 +3,7 @@
 const PROJECT = "cheapkb";
 // Stage name "prod" is poisoned in SST Ion cloud state from failed prior deploys; using "production" as standard alias
 const PROD_STAGE = "production";
+const AWS_ACCOUNT_ID = "954475336309";
 
 export default $config({
   app(input) {
@@ -25,6 +26,13 @@ export default $config({
     const pulumi = await import("@pulumi/pulumi");
     const pulumiAws = await import("@pulumi/aws");
     const ACCOUNT_ID = (await pulumiAws.getCallerIdentity({})).accountId;
+    // Resource names embed the account, so a wrong caller silently provisions a
+    // parallel copy of the stack elsewhere instead of failing.
+    if (ACCOUNT_ID !== AWS_ACCOUNT_ID) {
+      throw new Error(
+        `Refusing to deploy as account ${ACCOUNT_ID}; expected ${AWS_ACCOUNT_ID}`,
+      );
+    }
     const REGION = (await pulumiAws.getRegion({})).name;
     const STAGE = $app.stage;
     const stagePrefix = STAGE === PROD_STAGE ? "" : `${STAGE}-`;
@@ -526,8 +534,9 @@ export default $config({
       environment: baseEnv,
       permissions: [
         {
+          // Only chunk JSON is rewritten; raw uploads and parsed pages are not.
           actions: ["s3:GetObject", "s3:PutObject"],
-          resources: [pulumi.interpolate`${storage.arn}/*`],
+          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
         },
         {
           actions: [

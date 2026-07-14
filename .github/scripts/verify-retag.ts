@@ -6,17 +6,8 @@ import {
   retagDocumentVectors,
 } from "../../functions/utils.ts";
 
-/**
- * Exercises the real retag path against the real production vector index.
- *
- * The unit tests mock S3 Vectors, so they cannot prove the two behaviours this
- * feature depends on: that PutVectors upserts by key, and that it replaces
- * metadata rather than merging it. If the second assumption is ever wrong the
- * damage is silent -- vectors keep working but lose `userId`, which every query
- * filters on, so the document disappears from its owner's search instead of
- * raising an error. This runs after the pipeline reaches EMBEDDED and fails the
- * deploy if the invariant breaks.
- */
+// Unit tests mock S3 Vectors, so they cannot prove PutVectors upserts by key and
+// replaces metadata. Getting that wrong strips userId and hides the document.
 
 const documentId = process.env.E2E_DOCUMENT_ID!;
 const tableName = process.env.E2E_TABLE_NAME!;

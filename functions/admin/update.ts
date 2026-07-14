@@ -1,5 +1,7 @@
-import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommand,
@@ -22,18 +24,12 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
-// Tags are copied into vectors while the pipeline runs, so editing mid-flight
-// would race the pipeline and lose either the edit or the chunk it was applied
-// to. Only settled documents can be retagged.
+// A running pipeline copies tags into chunks itself, so an edit mid-flight
+// would race it. Only settled documents can be retagged.
 const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED", "CHUNKED", "PARSED"]);
-
-function json(statusCode: number, body: unknown) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
+// Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
+// timeout if run one at a time.
+const CHUNK_REWRITE_CONCURRENCY = 8;
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -66,37 +62,13 @@ export async function handler(event: any) {
 
   const tags = normalizeTags(body.tags);
   const now = new Date().toISOString();
-
-  // The META row is the source of truth for a re-chunk, the S3 chunk JSON for a
-  // re-embed, and the vector metadata for search. All three must agree, or a
-  // later reindex silently restores the previous tags.
-  try {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression: "SET tags = :tags, updatedAt = :now",
-        ConditionExpression: "userId = :userId AND #s = :expected",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":tags": tags,
-          ":now": now,
-          ":userId": userId,
-          ":expected": document.status,
-        },
-      }),
-    );
-  } catch (error) {
-    // The pipeline moved the document between the read above and this write, so
-    // the edit would be racing it after all.
-    if (error instanceof ConditionalCheckFailedException) {
-      return json(409, {
-        error: "Document changed while updating; retry the edit",
-      });
-    }
-    throw error;
+  const claimed = await claimDocument(document, userId, tags, now);
+  if (!claimed) {
+    return json(409, { error: "Document changed while updating; retry" });
   }
 
+  // Tags live in the META row, the chunk JSON a re-embed reads, and the vector
+  // metadata search filters on. All three must agree or a reindex undoes this.
   const chunkItems = await listDocumentChunkItems(
     documentId,
     dynamo,
@@ -119,25 +91,81 @@ export async function handler(event: any) {
   });
 }
 
-async function updateChunkObjects(chunkItems: any[], tags: string[] | null) {
-  for (const item of chunkItems) {
-    if (!item.s3ChunkKey) continue;
-    const response = await s3.send(
-      new GetObjectCommand({
-        Bucket: StorageBucketName,
-        Key: item.s3ChunkKey,
+function json(statusCode: number, body: unknown) {
+  return {
+    statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+
+// Uses updatedAt as a revision token: conditioning on status alone would let two
+// concurrent edits both pass and interleave their S3 and vector writes.
+async function claimDocument(
+  document: any,
+  userId: string,
+  tags: string[] | null,
+  now: string,
+): Promise<boolean> {
+  const revisionMatches = document.updatedAt
+    ? "updatedAt = :revision"
+    : "attribute_not_exists(updatedAt)";
+
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: document.pk, sk: document.sk },
+        UpdateExpression: "SET tags = :tags, updatedAt = :now",
+        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches}`,
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":tags": tags,
+          ":now": now,
+          ":userId": userId,
+          ":expected": document.status,
+          ...(document.updatedAt ? { ":revision": document.updatedAt } : {}),
+        },
       }),
     );
-    const chunkData = JSON.parse(await response.Body!.transformToString());
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: StorageBucketName,
-        Key: item.s3ChunkKey,
-        Body: JSON.stringify({ ...chunkData, tags }),
-        ContentType: "application/json",
-      }),
-    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
   }
+}
+
+async function updateChunkObjects(chunkItems: any[], tags: string[] | null) {
+  const pending = chunkItems.filter((item) => item.s3ChunkKey);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < pending.length) {
+      const item = pending[cursor++];
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: StorageBucketName,
+          Key: item.s3ChunkKey,
+        }),
+      );
+      const chunkData = JSON.parse(await response.Body!.transformToString());
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: StorageBucketName,
+          Key: item.s3ChunkKey,
+          Body: JSON.stringify({ ...chunkData, tags }),
+          ContentType: "application/json",
+        }),
+      );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CHUNK_REWRITE_CONCURRENCY, pending.length) },
+      worker,
+    ),
+  );
 }
 
 function normalizeTags(tags: unknown): string[] | null {
@@ -146,8 +174,8 @@ function normalizeTags(tags: unknown): string[] | null {
   for (const tag of tags as string[]) {
     const trimmed = tag.trim();
     if (!trimmed) continue;
-    // First occurrence wins, so the casing the user picked first is the casing
-    // that survives a case-insensitive duplicate.
+    // First occurrence wins, so the casing the user picked first survives a
+    // case-insensitive duplicate.
     const key = trimmed.toLowerCase();
     if (!deduped.has(key)) deduped.set(key, trimmed);
   }
@@ -155,6 +183,11 @@ function normalizeTags(tags: unknown): string[] | null {
 }
 
 function validateBody(body: any): string | null {
+  // JSON.parse("null") and "[]" both succeed, so reading body.tags off the
+  // result would throw and surface as a 500 instead of a validation error.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "Request body must be an object";
+  }
   if (body.tags === undefined) return "tags is required";
   if (body.tags !== null && !isShortStringArray(body.tags)) {
     return "tags must be an array of short strings";

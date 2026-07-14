@@ -245,21 +245,18 @@ export function DocumentsCard({
 
   const handleUpdateDocumentTags = useCallback(
     async (documentId: string, nextTags: string[]) => {
-      try {
-        const saved = await updateDocumentTags(token, documentId, nextTags);
-        setDocuments((current) =>
-          current.map((document) =>
-            document.documentId === documentId
-              ? { ...document, tags: saved }
-              : document,
-          ),
-        );
-      } catch (error) {
-        notify((error as Error).message, "error");
-        throw error;
-      }
+      // Errors propagate to the sheet, which renders them next to the save
+      // button rather than routing them through notify, which is a no-op.
+      const saved = await updateDocumentTags(token, documentId, nextTags);
+      setDocuments((current) =>
+        current.map((document) =>
+          document.documentId === documentId
+            ? { ...document, tags: saved }
+            : document,
+        ),
+      );
     },
-    [notify, setDocuments, token],
+    [setDocuments, token],
   );
 
   const addFiles = useCallback(
@@ -1084,11 +1081,13 @@ function DocumentTagsSheet({
 }) {
   const [value, setValue] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  // Re-seed whenever a different document is opened, so the picker starts from
-  // that document's stored tags rather than the previous one's edits.
+  // Re-seed when a different document is opened, so the picker starts from that
+  // document's stored tags rather than the previous one's edits.
   useEffect(() => {
     setValue(document?.tags ?? []);
+    setError("");
   }, [document]);
 
   if (!document) return null;
@@ -1098,12 +1097,14 @@ function DocumentTagsSheet({
   async function save() {
     if (!document || saving) return;
     setSaving(true);
+    setError("");
     try {
       await onSave(document.documentId, value);
       onClose();
-    } catch {
-      // The parent surfaces the error; keep the sheet open so the edit is not
-      // silently lost.
+    } catch (caught) {
+      // Shown inline rather than thrown away: the sheet stays open holding the
+      // edit, and the reason is visible next to the button that failed.
+      setError((caught as Error).message || "Could not save tags.");
     } finally {
       setSaving(false);
     }
@@ -1132,6 +1133,11 @@ function DocumentTagsSheet({
                 Select from your tags or create a new one.
               </FieldDescription>
             </Field>
+            {error ? (
+              <FieldDescription className="text-destructive" role="alert">
+                {error}
+              </FieldDescription>
+            ) : null}
             <div className="flex justify-end gap-2">
               <Button disabled={saving} onClick={onClose} variant="outline">
                 Cancel

@@ -24,7 +24,7 @@ vi.mock("../functions/utils", async (importOriginal) => ({
 }));
 
 import { handler as update } from "../functions/admin/update";
-import { jsonApiEvent } from "./helpers/events";
+import { apiEvent, jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 const s3Mock = mockClient(S3Client);
@@ -32,6 +32,10 @@ const vectorsMock = mockClient(S3VectorsClient);
 
 function patchEvent(body: unknown, id = "doc-1") {
   return jsonApiEvent(body, { pathParameters: { id } });
+}
+
+function rawBodyEvent(body: string, id = "doc-1") {
+  return apiEvent({ body, pathParameters: { id } });
 }
 
 function embeddedDocument(overrides: Record<string, any> = {}) {
@@ -252,6 +256,22 @@ describe("PATCH /documents/{id}", () => {
       expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
 
+    it("conditions the write on the revision it read, not just the status", async () => {
+      dynamoMock
+        .on(GetCommand)
+        .resolves(embeddedDocument({ updatedAt: "2026-01-01T00:00:00.000Z" }));
+
+      await update(patchEvent({ tags: ["research"] }));
+
+      const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      // Status alone would let two concurrent edits both pass and then
+      // interleave their S3 and vector writes.
+      expect(call.ConditionExpression).toContain("updatedAt = :revision");
+      expect(call.ExpressionAttributeValues![":revision"]).toBe(
+        "2026-01-01T00:00:00.000Z",
+      );
+    });
+
     it("returns 409 when the pipeline claims the document mid-update", async () => {
       dynamoMock.on(UpdateCommand).rejects(
         new ConditionalCheckFailedException({
@@ -268,6 +288,18 @@ describe("PATCH /documents/{id}", () => {
   });
 
   describe("validation", () => {
+    it.each(["null", "[]", '"tags"'])(
+      "rejects the non-object JSON body %s instead of throwing a 500",
+      async (body) => {
+        // JSON.parse succeeds for all of these, so reading body.tags off the
+        // result would throw and surface as a 500.
+        const response = await update(rawBodyEvent(body));
+
+        expect(response.statusCode).toBe(400);
+        expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      },
+    );
+
     it("rejects a missing tags field", async () => {
       const response = await update(patchEvent({}));
 

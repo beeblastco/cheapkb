@@ -28,6 +28,17 @@ describe("infrastructure hardening", () => {
     expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(2);
   });
 
+  it("scopes the update function's storage access to chunk objects", () => {
+    expect(config).toContain("${storage.arn}/chunks/*");
+  });
+
+  it("refuses to provision into the wrong AWS account", () => {
+    // Resource names embed the account, so a wrong caller would silently build a
+    // parallel stack elsewhere rather than fail.
+    expect(config).toContain('const AWS_ACCOUNT_ID = "954475336309"');
+    expect(config).toContain("Refusing to deploy as account");
+  });
+
   it("expires noncurrent object versions", () => {
     expect(config).toContain("BucketLifecycleConfigurationV2");
     expect(config).toContain("noncurrentDays: 7");
