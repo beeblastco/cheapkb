@@ -236,6 +236,7 @@ export default $config({
           actions: [
             "dynamodb:GetItem",
             "dynamodb:PutItem",
+            "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
           resources: [table.arn],
@@ -499,6 +500,7 @@ export default $config({
             "dynamodb:GetItem",
             "dynamodb:Query",
             "dynamodb:DeleteItem",
+            "dynamodb:BatchWriteItem",
           ],
           resources: [table.arn],
         },
@@ -514,21 +516,61 @@ export default $config({
       },
     });
 
+    const adminTagsFn = new sst.aws.Function("AdminTags", {
+      handler: "./functions/admin/tags.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Manage per-user tags (list, create, delete)",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "dynamodb:Query",
+            "dynamodb:PutItem",
+            "dynamodb:DeleteItem",
+          ],
+          resources: [table.arn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("admin-tags");
+        },
+      },
+    });
+
     const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
       handler: "./functions/s3/ingest-adapter.handler",
       runtime: "nodejs22.x",
-      timeout: "30 seconds",
-      memory: "128 MB",
-      description: "Bridge S3 ObjectCreated events to the ingest queue",
+      timeout: "60 seconds",
+      memory: "256 MB",
+      description:
+        "Finalize uploads, clean replaced data, and queue document ingestion",
       environment: baseEnv,
       permissions: [
         {
           actions: [
             "dynamodb:GetItem",
-            "dynamodb:PutItem",
             "dynamodb:UpdateItem",
+            "dynamodb:Query",
+            "dynamodb:DeleteItem",
+            "dynamodb:BatchWriteItem",
           ],
           resources: [table.arn],
+        },
+        {
+          actions: [
+            "s3:GetObject",
+            "s3:ListBucketVersions",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ],
+          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
+        },
+        {
+          actions: ["s3vectors:DeleteVectors"],
+          resources: [vectorIndexArn],
         },
         { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
       ],
@@ -557,7 +599,12 @@ export default $config({
           resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
         {
-          actions: ["dynamodb:DeleteItem", "dynamodb:Query"],
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:DeleteItem",
+            "dynamodb:Query",
+            "dynamodb:BatchWriteItem",
+          ],
           resources: [table.arn],
         },
         {
@@ -599,6 +646,9 @@ export default $config({
     api.route("GET /documents/{id}", adminGetFn.arn);
     api.route("POST /documents/{id}/reindex", adminReindexFn.arn);
     api.route("DELETE /documents/{id}", adminDeleteFn.arn);
+    api.route("GET /tags", adminTagsFn.arn);
+    api.route("POST /tags", adminTagsFn.arn);
+    api.route("DELETE /tags/{name}", adminTagsFn.arn);
 
     return {
       apiEndpoint: api.url,

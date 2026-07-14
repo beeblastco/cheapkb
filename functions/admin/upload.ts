@@ -1,23 +1,27 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
-import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  TransactWriteCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { checkRateLimit, extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "10485760",
-  10,
-);
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES ?? "10485760", 10);
+const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "text/markdown",
   "text/plain",
 ]);
+const REPLACEABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
@@ -68,47 +72,81 @@ export async function handler(event: any) {
     };
   }
 
-  const documentId = `doc_${randomUUID()}`;
   const filename = sanitizeFilename(body.filename);
   const mimeType = body.mimeType;
-  const sourceKey = `raw/${documentId}/${filename}`;
+  const dedupeKey = createDedupeKey(userId, filename, mimeType);
+  const mappingKey = {
+    pk: `USER#${userId}`,
+    sk: `DOCUMENT#${dedupeKey}`,
+  };
+  const mapping = await dynamo.send(
+    new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
+  );
   const now = new Date().toISOString();
+  let documentId: string;
+  let sourceKey: string;
+  let replacementToken: string | undefined;
+  let reused = false;
+
+  if (mapping?.Item) {
+    documentId = mapping.Item.documentId;
+    const result = await dynamo.send(
+      new GetCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ConsistentRead: true,
+      }),
+    );
+    const document = result?.Item;
+    if (!document) throw new Error("Document mapping is invalid");
+    if (!REPLACEABLE_STATUSES.has(document.status)) {
+      return conflictResponse("Document is being processed");
+    }
+
+    replacementToken = randomUUID();
+    const reserved = await reserveReplacement(
+      document,
+      replacementToken,
+      filename,
+      body,
+      now,
+    );
+    if (!reserved) return conflictResponse("Document is being processed");
+    sourceKey = document.sourceKey;
+    reused = true;
+  } else {
+    documentId = `doc_${randomUUID()}`;
+    sourceKey = `raw/${documentId}/${filename}`;
+    const created = await createDocument(
+      documentId,
+      userId,
+      filename,
+      mimeType,
+      dedupeKey,
+      sourceKey,
+      body,
+      now,
+    );
+    if (!created) return conflictResponse("Document is being uploaded");
+  }
+
+  const fields: Record<string, string> = { "Content-Type": mimeType };
+  const conditions: any[] = [
+    ["content-length-range", 1, MAX_UPLOAD_BYTES],
+    ["eq", "$Content-Type", mimeType],
+  ];
+  if (replacementToken) {
+    fields["x-amz-meta-upload-token"] = replacementToken;
+    conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
+  }
+
   const upload = await createPresignedPost(s3, {
     Bucket: StorageBucketName,
     Key: sourceKey,
-    Fields: { "Content-Type": mimeType },
-    Conditions: [
-      ["content-length-range", 1, MAX_UPLOAD_BYTES],
-      ["eq", "$Content-Type", mimeType],
-    ],
+    Fields: fields,
+    Conditions: conditions,
     Expires: 900,
   });
-
-  await dynamo.send(
-    new PutCommand({
-      TableName,
-      Item: {
-        pk: `DOC#${documentId}`,
-        sk: "META",
-        entityType: "Document",
-        documentId,
-        userId,
-        title: body.title ?? filename,
-        sourceKey,
-        mimeType,
-        status: "UPLOADED",
-        tags: body.tags,
-        authors: body.authors,
-        year: body.year ?? null,
-        createdAt: now,
-        updatedAt: now,
-        gsi1pk: "STATUS#UPLOADED",
-        gsi1sk: now,
-        gsi2pk: `USER#${userId}`,
-        gsi2sk: now,
-      },
-    }),
-  );
 
   return {
     statusCode: 200,
@@ -122,8 +160,117 @@ export async function handler(event: any) {
       uploadFields: upload.fields,
       sourceKey,
       maxUploadBytes: MAX_UPLOAD_BYTES,
+      reused,
     }),
   };
+}
+
+async function reserveReplacement(
+  document: any,
+  replacementToken: string,
+  filename: string,
+  body: any,
+  now: string,
+) {
+  const replacementExpiresAt = new Date(
+    Date.now() + REPLACEMENT_TTL_MS,
+  ).toISOString();
+
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: document.pk, sk: document.sk },
+        UpdateExpression:
+          "SET replacementToken = :token, replacementExpiresAt = :expires, replacementPreviousStatus = :previous, pendingFilename = :filename, pendingTitle = :title, pendingTags = :tags, pendingAuthors = :authors, pendingYear = :year, updatedAt = :now",
+        ConditionExpression:
+          "userId = :userId AND #s = :expected AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :now)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":token": replacementToken,
+          ":expires": replacementExpiresAt,
+          ":previous": document.status,
+          ":filename": filename,
+          ":title": body.title ?? filename,
+          ":tags": body.tags ?? null,
+          ":authors": body.authors ?? null,
+          ":year": body.year ?? null,
+          ":now": now,
+          ":userId": document.userId,
+          ":expected": document.status,
+        },
+      }),
+    );
+    return true;
+  } catch (error: any) {
+    if (error.name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
+}
+
+async function createDocument(
+  documentId: string,
+  userId: string,
+  filename: string,
+  mimeType: string,
+  dedupeKey: string,
+  sourceKey: string,
+  body: any,
+  now: string,
+) {
+  try {
+    await dynamo.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName,
+              Item: {
+                pk: `USER#${userId}`,
+                sk: `DOCUMENT#${dedupeKey}`,
+                entityType: "DocumentMapping",
+                documentId,
+                createdAt: now,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+          {
+            Put: {
+              TableName,
+              Item: {
+                pk: `DOC#${documentId}`,
+                sk: "META",
+                entityType: "Document",
+                documentId,
+                userId,
+                filename,
+                dedupeKey,
+                title: body.title ?? filename,
+                sourceKey,
+                mimeType,
+                status: "UPLOADED",
+                tags: body.tags ?? null,
+                authors: body.authors ?? null,
+                year: body.year ?? null,
+                createdAt: now,
+                updatedAt: now,
+                gsi1pk: "STATUS#UPLOADED",
+                gsi1sk: now,
+                gsi2pk: `USER#${userId}`,
+                gsi2sk: now,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+        ],
+      }),
+    );
+    return true;
+  } catch (error: any) {
+    if (error.name === "TransactionCanceledException") return false;
+    throw error;
+  }
 }
 
 function validateBody(body: any): string | null {
@@ -155,10 +302,24 @@ function sanitizeFilename(filename: string): string {
   return filename.trim().replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+function createDedupeKey(userId: string, filename: string, mimeType: string) {
+  return createHash("sha256")
+    .update(`${userId}\0${filename}\0${mimeType}`)
+    .digest("hex");
+}
+
 function isShortStringArray(value: unknown): boolean {
   return (
     Array.isArray(value) &&
     value.length <= 20 &&
     value.every((item) => typeof item === "string" && item.length <= 100)
   );
+}
+
+function conflictResponse(error: string) {
+  return {
+    statusCode: 409,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ error }),
+  };
 }

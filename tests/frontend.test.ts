@@ -154,6 +154,30 @@ describe("frontend", () => {
         expect.objectContaining({ method: "DELETE" }),
       );
     });
+
+    it("preserves a reused document when storage rejects the replacement", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({
+            documentId: "doc-1",
+            maxUploadBytes: 100,
+            reused: true,
+            uploadUrl: "https://storage.example.com",
+            uploadFields: {},
+          }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const file = new window.File(["hello"], "file.txt", {
+        type: "text/plain",
+      });
+
+      await expect(uploadDocument("token", file, {}, vi.fn())).rejects.toThrow(
+        "Failed to upload file to S3",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("document state", () => {

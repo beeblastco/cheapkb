@@ -20,6 +20,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Empty,
   EmptyDescription,
@@ -67,16 +68,32 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TagPicker } from "@/components/TagPicker";
 import {
+  createTag,
+  deleteTag,
   extractMetadata,
   getFileMimeType,
   getStatusBadgeVariant,
   isActiveStatus,
+  listTags,
   uploadDocument,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, UploadQueueItem } from "@/lib/types";
+import type { Document, Tag, UploadQueueItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  type Column,
+  type ColumnDef,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  type PaginationState,
+  type RowSelectionState,
+  type SortingState,
+  useReactTable,
+} from "@tanstack/react-table";
 import {
   ArrowDownUp,
   FilePlus2,
@@ -91,7 +108,36 @@ const PAGE_SIZE = 50;
 const STALLED_AFTER_MS = 5 * 60 * 1000;
 const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
 
-type SortKey = "title" | "status" | "createdAt" | "updatedAt";
+type DocumentTableRow =
+  | { document: Document; kind: "document" }
+  | { item: UploadQueueItem; kind: "upload" };
+
+const DOCUMENT_COLUMNS: ColumnDef<DocumentTableRow>[] = [
+  { id: "select", enableSorting: false },
+  {
+    id: "title",
+    accessorFn: (row) =>
+      row.kind === "document"
+        ? row.document.title || row.document.documentId
+        : row.item.title,
+  },
+  {
+    id: "status",
+    accessorFn: (row) =>
+      row.kind === "document" ? row.document.status : row.item.state,
+  },
+  {
+    id: "createdAt",
+    accessorFn: (row) =>
+      row.kind === "document" ? row.document.createdAt || "" : "\uffff",
+  },
+  {
+    id: "updatedAt",
+    accessorFn: (row) =>
+      row.kind === "document" ? row.document.updatedAt || "" : "\uffff",
+  },
+  { id: "actions", enableSorting: false },
+];
 
 export function DocumentsCard({
   documents,
@@ -101,6 +147,7 @@ export function DocumentsCard({
   loadDocuments,
   notify,
   onDelete,
+  onDeleteSelected,
   onReindex,
   onView,
 }: {
@@ -110,7 +157,8 @@ export function DocumentsCard({
   setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
   loadDocuments: (showLoading?: boolean) => Promise<void>;
   notify: (message: string, type?: string) => void;
-  onDelete: (documentId: string) => void;
+  onDelete: (documentId: string) => Promise<boolean>;
+  onDeleteSelected: (documentIds: string[]) => Promise<string[]>;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
 }) {
@@ -118,10 +166,18 @@ export function DocumentsCard({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [deletingSelected, setDeletingSelected] = useState(false);
+  const [deleteMessage, setDeleteMessage] = useState("");
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
-  const [descending, setDescending] = useState(true);
-  const [page, setPage] = useState(1);
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "createdAt", desc: true },
+  ]);
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: PAGE_SIZE,
+  });
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [tags, setTags] = useState<Tag[]>([]);
   const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const itemsRef = useRef(items);
@@ -134,6 +190,35 @@ export function DocumentsCard({
   useEffect(() => {
     syncingRef.current = syncing;
   }, [syncing]);
+
+  useEffect(() => {
+    if (!token) return;
+    listTags(token)
+      .then(setTags)
+      .catch(() => {});
+  }, [token]);
+
+  const handleCreateTag = useCallback(
+    async (tagName: string) => {
+      const tag = await createTag(token, tagName);
+      setTags((current) =>
+        current.some((t) => t.name.toLowerCase() === tag.name.toLowerCase())
+          ? current
+          : [...current, tag],
+      );
+    },
+    [token],
+  );
+
+  const handleDeleteTag = useCallback(
+    async (tagName: string) => {
+      await deleteTag(token, tagName);
+      setTags((current) =>
+        current.filter((t) => t.name.toLowerCase() !== tagName.toLowerCase()),
+      );
+    },
+    [token],
+  );
 
   const addFiles = useCallback(
     async (files: File[]) => {
@@ -165,7 +250,7 @@ export function DocumentsCard({
           id: crypto.randomUUID(),
           progress: "Reading metadata",
           state: "EXTRACTING",
-          tags: "",
+          tags: [],
           title: file.name.replace(/\.[^/.]+$/, ""),
           year: "",
         });
@@ -237,53 +322,69 @@ export function DocumentsCard({
     };
   }, [addFiles]);
 
-  const filtered = useMemo(() => {
-    const value = query.trim().toLowerCase();
-    return documents
-      .filter((document) =>
-        value
-          ? [document.title, document.documentId, document.status]
-              .filter(Boolean)
-              .some((field) => field!.toLowerCase().includes(value))
-          : true,
-      )
-      .sort((left, right) => {
-        const a = getSortValue(left, sortKey);
-        const b = getSortValue(right, sortKey);
-        return a.localeCompare(b) * (descending ? -1 : 1);
-      });
-  }, [descending, documents, query, sortKey]);
-
-  const filteredItems = useMemo(() => {
-    const value = query.trim().toLowerCase();
-    return items.filter((item) =>
-      value
-        ? [item.title, item.file.name, item.state].some((field) =>
-            field.toLowerCase().includes(value),
-          )
-        : true,
+  const tableData = useMemo<DocumentTableRow[]>(
+    () => [
+      ...items.map((item) => ({ item, kind: "upload" as const })),
+      ...documents.map((document) => ({
+        document,
+        kind: "document" as const,
+      })),
+    ],
+    [documents, items],
+  );
+  const table = useReactTable({
+    columns: DOCUMENT_COLUMNS,
+    data: tableData,
+    enableRowSelection: (row) =>
+      row.original.kind === "document"
+        ? row.original.document.status !== "DELETING"
+        : row.original.item.state !== "SYNCING",
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getRowId: (row) =>
+      row.kind === "document"
+        ? `document-${row.document.documentId}`
+        : `upload-${row.item.id}`,
+    getSortedRowModel: getSortedRowModel(),
+    globalFilterFn: (row, _columnId, value) =>
+      getSearchValue(row.original).includes(String(value).trim().toLowerCase()),
+    onGlobalFilterChange: setQuery,
+    onPaginationChange: setPagination,
+    onRowSelectionChange: setRowSelection,
+    onSortingChange: setSorting,
+    state: { globalFilter: query, pagination, rowSelection, sorting },
+  });
+  const totalCount = table.getFilteredRowModel().rows.length;
+  const pageCount = table.getPageCount();
+  const visible = table.getRowModel().rows;
+  const selectedDocumentIds = table
+    .getSelectedRowModel()
+    .rows.flatMap((row) =>
+      row.original.kind === "document"
+        ? [row.original.document.documentId]
+        : [],
     );
-  }, [items, query]);
-
-  const totalCount = filteredItems.length + filtered.length;
-  const pageCount = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  const combined = [
-    ...filteredItems.map((item) => ({ item })),
-    ...filtered.map((document) => ({ document })),
-  ];
-  const visible = combined.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const selectedUploadIds = table
+    .getSelectedRowModel()
+    .rows.flatMap((row) =>
+      row.original.kind === "upload" ? [row.original.item.id] : [],
+    );
+  const selectedCount = selectedDocumentIds.length + selectedUploadIds.length;
+  const hasSelectablePageRows = visible.some((row) => row.getCanSelect());
   const selectedItem = items.find((item) => item.id === selectedItemId) || null;
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
 
   useEffect(() => {
-    setPage(1);
-  }, [query, sortKey, descending]);
+    setRowSelection({});
+  }, [query]);
 
   useEffect(() => {
-    if (page > pageCount) setPage(pageCount);
-  }, [page, pageCount]);
+    if (pagination.pageIndex < pageCount) return;
+    table.setPageIndex(Math.max(0, pageCount - 1));
+  }, [pageCount, pagination.pageIndex, table]);
 
   async function syncAll() {
     if (syncingRef.current) return;
@@ -309,7 +410,7 @@ export function DocumentsCard({
           item.file,
           {
             authors: splitList(item.authors),
-            tags: splitList(item.tags),
+            tags: item.tags.length ? item.tags : undefined,
             title: item.title.trim() || item.file.name,
             year: Number(item.year) || undefined,
           },
@@ -370,12 +471,41 @@ export function DocumentsCard({
     if (selectedItemId === id) setSelectedItemId(null);
   }
 
-  function sort(nextKey: SortKey) {
-    if (sortKey === nextKey) setDescending((current) => !current);
-    else {
-      setSortKey(nextKey);
-      setDescending(false);
+  async function deleteSelected() {
+    if (!selectedCount || deletingSelected) return;
+    setDeletingSelected(true);
+    setDeleteMessage("");
+    const failedDocumentIds = selectedDocumentIds.length
+      ? await onDeleteSelected(selectedDocumentIds)
+      : [];
+    const deleted = selectedDocumentIds.length - failedDocumentIds.length;
+    const removed = selectedUploadIds.length;
+    setItems((current) =>
+      current.filter((item) => !selectedUploadIds.includes(item.id)),
+    );
+    if (selectedItemId && selectedUploadIds.includes(selectedItemId)) {
+      setSelectedItemId(null);
     }
+    setDeleteMessage(
+      failedDocumentIds.length
+        ? `${removed} staged removed, ${deleted} deleted, ${failedDocumentIds.length} failed and remain selected`
+        : [
+            removed
+              ? `${removed} staged file${removed === 1 ? "" : "s"} removed`
+              : "",
+            deleted
+              ? `${deleted} document${deleted === 1 ? "" : "s"} deleted`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(", "),
+    );
+    setRowSelection(
+      Object.fromEntries(
+        failedDocumentIds.map((documentId) => [`document-${documentId}`, true]),
+      ),
+    );
+    setDeletingSelected(false);
   }
 
   return (
@@ -393,15 +523,56 @@ export function DocumentsCard({
           </CardDescription>
           <CardAction className="flex items-center gap-2">
             {loading ? <Spinner /> : null}
+            {selectedCount ? (
+              <AlertDialog>
+                <AlertDialogTrigger
+                  render={
+                    <Button disabled={deletingSelected} variant="destructive" />
+                  }
+                >
+                  {deletingSelected ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <Trash2 data-icon="inline-start" />
+                  )}
+                  Delete selected ({selectedCount})
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Delete {selectedCount} selected items?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Staged files will be removed from the upload queue. Synced
+                      documents and their sources, parsed content, chunks, and
+                      vectors will be deleted. Failed deletions will remain
+                      selected.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={deleteSelected}
+                      variant="destructive"
+                    >
+                      Delete selected
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            ) : null}
             <Button
-              disabled={syncing}
+              disabled={syncing || deletingSelected}
               onClick={() => fileInput.current?.click()}
               variant="outline"
             >
               <FilePlus2 data-icon="inline-start" />
               Add files
             </Button>
-            <Button disabled={!readyCount || syncing} onClick={syncAll}>
+            <Button
+              disabled={!readyCount || syncing || deletingSelected}
+              onClick={syncAll}
+            >
               {syncing ? (
                 <Spinner data-icon="inline-start" />
               ) : (
@@ -439,25 +610,36 @@ export function DocumentsCard({
             <Table className="min-w-3xl table-fixed">
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="Select documents on this page"
+                      checked={table.getIsAllPageRowsSelected()}
+                      disabled={!hasSelectablePageRows}
+                      indeterminate={table.getIsSomePageRowsSelected()}
+                      onCheckedChange={(checked) =>
+                        table.toggleAllPageRowsSelected(checked)
+                      }
+                    />
+                  </TableHead>
                   <SortableHead
                     className="w-1/2"
+                    column={table.getColumn("title")!}
                     label="Document"
-                    onClick={() => sort("title")}
                   />
                   <SortableHead
                     className="w-1/8"
+                    column={table.getColumn("status")!}
                     label="Status"
-                    onClick={() => sort("status")}
                   />
                   <SortableHead
                     className="w-1/8"
+                    column={table.getColumn("createdAt")!}
                     label="Uploaded"
-                    onClick={() => sort("createdAt")}
                   />
                   <SortableHead
                     className="w-1/8"
+                    column={table.getColumn("updatedAt")!}
                     label="Modified"
-                    onClick={() => sort("updatedAt")}
                   />
                   <TableHead className="w-1/8 text-right">Actions</TableHead>
                 </TableRow>
@@ -466,33 +648,38 @@ export function DocumentsCard({
                 {loading && !documents.length && !items.length ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <TableRow key={index}>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={6}>
                         <Skeleton className="h-8 w-full" />
                       </TableCell>
                     </TableRow>
                   ))
                 ) : visible.length ? (
-                  visible.map((row) =>
-                    "item" in row ? (
+                  visible.map((row) => {
+                    const original = row.original;
+                    return original.kind === "upload" ? (
                       <UploadRow
-                        item={row.item}
-                        key={row.item.id}
-                        onEdit={() => setSelectedItemId(row.item.id)}
-                        onRemove={() => removeItem(row.item.id)}
+                        item={original.item}
+                        key={row.id}
+                        onEdit={() => setSelectedItemId(original.item.id)}
+                        onRemove={() => removeItem(original.item.id)}
+                        onSelectedChange={row.toggleSelected}
+                        selected={row.getIsSelected()}
                       />
                     ) : (
                       <DocumentRow
-                        document={row.document}
-                        key={row.document.documentId}
+                        document={original.document}
+                        key={row.id}
                         onDelete={onDelete}
                         onReindex={onReindex}
+                        onSelectedChange={row.toggleSelected}
                         onView={onView}
+                        selected={row.getIsSelected()}
                       />
-                    ),
-                  )
+                    );
+                  })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={5}>
+                    <TableCell colSpan={6}>
                       <Empty>
                         <EmptyHeader>
                           <EmptyTitle>
@@ -515,36 +702,39 @@ export function DocumentsCard({
         <CardFooter className="justify-between">
           <CardDescription>
             {totalCount
-              ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, totalCount)} of ${totalCount}`
+              ? `${pagination.pageIndex * PAGE_SIZE + 1}–${Math.min((pagination.pageIndex + 1) * PAGE_SIZE, totalCount)} of ${totalCount}`
               : "0 documents"}
+            {deleteMessage ? ` · ${deleteMessage}` : ""}
           </CardDescription>
           {pageCount > 1 ? (
             <Pagination className="w-auto">
               <PaginationContent>
                 <PaginationItem>
                   <PaginationPrevious
-                    aria-disabled={page === 1}
+                    aria-disabled={!table.getCanPreviousPage()}
                     className={cn(
-                      page === 1 && "pointer-events-none opacity-50",
+                      !table.getCanPreviousPage() &&
+                        "pointer-events-none opacity-50",
                     )}
                     href="#"
                     onClick={(event) => {
                       event.preventDefault();
-                      setPage((current) => Math.max(1, current - 1));
+                      table.previousPage();
                     }}
                     text=""
                   />
                 </PaginationItem>
                 <PaginationItem>
                   <PaginationNext
-                    aria-disabled={page === pageCount}
+                    aria-disabled={!table.getCanNextPage()}
                     className={cn(
-                      page === pageCount && "pointer-events-none opacity-50",
+                      !table.getCanNextPage() &&
+                        "pointer-events-none opacity-50",
                     )}
                     href="#"
                     onClick={(event) => {
                       event.preventDefault();
-                      setPage((current) => Math.min(pageCount, current + 1));
+                      table.nextPage();
                     }}
                     text=""
                   />
@@ -558,8 +748,11 @@ export function DocumentsCard({
       <UploadMetadataSheet
         item={selectedItem}
         onClose={() => setSelectedItemId(null)}
+        onCreateTag={handleCreateTag}
+        onDeleteTag={handleDeleteTag}
         onUpdate={updateItem}
         syncing={syncing}
+        tags={tags}
       />
     </>
   );
@@ -567,18 +760,28 @@ export function DocumentsCard({
 
 function SortableHead({
   className,
+  column,
   label,
-  onClick,
 }: {
   className?: string;
+  column: Column<DocumentTableRow>;
   label: string;
-  onClick: () => void;
 }) {
+  const sorted = column.getIsSorted();
   return (
-    <TableHead className={className}>
+    <TableHead
+      aria-sort={
+        sorted === "asc"
+          ? "ascending"
+          : sorted === "desc"
+            ? "descending"
+            : "none"
+      }
+      className={className}
+    >
       <Button
         className="justify-start bg-transparent! px-0 text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
-        onClick={onClick}
+        onClick={column.getToggleSortingHandler()}
         size="sm"
         variant="ghost"
       >
@@ -593,15 +796,20 @@ function UploadRow({
   item,
   onEdit,
   onRemove,
+  onSelectedChange,
+  selected,
 }: {
   item: UploadQueueItem;
   onEdit: () => void;
   onRemove: () => void;
+  onSelectedChange: (selected?: boolean) => void;
+  selected: boolean;
 }) {
   return (
     <TableRow
       aria-label={`Edit ${item.title}`}
       className="cursor-pointer"
+      data-state={selected ? "selected" : undefined}
       onClick={onEdit}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -611,6 +819,17 @@ function UploadRow({
       role="button"
       tabIndex={0}
     >
+      <TableCell
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <Checkbox
+          aria-label={`Select ${item.title}`}
+          checked={selected}
+          disabled={item.state === "SYNCING"}
+          onCheckedChange={onSelectedChange}
+        />
+      </TableCell>
       <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">{item.title}</span>
@@ -662,12 +881,16 @@ function DocumentRow({
   document,
   onDelete,
   onReindex,
+  onSelectedChange,
   onView,
+  selected,
 }: {
   document: Document;
-  onDelete: (documentId: string) => void;
+  onDelete: (documentId: string) => Promise<boolean>;
   onReindex: (documentId: string) => void;
+  onSelectedChange: (selected?: boolean) => void;
   onView: (documentId: string) => void;
+  selected: boolean;
 }) {
   const updatedAt = Date.parse(document.updatedAt ?? document.createdAt ?? "");
   const stalled =
@@ -677,6 +900,7 @@ function DocumentRow({
     <TableRow
       aria-label={`View ${document.title || document.documentId}`}
       className="cursor-pointer"
+      data-state={selected ? "selected" : undefined}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -686,6 +910,17 @@ function DocumentRow({
       role="button"
       tabIndex={0}
     >
+      <TableCell
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <Checkbox
+          aria-label={`Select ${document.title || document.documentId}`}
+          checked={selected}
+          disabled={document.status === "DELETING"}
+          onCheckedChange={onSelectedChange}
+        />
+      </TableCell>
       <TableCell className="max-w-0">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate font-medium">
@@ -771,13 +1006,19 @@ function DocumentRow({
 function UploadMetadataSheet({
   item,
   onClose,
+  onCreateTag,
+  onDeleteTag,
   onUpdate,
   syncing,
+  tags,
 }: {
   item: UploadQueueItem | null;
   onClose: () => void;
+  onCreateTag: (name: string) => Promise<void>;
+  onDeleteTag: (name: string) => Promise<void>;
   onUpdate: (id: string, values: Partial<UploadQueueItem>) => void;
   syncing: boolean;
+  tags: Tag[];
 }) {
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={!!item}>
@@ -826,18 +1067,17 @@ function UploadMetadataSheet({
                 />
               </Field>
               <Field data-disabled={syncing || undefined}>
-                <FieldLabel htmlFor={`tags-${item.id}`}>Tags</FieldLabel>
-                <Input
+                <FieldLabel>Tags</FieldLabel>
+                <TagPicker
                   disabled={syncing}
-                  id={`tags-${item.id}`}
-                  onChange={(event) =>
-                    onUpdate(item.id, { tags: event.target.value })
-                  }
-                  placeholder="research, product"
+                  onChange={(next) => onUpdate(item.id, { tags: next })}
+                  onCreate={onCreateTag}
+                  onDeleteTag={onDeleteTag}
+                  tags={tags}
                   value={item.tags}
                 />
                 <FieldDescription>
-                  Separate values with commas.
+                  Select from your tags or create a new one.
                 </FieldDescription>
               </Field>
             </FieldGroup>
@@ -879,9 +1119,16 @@ function ActionButton({
   );
 }
 
-function getSortValue(document: Document, key: SortKey): string {
-  if (key === "title") return document.title || document.documentId;
-  return document[key] || "";
+function getSearchValue(row: DocumentTableRow): string {
+  if (row.kind === "upload") {
+    return [row.item.title, row.item.file.name, row.item.state]
+      .join(" ")
+      .toLowerCase();
+  }
+  return [row.document.title, row.document.documentId, row.document.status]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function splitList(value: string): string[] | undefined {

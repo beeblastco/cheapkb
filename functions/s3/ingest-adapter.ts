@@ -2,17 +2,28 @@ import {
   ConditionalCheckFailedException,
   DynamoDBClient,
 } from "@aws-sdk/client-dynamodb";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,
-  PutCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import {
+  deleteDocumentChunkRecords,
+  deleteDocumentS3Data,
+  deleteDocumentVectors,
+} from "../utils";
 
+const s3 = new S3Client({});
+const vectors = new S3VectorsClient({});
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
+const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
+const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "10485760",
@@ -33,12 +44,24 @@ export async function handler(event: any) {
       continue;
     }
     const documentId = parts[1];
-    const filename = parts.slice(2).join("/");
     const now = new Date().toISOString();
 
     let doc = await getDocument(documentId);
     if (!doc) {
-      doc = await createMinimalRecord(documentId, key, filename, now);
+      console.log(`[ingest-adapter] Document ${documentId} not found`);
+      continue;
+    }
+
+    if (doc.replacementToken) {
+      const object = await s3.send(
+        new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
+      );
+      if (object.Metadata?.["upload-token"] !== doc.replacementToken) {
+        console.log(
+          `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
+        );
+        continue;
+      }
     }
 
     const objectSize = Number(record.s3.object.size ?? 0);
@@ -55,6 +78,17 @@ export async function handler(event: any) {
         now,
       );
       continue;
+    }
+
+    if (doc.replacementToken) {
+      const finalized = await finalizeReplacement(documentId, doc, now);
+      if (!finalized) {
+        console.log(
+          `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
+        );
+        continue;
+      }
+      doc = { ...doc, status: "UPLOADED" };
     }
 
     if (doc.status === "EMBEDDED") {
@@ -102,32 +136,41 @@ async function getDocument(documentId: string) {
   return result.Item ?? null;
 }
 
-async function createMinimalRecord(
-  documentId: string,
-  sourceKey: string,
-  filename: string,
-  now: string,
-) {
-  const mimeType = guessMimeType(filename);
-  const item = {
-    pk: `DOC#${documentId}`,
-    sk: "META",
-    entityType: "Document",
+async function finalizeReplacement(documentId: string, doc: any, now: string) {
+  const chunkItems = await deleteDocumentVectors(
     documentId,
-    title: filename,
-    sourceKey,
-    mimeType,
-    status: "UPLOADED",
-    tags: null,
-    authors: null,
-    year: null,
-    createdAt: now,
-    updatedAt: now,
-    gsi1pk: "STATUS#UPLOADED",
-    gsi1sk: now,
-  };
-  await dynamo.send(new PutCommand({ TableName, Item: item }));
-  return item;
+    dynamo,
+    vectors,
+    TableName,
+    VectorBucketName,
+    VectorIndexName,
+  );
+  await deleteDocumentS3Data(documentId, s3, StorageBucketName);
+  await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
+
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+      ConditionExpression: "replacementToken = :token AND #s = :previousStatus",
+      ExpressionAttributeNames: { "#s": "status", "#year": "year" },
+      ExpressionAttributeValues: {
+        ":uploaded": "UPLOADED",
+        ":filename": doc.pendingFilename,
+        ":title": doc.pendingTitle,
+        ":tags": doc.pendingTags,
+        ":authors": doc.pendingAuthors,
+        ":year": doc.pendingYear,
+        ":now": now,
+        ":gsi1pk": "STATUS#UPLOADED",
+        ":token": doc.replacementToken,
+        ":previousStatus": doc.replacementPreviousStatus,
+      },
+    }),
+  );
+  return true;
 }
 
 async function queueDocument(documentId: string, now: string) {
@@ -195,17 +238,4 @@ async function updateFailure(documentId: string, error: string, now: string) {
       },
     }),
   );
-}
-
-function guessMimeType(filename: string): string {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  const mimeMap: Record<string, string> = {
-    pdf: "application/pdf",
-    md: "text/markdown",
-    markdown: "text/markdown",
-    txt: "text/plain",
-    html: "text/html",
-    htm: "text/html",
-  };
-  return mimeMap[ext ?? ""] ?? "application/octet-stream";
 }

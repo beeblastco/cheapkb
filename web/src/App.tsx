@@ -185,7 +185,10 @@ function App() {
     }
   }
 
-  async function deleteDocument(documentId: string) {
+  async function deleteDocument(
+    documentId: string,
+    refresh = true,
+  ): Promise<boolean> {
     const now = new Date().toISOString();
     const deletedSnapshot = documentsRef.current.find(
       (document) => document.documentId === documentId,
@@ -204,7 +207,8 @@ function App() {
     );
     try {
       await request("DELETE", `/documents/${documentId}`);
-      await loadDocuments();
+      if (refresh) await loadDocuments();
+      return true;
     } catch (error) {
       const message = (error as Error).message;
       const current = documentsRef.current;
@@ -223,7 +227,26 @@ function App() {
       setDocuments(restored);
       writePendingDocuments(restored);
       notify(message, "error");
+      return false;
     }
+  }
+
+  async function deleteDocuments(documentIds: string[]): Promise<string[]> {
+    const failedDocumentIds: string[] = [];
+    for (const documentId of documentIds) {
+      if (!(await deleteDocument(documentId, false))) {
+        failedDocumentIds.push(documentId);
+      }
+    }
+    await loadDocuments();
+    const deleted = documentIds.length - failedDocumentIds.length;
+    notify(
+      failedDocumentIds.length
+        ? `${deleted} deleted, ${failedDocumentIds.length} failed.`
+        : `${deleted} document${deleted === 1 ? "" : "s"} deleted.`,
+      failedDocumentIds.length ? "error" : "success",
+    );
+    return failedDocumentIds;
   }
 
   if (!identity?.token) {
@@ -245,6 +268,7 @@ function App() {
                 loadDocuments={loadDocuments}
                 notify={notify}
                 onDelete={deleteDocument}
+                onDeleteSelected={deleteDocuments}
                 onReindex={reindexDocument}
                 onView={showDocument}
               />

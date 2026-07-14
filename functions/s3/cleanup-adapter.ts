@@ -4,15 +4,17 @@ import {
   ListObjectVersionsCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import {
-  DeleteVectorsCommand,
-  S3VectorsClient,
-} from "@aws-sdk/client-s3vectors";
+import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
-  QueryCommand,
+  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
+import {
+  deleteDocumentChunkRecords,
+  deleteDocumentS3Data,
+  deleteDocumentVectors,
+} from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -32,26 +34,28 @@ export async function handler(event: any) {
     }
     const documentId = parts[1];
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
+    const document = await getDocument(documentId);
 
     const errors: string[] = [];
     let chunkItems: any[] = [];
     try {
-      chunkItems = await deleteVectors(documentId);
+      chunkItems = await deleteDocumentVectors(
+        documentId,
+        dynamo,
+        vectors,
+        TableName,
+        VectorBucketName,
+        VectorIndexName,
+      );
     } catch (err: any) {
       errors.push(`vectors: ${err.message}`);
       console.error(`[cleanup-adapter] vector delete failed:`, err);
     }
     try {
-      await deleteS3Prefix(`chunks/${documentId}/`);
+      await deleteDocumentS3Data(documentId, s3, StorageBucketName);
     } catch (err: any) {
-      errors.push(`chunks: ${err.message}`);
-      console.error(`[cleanup-adapter] chunk delete failed:`, err);
-    }
-    try {
-      await deleteS3Prefix(`parsed/${documentId}/`);
-    } catch (err: any) {
-      errors.push(`parsed: ${err.message}`);
-      console.error(`[cleanup-adapter] parsed delete failed:`, err);
+      errors.push(`derived data: ${err.message}`);
+      console.error(`[cleanup-adapter] derived data delete failed:`, err);
     }
     try {
       await deleteS3Prefix(`raw/${documentId}/`);
@@ -68,7 +72,7 @@ export async function handler(event: any) {
     }
 
     try {
-      await deleteDynamoRecords(documentId, chunkItems);
+      await deleteDynamoRecords(documentId, chunkItems, document);
     } catch (err: any) {
       console.error(`[cleanup-adapter] dynamo delete failed:`, err);
       throw err;
@@ -77,42 +81,14 @@ export async function handler(event: any) {
   }
 }
 
-async function deleteVectors(documentId: string): Promise<any[]> {
-  const allChunkItems: any[] = [];
-  let lastKey: Record<string, any> | undefined;
-
-  do {
-    const chunkRecords = await dynamo.send(
-      new QueryCommand({
-        TableName,
-        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-        ExpressionAttributeValues: {
-          ":pk": `DOC#${documentId}`,
-          ":prefix": "CHUNK#",
-        },
-        ExclusiveStartKey: lastKey,
-      }),
-    );
-    allChunkItems.push(...(chunkRecords.Items ?? []));
-    lastKey = chunkRecords.LastEvaluatedKey;
-  } while (lastKey);
-
-  const vectorKeys = allChunkItems.map((item) => item.chunkId).filter(Boolean);
-  if (vectorKeys.length === 0) return allChunkItems;
-
-  for (let i = 0; i < vectorKeys.length; i += 500) {
-    const batch = vectorKeys.slice(i, i + 500);
-    await vectors.send(
-      new DeleteVectorsCommand({
-        vectorBucketName: VectorBucketName,
-        indexName: VectorIndexName,
-        keys: batch,
-      }),
-    );
-  }
-
-  console.log(`[cleanup-adapter] Deleted ${vectorKeys.length} vectors`);
-  return allChunkItems;
+async function getDocument(documentId: string) {
+  const result = await dynamo.send(
+    new GetCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+    }),
+  );
+  return result.Item ?? null;
 }
 
 async function deleteS3Prefix(prefix: string) {
@@ -152,12 +128,20 @@ async function deleteS3Prefix(prefix: string) {
   console.log(`[cleanup-adapter] Deleted ${count} objects from ${prefix}`);
 }
 
-async function deleteDynamoRecords(documentId: string, chunkItems: any[]) {
-  for (const item of chunkItems) {
+async function deleteDynamoRecords(
+  documentId: string,
+  chunkItems: any[],
+  document: any,
+) {
+  await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
+  if (document) {
     await dynamo.send(
       new DeleteCommand({
         TableName,
-        Key: { pk: item.pk, sk: item.sk },
+        Key: {
+          pk: `USER#${document.userId}`,
+          sk: `DOCUMENT#${document.dedupeKey}`,
+        },
       }),
     );
   }

@@ -56,13 +56,15 @@ Single table `Meta`. Primary key: `pk` (string) / `sk` (string). GSI1 on `gsi1pk
 | `gsi1pk` | string | `STATUS#{status}`  |
 | `gsi1sk` | string | ISO timestamp      |
 
-Document attributes: `documentId`, `userId`, `title`, `status`, `sourceKey`, `mimeType`, `lastError`, `retryCount`, `failedStep`, `chunkCount`, `embeddedCount`, `tags`, `authors`, `year`, `createdAt`, `updatedAt`.
+Document attributes: `documentId`, `userId`, `filename`, `dedupeKey`, `title`, `status`, `sourceKey`, `mimeType`, `lastError`, `retryCount`, `failedStep`, `chunkCount`, `embeddedCount`, `tags`, `authors`, `year`, `createdAt`, `updatedAt`.
+
+Each document has a uniqueness mapping at `pk = USER#{userId}`, `sk = DOCUMENT#{dedupeKey}`. The SHA-256 dedupe key covers the user, sanitized filename, and MIME type. A conditional DynamoDB transaction creates the mapping and document together, preventing concurrent uploads from allocating duplicate IDs.
 
 Chunk records store ownership, page range, token count, S3 key, and processing status. Vector metadata includes the owner, and every vector query adds a server-controlled `userId` equality filter.
 
 ## S3 Layout
 
-```
+```text
 raw/{documentId}/{filename}        # Original upload
 parsed/{documentId}/v1/pages.json  # Extracted text
 chunks/{documentId}/chunk_*.json   # One JSON per chunk
@@ -90,6 +92,10 @@ Triggered by `DELETE /documents/:id` (API) or by S3 `ObjectRemoved:Delete` / `Ob
 3. Deletes chunk and document DynamoDB records only after external cleanup succeeds.
 
 The bucket lifecycle expires any remaining noncurrent versions after 7 days and aborts incomplete multipart uploads after 1 day.
+
+## Replacement Uploads
+
+Only `EMBEDDED` and `FAILED` documents can be replaced. The upload API conditionally reserves the existing document and signs the same raw S3 key with a replacement token. Existing derived data remains available while the browser uploads. The S3 ingest adapter verifies the token, deletes vectors, chunk records, chunk objects, and parsed objects, applies pending metadata, resets the document to `UPLOADED`, and queues ingestion. Replacement reservations expire with the presigned form after 15 minutes.
 
 ## Resource Naming
 

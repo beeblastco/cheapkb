@@ -19,4 +19,12 @@ describe("infrastructure hardening", () => {
     expect(config).toContain("BucketLifecycleConfigurationV2");
     expect(config).toContain("noncurrentDays: 7");
   });
+
+  it("grants replacement cleanup only to the ingest adapter", () => {
+    expect(config).toContain('"dynamodb:TransactWriteItems"');
+    expect(config).toContain('"s3:GetObject"');
+    expect(
+      config.match(/"dynamodb:BatchWriteItem"/g)?.length,
+    ).toBeGreaterThanOrEqual(3);
+  });
 });
