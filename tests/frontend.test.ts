@@ -10,6 +10,7 @@ import {
   groupResults,
   mergeDocuments,
   readPendingDocuments,
+  updateDocumentTags,
   uploadDocument,
 } from "../web/src/lib/client";
 
@@ -55,6 +56,28 @@ describe("frontend", () => {
           method: "POST",
           body: JSON.stringify({ q: "cheap RAG" }),
           headers: expect.objectContaining({ Authorization: "Bearer token" }),
+        }),
+      );
+    });
+
+    it("saves document tags through the PATCH route", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ tags: ["research"] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        updateDocumentTags("token", "doc 1", ["research"]),
+      ).resolves.toEqual(["research"]);
+      expect(fetchMock).toHaveBeenCalledWith(
+        // The id is encoded, so an id with a space cannot break the path.
+        `${API_URL}/documents/doc%201`,
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ tags: ["research"] }),
         }),
       );
     });

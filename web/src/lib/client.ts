@@ -219,6 +219,20 @@ export async function deleteTag(token: string, name: string): Promise<void> {
   await apiCall(token, "DELETE", `/tags/${encodeURIComponent(name)}`);
 }
 
+export async function updateDocumentTags(
+  token: string,
+  documentId: string,
+  tags: string[],
+): Promise<string[]> {
+  const data = await apiCall(
+    token,
+    "PATCH",
+    `/documents/${encodeURIComponent(documentId)}`,
+    { tags },
+  );
+  return Array.isArray(data.tags) ? (data.tags as string[]) : [];
+}
+
 export function isActiveStatus(status: string): boolean {
   return (ACTIVE_STATUSES as readonly string[]).includes(status);
 }

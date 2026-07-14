@@ -30,7 +30,50 @@ verify_aws_account() {
   fi
 }
 
+# Drives the real retag code against the real vector index. Mocked unit tests
+# cannot prove that PutVectors upserts by key and replaces metadata wholesale,
+# and getting that wrong silently strips userId from vectors, which hides the
+# document from its owner's search rather than raising an error.
+verify_retag() {
+  echo "Verifying document retag against the production vector index"
+  E2E_DOCUMENT_ID="${document_id}" \
+  E2E_TABLE_NAME="${table}" \
+  E2E_VECTOR_BUCKET="cheapkb-vecs-${AWS_ACCOUNT_ID}-${AWS_REGION}" \
+  E2E_VECTOR_INDEX="default" \
+    node --experimental-strip-types .github/scripts/verify-retag.ts
+}
+
+# A successful deploy does not prove the endpoint is reachable from the browser:
+# a missing PATCH entry in the CORS allowlist fails only at preflight, in the
+# user's browser, long after CI has gone green.
+verify_patch_route() {
+  api_id="$(aws apigatewayv2 get-apis \
+    --query "Items[?Name=='cheapkb-api-${AWS_ACCOUNT_ID}-${AWS_REGION}'].ApiId | [0]" \
+    --output text)"
+  if [ "${api_id}" = "None" ] || [ -z "${api_id}" ]; then
+    echo "Could not find the deployed API" >&2
+    exit 1
+  fi
+
+  routes="$(aws apigatewayv2 get-routes --api-id "${api_id}" \
+    --query 'Items[].RouteKey' --output text)"
+  case "${routes}" in
+    *"PATCH /documents/{id}"*) echo "ok: PATCH /documents/{id} route deployed" ;;
+    *) echo "FAIL: PATCH /documents/{id} route is missing" >&2; exit 1 ;;
+  esac
+
+  cors_methods="$(aws apigatewayv2 get-api --api-id "${api_id}" \
+    --query 'CorsConfiguration.AllowMethods' --output text)"
+  case "${cors_methods}" in
+    *PATCH*) echo "ok: CORS allows PATCH" ;;
+    *) echo "FAIL: CORS does not allow PATCH (got ${cors_methods})" >&2; exit 1 ;;
+  esac
+}
+
 trap cleanup EXIT
+
+verify_aws_account
+verify_patch_route
 
 item="$(jq -nc \
   --arg pk "DOC#${document_id}" \
@@ -58,6 +101,8 @@ for attempt in $(seq 1 60); do
     embedded="$(jq -r '.Item.embeddedCount.N // "0"' <<<"${document}")"
     test "${chunks}" -gt 0
     test "${embedded}" -eq "${chunks}"
+    verify_aws_account
+    verify_retag
     exit 0
   fi
   if [ "${status}" = "FAILED" ]; then

@@ -3,6 +3,7 @@
 const PROJECT = "cheapkb";
 // Stage name "prod" is poisoned in SST Ion cloud state from failed prior deploys; using "production" as standard alias
 const PROD_STAGE = "production";
+const AWS_ACCOUNT_ID = "954475336309";
 
 export default $config({
   app(input) {
@@ -25,6 +26,13 @@ export default $config({
     const pulumi = await import("@pulumi/pulumi");
     const pulumiAws = await import("@pulumi/aws");
     const ACCOUNT_ID = (await pulumiAws.getCallerIdentity({})).accountId;
+    // Resource names embed the account, so a wrong caller silently provisions a
+    // parallel copy of the stack elsewhere instead of failing.
+    if (ACCOUNT_ID !== AWS_ACCOUNT_ID) {
+      throw new Error(
+        `Refusing to deploy as account ${ACCOUNT_ID}; expected ${AWS_ACCOUNT_ID}`,
+      );
+    }
     const REGION = (await pulumiAws.getRegion({})).name;
     const STAGE = $app.stage;
     const stagePrefix = STAGE === PROD_STAGE ? "" : `${STAGE}-`;
@@ -40,7 +48,7 @@ export default $config({
       cors: {
         allowOrigins: ["*"],
         allowHeaders: ["Content-Type", "Authorization"],
-        allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       },
       transform: {
         api: (a) => {
@@ -516,6 +524,40 @@ export default $config({
       },
     });
 
+    const adminUpdateFn = new sst.aws.Function("AdminUpdate", {
+      handler: "./functions/admin/update.handler",
+      runtime: "nodejs22.x",
+      timeout: "60 seconds",
+      memory: "256 MB",
+      description:
+        "Update document metadata and propagate tags to chunks and vectors",
+      environment: baseEnv,
+      permissions: [
+        {
+          // Only chunk JSON is rewritten; raw uploads and parsed pages are not.
+          actions: ["s3:GetObject", "s3:PutObject"],
+          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+        },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:Query",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [table.arn],
+        },
+        {
+          actions: ["s3vectors:GetVectors", "s3vectors:PutVectors"],
+          resources: [vectorIndexArn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("admin-update");
+        },
+      },
+    });
+
     const adminTagsFn = new sst.aws.Function("AdminTags", {
       handler: "./functions/admin/tags.handler",
       runtime: "nodejs22.x",
@@ -646,6 +688,7 @@ export default $config({
     api.route("GET /documents", adminListFn.arn);
     api.route("GET /documents/{id}", adminGetFn.arn);
     api.route("POST /documents/{id}/reindex", adminReindexFn.arn);
+    api.route("PATCH /documents/{id}", adminUpdateFn.arn);
     api.route("DELETE /documents/{id}", adminDeleteFn.arn);
     api.route("GET /tags", adminTagsFn.arn);
     api.route("POST /tags", adminTagsFn.arn);
