@@ -4,6 +4,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { mockClient } from "aws-sdk-client-mock";
@@ -41,8 +42,16 @@ describe("tag APIs", () => {
     it("lists only the authenticated user's tags, sorted by name", async () => {
       dynamoMock.on(QueryCommand).resolves({
         Items: [
-          { name: "product", createdAt: "2026-01-02T00:00:00.000Z" },
-          { name: "Research", createdAt: "2026-01-01T00:00:00.000Z" },
+          {
+            name: "product",
+            color: "blue",
+            createdAt: "2026-01-02T00:00:00.000Z",
+          },
+          {
+            name: "Research",
+            color: "red",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
         ],
       });
 
@@ -60,10 +69,42 @@ describe("tag APIs", () => {
       expect(JSON.parse(response.body)).toEqual({
         count: 2,
         tags: [
-          { name: "product", createdAt: "2026-01-02T00:00:00.000Z" },
-          { name: "Research", createdAt: "2026-01-01T00:00:00.000Z" },
+          {
+            name: "product",
+            color: "blue",
+            createdAt: "2026-01-02T00:00:00.000Z",
+          },
+          {
+            name: "Research",
+            color: "red",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
         ],
       });
+    });
+
+    it("defaults tags stored before colors existed to gray", async () => {
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [{ name: "legacy", createdAt: "2026-01-01T00:00:00.000Z" }],
+      });
+
+      const response = await tags(withMethod("GET"));
+
+      expect(JSON.parse(response.body).tags[0]).toEqual({
+        name: "legacy",
+        color: "gray",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
+
+    it("falls back to gray when a stored color is not in the palette", async () => {
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [{ name: "odd", color: "chartreuse" }],
+      });
+
+      const response = await tags(withMethod("GET"));
+
+      expect(JSON.parse(response.body).tags[0].color).toBe("gray");
     });
   });
 
@@ -85,25 +126,62 @@ describe("tag APIs", () => {
           sk: "TAG#research",
           entityType: "Tag",
           name: "Research",
+          color: "gray",
         }),
       );
       expect(put.ConditionExpression).toBe("attribute_not_exists(pk)");
       expect(JSON.parse(response.body).tag.name).toBe("Research");
     });
 
-    it("returns the stored canonical tag when a differently-cased duplicate is created", async () => {
-      dynamoMock.on(GetCommand).resolves({
-        Item: { name: "Research", createdAt: "2026-01-01T00:00:00.000Z" },
-      });
+    it("stores the requested color", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(QueryCommand).resolves({ Count: 0 });
+      dynamoMock.on(PutCommand).resolves({});
 
       const response = await tags(
-        withMethod("POST", { body: JSON.stringify({ name: "RESEARCH" }) }),
+        withMethod("POST", {
+          body: JSON.stringify({ name: "research", color: "purple" }),
+        }),
       );
 
       expect(response.statusCode).toBe(200);
-      // The already-stored casing/createdAt wins, not the request's casing.
+      expect(dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item).toEqual(
+        expect.objectContaining({ color: "purple" }),
+      );
+      expect(JSON.parse(response.body).tag.color).toBe("purple");
+    });
+
+    it("rejects a color outside the palette", async () => {
+      const response = await tags(
+        withMethod("POST", {
+          body: JSON.stringify({ name: "research", color: "chartreuse" }),
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+    });
+
+    it("returns the stored canonical tag when a differently-cased duplicate is created", async () => {
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          name: "Research",
+          color: "green",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      const response = await tags(
+        withMethod("POST", {
+          body: JSON.stringify({ name: "RESEARCH", color: "red" }),
+        }),
+      );
+
+      expect(response.statusCode).toBe(200);
+      // The already-stored casing/color/createdAt wins, not the request's.
       expect(JSON.parse(response.body).tag).toEqual({
         name: "Research",
+        color: "green",
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
@@ -128,6 +206,80 @@ describe("tag APIs", () => {
 
       expect(response.statusCode).toBe(400);
       expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+    });
+  });
+
+  describe("PATCH /tags/{name}", () => {
+    it("recolors the decoded tag in the user partition", async () => {
+      dynamoMock.on(UpdateCommand).resolves({
+        Attributes: {
+          name: "Machine Learning",
+          color: "blue",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      const response = await tags(
+        withMethod("PATCH", {
+          pathParameters: { name: "Machine%20Learning" },
+          body: JSON.stringify({ color: "blue" }),
+        }),
+      );
+
+      expect(response.statusCode).toBe(200);
+      const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(update.Key).toEqual({
+        pk: "USER#owner",
+        sk: "TAG#machine learning",
+      });
+      expect(update.ExpressionAttributeValues).toEqual({ ":color": "blue" });
+      // Recoloring must not recreate a tag deleted by another client.
+      expect(update.ConditionExpression).toBe("attribute_exists(pk)");
+      expect(JSON.parse(response.body).tag).toEqual({
+        name: "Machine Learning",
+        color: "blue",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
+
+    it("rejects a color outside the palette", async () => {
+      const response = await tags(
+        withMethod("PATCH", {
+          pathParameters: { name: "research" },
+          body: JSON.stringify({ color: "chartreuse" }),
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it("rejects a missing color rather than clearing it", async () => {
+      const response = await tags(
+        withMethod("PATCH", {
+          pathParameters: { name: "research" },
+          body: JSON.stringify({}),
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it("returns 404 when the tag no longer exists", async () => {
+      const conditionFailed = Object.assign(new Error("conditional"), {
+        name: "ConditionalCheckFailedException",
+      });
+      dynamoMock.on(UpdateCommand).rejects(conditionFailed);
+
+      const response = await tags(
+        withMethod("PATCH", {
+          pathParameters: { name: "ghost" },
+          body: JSON.stringify({ color: "blue" }),
+        }),
+      );
+
+      expect(response.statusCode).toBe(404);
     });
   });
 

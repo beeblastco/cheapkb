@@ -95,6 +95,35 @@
   --radius-3xl: calc(var(--radius) * 2.2);
 
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Tag palette. Each color is a background/foreground pair so light and dark
+     are handled by the tokens rather than dark: overrides at the call site. */
+  --color-tag-gray: var(--tag-gray);
+  --color-tag-gray-foreground: var(--tag-gray-foreground);
+
+  --color-tag-brown: var(--tag-brown);
+  --color-tag-brown-foreground: var(--tag-brown-foreground);
+
+  --color-tag-orange: var(--tag-orange);
+  --color-tag-orange-foreground: var(--tag-orange-foreground);
+
+  --color-tag-yellow: var(--tag-yellow);
+  --color-tag-yellow-foreground: var(--tag-yellow-foreground);
+
+  --color-tag-green: var(--tag-green);
+  --color-tag-green-foreground: var(--tag-green-foreground);
+
+  --color-tag-blue: var(--tag-blue);
+  --color-tag-blue-foreground: var(--tag-blue-foreground);
+
+  --color-tag-purple: var(--tag-purple);
+  --color-tag-purple-foreground: var(--tag-purple-foreground);
+
+  --color-tag-pink: var(--tag-pink);
+  --color-tag-pink-foreground: var(--tag-pink-foreground);
+
+  --color-tag-red: var(--tag-red);
+  --color-tag-red-foreground: var(--tag-red-foreground);
 }
 
 @layer base {
@@ -144,6 +173,25 @@
   --sidebar-accent-foreground: oklch(0.216 0.006 56.043);
   --sidebar-border: oklch(0.923 0.003 48.717);
   --sidebar-ring: oklch(0.709 0.01 56.259);
+
+  --tag-gray: oklch(0.942 0.002 60);
+  --tag-gray-foreground: oklch(0.44 0.008 60);
+  --tag-brown: oklch(0.932 0.018 60);
+  --tag-brown-foreground: oklch(0.44 0.055 55);
+  --tag-orange: oklch(0.94 0.042 60);
+  --tag-orange-foreground: oklch(0.53 0.145 45);
+  --tag-yellow: oklch(0.952 0.05 95);
+  --tag-yellow-foreground: oklch(0.5 0.115 85);
+  --tag-green: oklch(0.938 0.04 155);
+  --tag-green-foreground: oklch(0.46 0.105 155);
+  --tag-blue: oklch(0.938 0.032 240);
+  --tag-blue-foreground: oklch(0.49 0.135 250);
+  --tag-purple: oklch(0.938 0.032 300);
+  --tag-purple-foreground: oklch(0.49 0.155 300);
+  --tag-pink: oklch(0.938 0.032 350);
+  --tag-pink-foreground: oklch(0.52 0.155 355);
+  --tag-red: oklch(0.938 0.032 25);
+  --tag-red-foreground: oklch(0.53 0.185 27);
 }
 
 .dark {
@@ -178,4 +226,23 @@
   --sidebar-accent-foreground: oklch(0.985 0.001 106.423);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.553 0.013 58.071);
+
+  --tag-gray: oklch(0.32 0.004 60);
+  --tag-gray-foreground: oklch(0.85 0.005 60);
+  --tag-brown: oklch(0.33 0.028 55);
+  --tag-brown-foreground: oklch(0.85 0.03 60);
+  --tag-orange: oklch(0.36 0.06 50);
+  --tag-orange-foreground: oklch(0.86 0.07 60);
+  --tag-yellow: oklch(0.37 0.05 90);
+  --tag-yellow-foreground: oklch(0.9 0.08 95);
+  --tag-green: oklch(0.34 0.05 155);
+  --tag-green-foreground: oklch(0.87 0.07 155);
+  --tag-blue: oklch(0.34 0.06 250);
+  --tag-blue-foreground: oklch(0.86 0.06 245);
+  --tag-purple: oklch(0.34 0.06 300);
+  --tag-purple-foreground: oklch(0.86 0.06 300);
+  --tag-pink: oklch(0.34 0.06 355);
+  --tag-pink-foreground: oklch(0.87 0.06 355);
+  --tag-red: oklch(0.35 0.08 27);
+  --tag-red-foreground: oklch(0.86 0.07 25);
 }

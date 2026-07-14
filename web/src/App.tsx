@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useTags } from "@/hooks/use-tags";
 import {
   apiCall,
   getIdentity,
@@ -25,6 +26,7 @@ import {
 import type { Document, ShooIdentity } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Toaster, toast } from "sonner";
 
 function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
@@ -70,7 +72,15 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback((_message: string, _type?: string) => {}, []);
+  // Optimistic updates roll back on failure, so the reason has to be visible —
+  // otherwise a rejected change just silently reverts under the user.
+  const notify = useCallback((message: string, type?: string) => {
+    if (type === "error") toast.error(message);
+    else toast(message);
+  }, []);
+
+  // Lifted above DocumentsCard so the detail panel can color tags too.
+  const tagVocabulary = useTags(identity?.token ?? "", notify);
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -271,6 +281,7 @@ function App() {
                 onDeleteSelected={deleteDocuments}
                 onReindex={reindexDocument}
                 onView={showDocument}
+                tagVocabulary={tagVocabulary}
               />
             </div>
             <div className="min-h-0 min-w-0 lg:col-span-4 xl:col-span-3">
@@ -279,11 +290,13 @@ function App() {
           </div>
         </main>
         <DocumentDialog
+          colorOf={tagVocabulary.colorOf}
           data={selectedDocumentData}
           document={selectedDocument}
           loading={loadingDocument}
           onClose={closeDocument}
         />
+        <Toaster position="bottom-right" />
       </div>
     </TooltipProvider>
   );

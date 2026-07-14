@@ -23,8 +23,25 @@ export interface Document {
   updatedAt?: string;
 }
 
+export const TAG_COLORS = [
+  "gray",
+  "brown",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+  "red",
+] as const;
+
+export type TagColor = (typeof TAG_COLORS)[number];
+
+export const DEFAULT_TAG_COLOR: TagColor = "gray";
+
 export interface Tag {
   name: string;
+  color: TagColor;
   createdAt?: string;
 }
 

@@ -68,20 +68,19 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TagBadge } from "@/components/TagBadge";
 import { TagPicker } from "@/components/TagPicker";
+import type { TagVocabulary } from "@/hooks/use-tags";
 import {
-  createTag,
-  deleteTag,
   extractMetadata,
   getFileMimeType,
   getStatusBadgeVariant,
   isActiveStatus,
-  listTags,
   updateDocumentTags,
   uploadDocument,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, Tag, UploadQueueItem } from "@/lib/types";
+import type { Document, Tag, TagColor, UploadQueueItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   type Column,
@@ -160,6 +159,7 @@ export function DocumentsCard({
   onDeleteSelected,
   onReindex,
   onView,
+  tagVocabulary,
 }: {
   documents: Document[];
   loading: boolean;
@@ -171,7 +171,15 @@ export function DocumentsCard({
   onDeleteSelected: (documentIds: string[]) => Promise<string[]>;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
+  tagVocabulary: TagVocabulary;
 }) {
+  const {
+    colorOf,
+    createTag: handleCreateTag,
+    deleteTag: handleDeleteTag,
+    recolorTag: handleRecolorTag,
+    tags,
+  } = tagVocabulary;
   const [items, setItems] = useState<UploadQueueItem[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -187,7 +195,6 @@ export function DocumentsCard({
     pageSize: PAGE_SIZE,
   });
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-  const [tags, setTags] = useState<Tag[]>([]);
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(
     null,
   );
@@ -203,45 +210,6 @@ export function DocumentsCard({
   useEffect(() => {
     syncingRef.current = syncing;
   }, [syncing]);
-
-  useEffect(() => {
-    if (!token) return;
-    listTags(token)
-      .then(setTags)
-      .catch(() => {});
-  }, [token]);
-
-  const handleCreateTag = useCallback(
-    async (tagName: string) => {
-      try {
-        const tag = await createTag(token, tagName);
-        setTags((current) =>
-          current.some((t) => t.name.toLowerCase() === tag.name.toLowerCase())
-            ? current
-            : [...current, tag],
-        );
-      } catch (error) {
-        notify((error as Error).message, "error");
-        throw error;
-      }
-    },
-    [notify, token],
-  );
-
-  const handleDeleteTag = useCallback(
-    async (tagName: string) => {
-      try {
-        await deleteTag(token, tagName);
-        setTags((current) =>
-          current.filter((t) => t.name.toLowerCase() !== tagName.toLowerCase()),
-        );
-      } catch (error) {
-        notify((error as Error).message, "error");
-        throw error;
-      }
-    },
-    [notify, token],
-  );
 
   const handleUpdateDocumentTags = useCallback(
     async (documentId: string, nextTags: string[]) => {
@@ -709,6 +677,7 @@ export function DocumentsCard({
                       />
                     ) : (
                       <DocumentRow
+                        colorOf={colorOf}
                         document={original.document}
                         key={row.id}
                         onDelete={onDelete}
@@ -789,20 +758,24 @@ export function DocumentsCard({
       </Card>
 
       <UploadMetadataSheet
+        colorOf={colorOf}
         item={selectedItem}
         onClose={() => setSelectedItemId(null)}
         onCreateTag={handleCreateTag}
         onDeleteTag={handleDeleteTag}
+        onRecolorTag={handleRecolorTag}
         onUpdate={updateItem}
         syncing={syncing}
         tags={tags}
       />
 
       <DocumentTagsSheet
+        colorOf={colorOf}
         document={editingDocument}
         onClose={() => setEditingDocumentId(null)}
         onCreateTag={handleCreateTag}
         onDeleteTag={handleDeleteTag}
+        onRecolorTag={handleRecolorTag}
         onSave={handleUpdateDocumentTags}
         tags={tags}
       />
@@ -930,6 +903,7 @@ function UploadRow({
 }
 
 function DocumentRow({
+  colorOf,
   document,
   onDelete,
   onEditTags,
@@ -938,6 +912,7 @@ function DocumentRow({
   onView,
   selected,
 }: {
+  colorOf: (name: string) => TagColor;
   document: Document;
   onDelete: (documentId: string) => Promise<boolean>;
   onEditTags: (documentId: string) => void;
@@ -983,6 +958,13 @@ function DocumentRow({
           <span className="truncate text-muted-foreground">
             {document.mimeType || document.documentId}
           </span>
+          {document.tags?.length ? (
+            <div className="flex flex-wrap gap-1">
+              {document.tags.map((name) => (
+                <TagBadge color={colorOf(name)} key={name} name={name} />
+              ))}
+            </div>
+          ) : null}
           {document.lastError ? (
             <span className="truncate text-destructive">
               {document.lastError}
@@ -1065,17 +1047,21 @@ function DocumentRow({
 }
 
 function DocumentTagsSheet({
+  colorOf,
   document,
   onClose,
   onCreateTag,
   onDeleteTag,
+  onRecolorTag,
   onSave,
   tags,
 }: {
+  colorOf: (name: string) => TagColor;
   document: Document | null;
   onClose: () => void;
-  onCreateTag: (name: string) => Promise<void>;
+  onCreateTag: (name: string) => Promise<Tag>;
   onDeleteTag: (name: string) => Promise<void>;
+  onRecolorTag: (name: string, color: TagColor) => Promise<void>;
   onSave: (documentId: string, tags: string[]) => Promise<void>;
   tags: Tag[];
 }) {
@@ -1122,10 +1108,12 @@ function DocumentTagsSheet({
             <Field data-disabled={saving || undefined}>
               <FieldLabel>Tags</FieldLabel>
               <TagPicker
+                colorOf={colorOf}
                 disabled={saving}
                 onChange={setValue}
                 onCreate={onCreateTag}
                 onDeleteTag={onDeleteTag}
+                onRecolor={onRecolorTag}
                 tags={tags}
                 value={value}
               />
@@ -1154,18 +1142,22 @@ function DocumentTagsSheet({
 }
 
 function UploadMetadataSheet({
+  colorOf,
   item,
   onClose,
   onCreateTag,
   onDeleteTag,
+  onRecolorTag,
   onUpdate,
   syncing,
   tags,
 }: {
+  colorOf: (name: string) => TagColor;
   item: UploadQueueItem | null;
   onClose: () => void;
-  onCreateTag: (name: string) => Promise<void>;
+  onCreateTag: (name: string) => Promise<Tag>;
   onDeleteTag: (name: string) => Promise<void>;
+  onRecolorTag: (name: string, color: TagColor) => Promise<void>;
   onUpdate: (id: string, values: Partial<UploadQueueItem>) => void;
   syncing: boolean;
   tags: Tag[];
@@ -1219,10 +1211,12 @@ function UploadMetadataSheet({
               <Field data-disabled={syncing || undefined}>
                 <FieldLabel>Tags</FieldLabel>
                 <TagPicker
+                  colorOf={colorOf}
                   disabled={syncing}
                   onChange={(next) => onUpdate(item.id, { tags: next })}
                   onCreate={onCreateTag}
                   onDeleteTag={onDeleteTag}
+                  onRecolor={onRecolorTag}
                   tags={tags}
                   value={item.tags}
                 />

@@ -1,3 +1,4 @@
+import { TagBadge } from "@/components/TagBadge";
 import { Badge } from "@/components/ui/badge";
 import {
   Field,
@@ -14,14 +15,16 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, getStatusBadgeVariant } from "@/lib/client";
-import type { Document } from "@/lib/types";
+import type { Document, TagColor } from "@/lib/types";
 
 export function DocumentDialog({
+  colorOf,
   document,
   data,
   loading,
   onClose,
 }: {
+  colorOf: (name: string) => TagColor;
   document: Document | null;
   data: Record<string, unknown> | null;
   loading: boolean;
@@ -29,22 +32,34 @@ export function DocumentDialog({
 }) {
   const detailedDocument = (data?.document as Document | undefined) || document;
   const tags = Array.isArray(detailedDocument?.tags)
-    ? detailedDocument.tags.join(", ")
-    : detailedDocument?.tags;
+    ? detailedDocument.tags
+    : [];
   const authors = Array.isArray(detailedDocument?.authors)
     ? detailedDocument.authors.join(", ")
     : detailedDocument?.authors;
-  const fields = detailedDocument
-    ? [
-        ["ID", detailedDocument.documentId],
-        ["MIME type", detailedDocument.mimeType],
-        ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
-        ["Uploaded", formatDate(detailedDocument.createdAt)],
-        ["Modified", formatDate(detailedDocument.updatedAt)],
-        ["Tags", tags],
-        ["Authors", authors],
-        ["Last error", detailedDocument.lastError],
-      ].filter(
+  const fields: Array<[string, React.ReactNode]> = detailedDocument
+    ? (
+        [
+          ["ID", detailedDocument.documentId],
+          ["MIME type", detailedDocument.mimeType],
+          ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
+          ["Uploaded", formatDate(detailedDocument.createdAt)],
+          ["Modified", formatDate(detailedDocument.updatedAt)],
+          [
+            "Tags",
+            // A span, not a div: FieldDescription renders a <p>.
+            tags.length ? (
+              <span className="flex flex-wrap gap-1.5">
+                {tags.map((name) => (
+                  <TagBadge color={colorOf(name)} key={name} name={name} />
+                ))}
+              </span>
+            ) : undefined,
+          ],
+          ["Authors", authors],
+          ["Last error", detailedDocument.lastError],
+        ] as Array<[string, React.ReactNode]>
+      ).filter(
         ([, value]) => value !== undefined && value !== null && value !== "",
       )
     : [];
@@ -70,9 +85,9 @@ export function DocumentDialog({
             ) : (
               <FieldGroup>
                 {fields.map(([label, value]) => (
-                  <Field key={String(label)}>
+                  <Field key={label}>
                     <FieldLabel>{label}</FieldLabel>
-                    <FieldDescription>{String(value)}</FieldDescription>
+                    <FieldDescription>{value}</FieldDescription>
                   </Field>
                 ))}
               </FieldGroup>

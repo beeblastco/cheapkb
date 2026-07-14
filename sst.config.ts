@@ -563,7 +563,7 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
-      description: "Manage per-user tags (list, create, delete)",
+      description: "Manage per-user tags (list, create, recolor, delete)",
       environment: baseEnv,
       permissions: [
         {
@@ -571,6 +571,7 @@ export default $config({
             "dynamodb:Query",
             "dynamodb:GetItem",
             "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
           ],
           resources: [table.arn],
@@ -692,6 +693,7 @@ export default $config({
     api.route("DELETE /documents/{id}", adminDeleteFn.arn);
     api.route("GET /tags", adminTagsFn.arn);
     api.route("POST /tags", adminTagsFn.arn);
+    api.route("PATCH /tags/{name}", adminTagsFn.arn);
     api.route("DELETE /tags/{name}", adminTagsFn.arn);
 
     return {
