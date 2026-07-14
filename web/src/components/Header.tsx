@@ -62,7 +62,14 @@ export function Header({
 
           {profile ? (
             <DropdownMenu>
-              <DropdownMenuTrigger render={<Button className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0" variant="ghost" />}>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
+                    variant="ghost"
+                  />
+                }
+              >
                 <span className="hidden max-w-48 truncate sm:block">
                   {profile.email || profile.name}
                 </span>
