@@ -1,12 +1,15 @@
 import type { Badge } from "@/components/ui/badge";
 import type React from "react";
-import type {
-  Document,
-  QueryResult,
-  ResultGroup,
-  ShooIdentity,
-  Tag,
-  UserProfile,
+import {
+  DEFAULT_TAG_COLOR,
+  type Document,
+  type QueryResult,
+  type ResultGroup,
+  type ShooIdentity,
+  type Tag,
+  TAG_COLORS,
+  type TagColor,
+  type UserProfile,
 } from "./types";
 
 const SHOO_CALLBACK_PATH = "/shoo/callback";
@@ -207,12 +210,38 @@ export async function apiCall(
 
 export async function listTags(token: string): Promise<Tag[]> {
   const data = await apiCall(token, "GET", "/tags");
-  return Array.isArray(data.tags) ? (data.tags as Tag[]) : [];
+  return Array.isArray(data.tags) ? (data.tags as Tag[]).map(normalizeTag) : [];
 }
 
-export async function createTag(token: string, name: string): Promise<Tag> {
-  const data = await apiCall(token, "POST", "/tags", { name });
-  return data.tag as Tag;
+export async function createTag(
+  token: string,
+  name: string,
+  color: TagColor = DEFAULT_TAG_COLOR,
+): Promise<Tag> {
+  const data = await apiCall(token, "POST", "/tags", { name, color });
+  return normalizeTag(data.tag as Tag);
+}
+
+export async function updateTagColor(
+  token: string,
+  name: string,
+  color: TagColor,
+): Promise<Tag> {
+  const data = await apiCall(
+    token,
+    "PATCH",
+    `/tags/${encodeURIComponent(name)}`,
+    { color },
+  );
+  return normalizeTag(data.tag as Tag);
+}
+
+// Tags stored before colors existed come back without one.
+function normalizeTag(tag: Tag): Tag {
+  return {
+    ...tag,
+    color: TAG_COLORS.includes(tag.color) ? tag.color : DEFAULT_TAG_COLOR,
+  };
 }
 
 export async function deleteTag(token: string, name: string): Promise<void> {

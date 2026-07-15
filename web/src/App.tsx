@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useTags } from "@/hooks/use-tags";
 import {
   apiCall,
   getIdentity,
@@ -71,6 +72,9 @@ function App() {
   }, [documents]);
 
   const notify = useCallback((_message: string, _type?: string) => {}, []);
+
+  // Lifted above DocumentsCard so the detail panel can color tags too.
+  const tagVocabulary = useTags(identity?.token ?? "");
 
   const request = useCallback(
     (method: string, path: string, body?: Record<string, unknown>) =>
@@ -271,6 +275,7 @@ function App() {
                 onDeleteSelected={deleteDocuments}
                 onReindex={reindexDocument}
                 onView={showDocument}
+                tagVocabulary={tagVocabulary}
               />
             </div>
             <div className="min-h-0 min-w-0 lg:col-span-4 xl:col-span-3">
@@ -279,6 +284,7 @@ function App() {
           </div>
         </main>
         <DocumentDialog
+          colorOf={tagVocabulary.colorOf}
           data={selectedDocumentData}
           document={selectedDocument}
           loading={loadingDocument}
