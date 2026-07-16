@@ -1,6 +1,6 @@
 import {
-  DynamoDBClient,
   ConditionalCheckFailedException,
+  DynamoDBClient,
 } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -104,10 +104,10 @@ export async function getOrCreateAccount(
 
   const now = new Date().toISOString();
   const account: Account = {
-    pk,
-    sk,
+    pk: pk,
+    sk: sk,
     entityType: "Account",
-    userId,
+    userId: userId,
     planId: DEFAULT_PLAN.planId,
     priceMonthlyCents: DEFAULT_PLAN.priceMonthlyCents,
     monthlyAllowanceCents: DEFAULT_PLAN.monthlyAllowanceCents,

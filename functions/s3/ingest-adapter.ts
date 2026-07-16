@@ -6,13 +6,13 @@ import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { recordUsage, updateStorageBytes } from "../billing/utils";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
   getDocument,
 } from "../utils";
-import { recordUsage, updateStorageBytes } from "../billing/utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});

@@ -1,11 +1,12 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { S3Client } from "@aws-sdk/client-s3";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { updateStorageBytes } from "../billing/utils";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
@@ -13,8 +14,6 @@ import {
   deleteS3Prefix,
   extractUserId,
 } from "../utils";
-import { HeadObjectCommand } from "@aws-sdk/client-s3";
-import { updateStorageBytes } from "../billing/utils";
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -68,7 +67,7 @@ export async function handler(event: any) {
       }),
     );
     sourceSize = head.ContentLength ?? 0;
-  } catch {}
+  } catch { }
   const errors: string[] = [];
   let chunkItems: any[] = [];
 

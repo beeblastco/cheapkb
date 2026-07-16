@@ -211,7 +211,7 @@ export function TagPicker({
               onBack={() => setRecoloring(null)}
               onPick={(color) => {
                 setRecoloring(null);
-                void onRecolor(recoloring.name, color).catch(() => {});
+                void onRecolor(recoloring.name, color).catch(() => { });
               }}
             />
           ) : (

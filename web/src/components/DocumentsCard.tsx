@@ -1,3 +1,5 @@
+import { TagBadge } from "@/components/TagBadge";
+import { TagPicker } from "@/components/TagPicker";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -68,8 +70,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TagBadge } from "@/components/TagBadge";
-import { TagPicker } from "@/components/TagPicker";
 import type { TagVocabulary } from "@/hooks/use-tags";
 import {
   extractMetadata,
@@ -274,13 +274,13 @@ export function DocumentsCard({
           current.map((currentItem) =>
             currentItem.id === item.id
               ? {
-                  ...currentItem,
-                  authors: metadata.authors.join(", "),
-                  progress: "Ready to sync",
-                  state: "READY",
-                  title: metadata.title || currentItem.title,
-                  year: metadata.year?.toString() || "",
-                }
+                ...currentItem,
+                authors: metadata.authors.join(", "),
+                progress: "Ready to sync",
+                state: "READY",
+                title: metadata.title || currentItem.title,
+                year: metadata.year?.toString() || "",
+              }
               : currentItem,
           ),
         );
@@ -506,15 +506,15 @@ export function DocumentsCard({
       failedDocumentIds.length
         ? `${removed} staged removed, ${deleted} deleted, ${failedDocumentIds.length} failed and remain selected`
         : [
-            removed
-              ? `${removed} staged file${removed === 1 ? "" : "s"} removed`
-              : "",
-            deleted
-              ? `${deleted} document${deleted === 1 ? "" : "s"} deleted`
-              : "",
-          ]
-            .filter(Boolean)
-            .join(", "),
+          removed
+            ? `${removed} staged file${removed === 1 ? "" : "s"} removed`
+            : "",
+          deleted
+            ? `${deleted} document${deleted === 1 ? "" : "s"} deleted`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(", "),
     );
     setRowSelection(
       Object.fromEntries(
@@ -732,7 +732,7 @@ export function DocumentsCard({
                     aria-disabled={!table.getCanPreviousPage()}
                     className={cn(
                       !table.getCanPreviousPage() &&
-                        "pointer-events-none opacity-50",
+                      "pointer-events-none opacity-50",
                     )}
                     href="#"
                     onClick={(event) => {
@@ -747,7 +747,7 @@ export function DocumentsCard({
                     aria-disabled={!table.getCanNextPage()}
                     className={cn(
                       !table.getCanNextPage() &&
-                        "pointer-events-none opacity-50",
+                      "pointer-events-none opacity-50",
                     )}
                     href="#"
                     onClick={(event) => {

@@ -6,8 +6,8 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { encode } from "gpt-tokenizer";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import { encode } from "gpt-tokenizer";
 import { recordUsage } from "../billing/utils";
 
 const s3 = new S3Client({});
