@@ -1,5 +1,4 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -105,11 +104,6 @@ export function Header({
                 <span className="hidden max-w-48 truncate sm:block">
                   {profile.email || profile.name}
                 </span>
-                {usage ? (
-                  <Badge variant="secondary" className="hidden sm:flex">
-                    {usage.planLabel}
-                  </Badge>
-                ) : null}
                 <Avatar size="sm">
                   {profile.picture ? (
                     <AvatarImage alt={profile.name} src={profile.picture} />
@@ -218,7 +212,9 @@ export function Header({
                           </p>
                         </div>
                         {account?.planId === plan.planId ? (
-                          <Badge variant="secondary">Current</Badge>
+                          <span className="text-sm font-medium text-muted-foreground">
+                            Current
+                          </span>
                         ) : (
                           <Button
                             disabled={updating}

@@ -1,6 +1,10 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Progress,
+  ProgressLabel,
+  ProgressValue,
+} from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
@@ -39,7 +43,9 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
         ) : null}
 
         <div className="space-y-1">
-          <Badge variant="secondary">{summary.planLabel}</Badge>
+          <p className="text-sm text-muted-foreground">
+            {summary.planLabel} plan
+          </p>
           <p className="text-2xl font-semibold tracking-tight tabular-nums">
             {shown.toFixed(0)}%
             <span className="ml-2 text-base font-normal text-muted-foreground">
@@ -52,20 +58,10 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           </p>
         </div>
 
-        <div
-          aria-label="Usage progress"
-          aria-valuemax={100}
-          aria-valuenow={Math.round(shown)}
-          className="h-2.5 w-full overflow-hidden rounded-full bg-muted"
-          role="progressbar"
-        >
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${
-              summary.paused ? "bg-destructive" : "bg-primary"
-            }`}
-            style={{ width: `${shown}%` }}
-          />
-        </div>
+        <Progress value={shown}>
+          <ProgressLabel>Usage progress</ProgressLabel>
+          <ProgressValue />
+        </Progress>
 
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
