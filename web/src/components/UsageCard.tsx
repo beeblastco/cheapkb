@@ -26,7 +26,10 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {summary.paused ? (
-          <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+          <div
+            className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive"
+            role="alert"
+          >
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
             <span>
               Monthly allowance reached. Upgrade to continue using queries and
@@ -51,7 +54,13 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           </p>
         </div>
 
-        <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          aria-label="Usage progress"
+          aria-valuemax={100}
+          aria-valuenow={Math.round(shown)}
+          className="h-2.5 w-full overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+        >
           <div
             className={`h-full rounded-full transition-all duration-500 ${
               summary.paused ? "bg-destructive" : "bg-primary"

@@ -84,6 +84,16 @@ function App() {
     [identity?.token],
   );
 
+  const refreshUsage = useCallback(async () => {
+    if (!identity?.token) return;
+    try {
+      const data = await getUsageSummary(identity.token);
+      setUsage(data);
+    } catch (error) {
+      notify((error as Error).message, "error");
+    }
+  }, [identity?.token, notify]);
+
   const loadDocuments = useCallback(
     async (showLoading = false) => {
       if (!identity?.token) return;
@@ -290,12 +300,17 @@ function App() {
                 onDeleteSelected={deleteDocuments}
                 onReindex={reindexDocument}
                 onView={showDocument}
+                onUsageChange={refreshUsage}
                 tagVocabulary={tagVocabulary}
               />
             </div>
             <div className="flex min-h-0 flex-col gap-3 min-w-0 lg:col-span-4 xl:col-span-3">
               <UsageCard summary={usage} />
-              <QueryCard request={request} onView={showDocument} />
+              <QueryCard
+                request={request}
+                onView={showDocument}
+                onUsageChange={refreshUsage}
+              />
             </div>
           </div>
         </main>

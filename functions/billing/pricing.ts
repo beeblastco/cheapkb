@@ -1,8 +1,5 @@
-// Usage pricing for cheapkb. Costs are tracked in integer nano-USD
-// (1 nano-USD = 1e-9 USD) so per-event arithmetic never accumulates
-// floating-point drift. Rates approximate the blended AWS cost of S3
-// Vectors, S3 storage, Lambda, API Gateway and DynamoDB for each
-// operation.
+// Costs are tracked in integer nano-USD (1e-9 USD) to avoid
+// floating-point drift. Rates approximate blended AWS costs.
 
 export const NANO_PER_USD = 1_000_000_000;
 export const NANO_PER_CENT = NANO_PER_USD / 100; // 10_000_000

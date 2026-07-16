@@ -55,6 +55,7 @@ interface ChatTurn {
 export function QueryCard({
   request,
   onView,
+  onUsageChange,
 }: {
   request: (
     method: string,
@@ -62,6 +63,7 @@ export function QueryCard({
     body?: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
   onView: (documentId: string) => void;
+  onUsageChange?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [currentQuestion, setCurrentQuestion] = useState("");
@@ -89,6 +91,7 @@ export function QueryCard({
           results: (data.results as QueryResult[]) || [],
         },
       ]);
+      onUsageChange?.();
     } catch (requestError) {
       setTurns((current) => [
         ...current,

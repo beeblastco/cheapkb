@@ -28,144 +28,26 @@ const ALLOWED_MIME_TYPES = new Set([
 const REPLACEABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
 export async function handler(event: any) {
-  try {
-    const { userId, response: authError } = await extractUserId(event);
-    if (authError) return authError;
+  const { userId, response: authError } = await extractUserId(event);
+  if (authError) return authError;
 
-    const { allowed, remaining } = await checkRateLimit(
-      userId,
-      TableName,
-      "UPLOAD",
-      50,
-      50,
-    );
-    if (!allowed) {
-      return {
-        statusCode: 429,
-        headers: {
-          "Content-Type": "application/json",
-          "X-RateLimit-Remaining": String(remaining),
-        },
-        body: JSON.stringify({
-          error: "Rate limit exceeded. Try again later.",
-        }),
-      };
-    }
-
-    if (!event.body) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Request body is required" }),
-      };
-    }
-    let body: any;
-    try {
-      body = JSON.parse(event.body);
-    } catch (err) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: `Invalid JSON: ${(err as Error).message}`,
-        }),
-      };
-    }
-
-    const validationError = validateBody(body);
-    if (validationError) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: validationError }),
-      };
-    }
-
-    const filename = sanitizeFilename(body.filename);
-    const mimeType = body.mimeType;
-    const dedupeKey = createDedupeKey(userId, filename, mimeType);
-    const mappingKey = {
-      pk: `USER#${userId}`,
-      sk: `DOCUMENT#${dedupeKey}`,
-    };
-    const mapping = await dynamo.send(
-      new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
-    );
-    const now = new Date().toISOString();
-    let documentId: string;
-    let sourceKey: string;
-    let replacementToken: string | undefined;
-    let reused = false;
-
-    if (mapping?.Item) {
-      documentId = mapping.Item.documentId;
-      const result = await dynamo.send(
-        new GetCommand({
-          TableName,
-          Key: { pk: `DOC#${documentId}`, sk: "META" },
-          ConsistentRead: true,
-        }),
-      );
-      const document = result?.Item;
-      // The mapping can outlive its META row if the document was deleted
-      // concurrently; respond cleanly instead of throwing an unstructured 500.
-      if (!document) return conflictResponse("Document mapping is invalid");
-      if (!REPLACEABLE_STATUSES.has(document.status)) {
-        return conflictResponse("Document is being processed");
-      }
-
-      replacementToken = randomUUID();
-      const reserved = await reserveReplacement(
-        document,
-        replacementToken,
-        filename,
-        body,
-        now,
-      );
-      if (!reserved) return conflictResponse("Document is being processed");
-      sourceKey = document.sourceKey;
-      reused = true;
-    } else {
-      documentId = `doc_${randomUUID()}`;
-      sourceKey = `raw/${documentId}/${filename}`;
-      const created = await createDocument(
-        documentId,
-        userId,
-        filename,
-        mimeType,
-        dedupeKey,
-        sourceKey,
-        body,
-        now,
-      );
-      if (!created) return conflictResponse("Document is being uploaded");
-    }
-
-    const fields: Record<string, string> = { "Content-Type": mimeType };
-    const conditions: any[] = [
-      ["content-length-range", 1, MAX_UPLOAD_BYTES],
-      ["eq", "$Content-Type", mimeType],
-    ];
-    if (replacementToken) {
-      fields["x-amz-meta-upload-token"] = replacementToken;
-      conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
-    }
-
-    const upload = await createPresignedPost(s3, {
-      Bucket: StorageBucketName,
-      Key: sourceKey,
-      Fields: fields,
-      Conditions: conditions,
-      Expires: 900,
-    });
-
+  const { allowed, remaining } = await checkRateLimit(
+    userId,
+    TableName,
+    "UPLOAD",
+    50,
+    50,
+  );
+  if (!allowed) {
     return {
-      statusCode: 200,
+      statusCode: 429,
       headers: {
         "Content-Type": "application/json",
         "X-RateLimit-Remaining": String(remaining),
       },
-      body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+      body: JSON.stringify({
+        error: "Rate limit exceeded. Try again later.",
+      }),
     };
   }
 
@@ -187,23 +69,95 @@ export async function handler(event: any) {
       body: JSON.stringify({ error: "Request body is required" }),
     };
   }
+
   let body: any;
   try {
     body = JSON.parse(event.body);
-  } catch {
+  } catch (err) {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Invalid JSON in request body" }),
-    };
-  } catch (error) {
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        error: error instanceof Error ? error.message : "Internal server error",
+        error: `Invalid JSON: ${(err as Error).message}`,
       }),
     };
+  }
+
+  const validationError = validateBody(body);
+  if (validationError) {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: validationError }),
+    };
+  }
+
+  const filename = sanitizeFilename(body.filename);
+  const mimeType = body.mimeType;
+  const dedupeKey = createDedupeKey(userId, filename, mimeType);
+  const mappingKey = {
+    pk: `USER#${userId}`,
+    sk: `DOCUMENT#${dedupeKey}`,
+  };
+  const mapping = await dynamo.send(
+    new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
+  );
+  const now = new Date().toISOString();
+  let documentId: string;
+  let sourceKey: string;
+  let replacementToken: string | undefined;
+  let reused = false;
+
+  if (mapping?.Item) {
+    documentId = mapping.Item.documentId;
+    const result = await dynamo.send(
+      new GetCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ConsistentRead: true,
+      }),
+    );
+    const document = result?.Item;
+    if (!document) return conflictResponse("Document mapping is invalid");
+    if (!REPLACEABLE_STATUSES.has(document.status)) {
+      return conflictResponse("Document is being processed");
+    }
+
+    replacementToken = randomUUID();
+    const reserved = await reserveReplacement(
+      document,
+      replacementToken,
+      filename,
+      body,
+      now,
+    );
+    if (!reserved) return conflictResponse("Document is being processed");
+    sourceKey = document.sourceKey;
+    reused = true;
+  } else {
+    documentId = `doc_${randomUUID()}`;
+    sourceKey = `raw/${documentId}/${filename}`;
+    const created = await createDocument(
+      documentId,
+      userId,
+      filename,
+      mimeType,
+      dedupeKey,
+      sourceKey,
+      body,
+      now,
+    );
+    if (!created) return conflictResponse("Document is being uploaded");
+  }
+
+  const fields: Record<string, string> = { "Content-Type": mimeType };
+  const conditions: any[] = [
+    ["content-length-range", 1, MAX_UPLOAD_BYTES],
+    ["eq", "$Content-Type", mimeType],
+  ];
+  if (replacementToken) {
+    fields["x-amz-meta-upload-token"] = replacementToken;
+    conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
   }
 
   const upload = await createPresignedPost(s3, {

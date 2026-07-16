@@ -67,19 +67,20 @@ describe("billing", () => {
 
   describe("usage", () => {
     it("records a query usage event", async () => {
-      dynamoMock.on(GetCommand).resolves({});
-      dynamoMock.on(PutCommand).resolves({});
+      dynamoMock.on(UpdateCommand).resolves({});
 
       await recordUsage("user-1", "table", "query", 2);
 
-      const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item;
-      expect(put.queryOps).toBe(2);
-      expect(put.costNano).toBe(2 * PRICING.queryPerRequest);
+      const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(update.UpdateExpression).toContain("queryOps");
+      expect(update.ExpressionAttributeValues[":u"]).toBe(2);
+      expect(update.ExpressionAttributeValues[":c"]).toBe(
+        2 * PRICING.queryPerRequest,
+      );
     });
 
     it("returns usage summary with default plan", async () => {
       const now = new Date();
-      const today = dayKey(now.getTime());
       dynamoMock
         .on(GetCommand, {
           TableName: "table",
@@ -105,6 +106,36 @@ describe("billing", () => {
       expect(summary.planId).toBe("starter");
       expect(summary.allowanceUsd).toBe(4);
       expect(summary.paused).toBe(false);
+    });
+
+    it("marks summary as paused when usage exceeds allowance", async () => {
+      const now = new Date();
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "ACCOUNT#user-1", sk: "PROFILE" },
+        })
+        .resolves({
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            userId: "user-1",
+            planId: "starter",
+            priceMonthlyCents: 500,
+            monthlyAllowanceCents: 400,
+            storageBytes: 0,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          },
+        });
+      dynamoMock.on(QueryCommand).resolves({
+        Items: [{ costNano: 400 * 10_000_000 + 1 }],
+      });
+
+      const summary = await getUsageSummary("user-1", "table");
+
+      expect(summary.paused).toBe(true);
+      expect(summary.pctUsed).toBeGreaterThanOrEqual(100);
     });
   });
 });

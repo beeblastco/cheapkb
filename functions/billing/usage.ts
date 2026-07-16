@@ -6,12 +6,7 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  allowanceNanoUsd,
-  getAccount,
-  getOrCreateAccount,
-  type Account,
-} from "./account";
+import { allowanceNanoUsd, getOrCreateAccount, type Account } from "./account";
 import {
   nanoUsdToUsd,
   NANO_PER_CENT,
@@ -83,62 +78,33 @@ export async function recordUsage(
   const day = dayKey(now.getTime());
   const pk = `ACCOUNT#${userId}`;
   const sk = `USAGE#${day}`;
+  const field = categoryField(category);
 
-  const existing = await dynamo.send(
-    new GetCommand({ TableName: tableName, Key: { pk, sk } }),
-  );
-
-  if (existing.Item) {
-    const field = categoryField(category);
+  try {
     await dynamo.send(
       new UpdateCommand({
         TableName: tableName,
         Key: { pk, sk },
-        UpdateExpression: `SET ${field} = ${field} + :u, costNano = costNano + :c, updatedAt = :t`,
+        UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, userId = :userId, #day = :day, entityType = :entity, updatedAt = :t`,
+        ExpressionAttributeNames: { "#day": "day" },
         ExpressionAttributeValues: {
           ":u": units,
           ":c": costNano,
+          ":zero": 0,
+          ":userId": userId,
+          ":day": day,
+          ":entity": "UsageDay",
           ":t": now.toISOString(),
         },
       }),
     );
-  } else {
-    const item: UsageDay = {
-      pk,
-      sk,
-      entityType: "UsageDay",
-      userId,
-      day,
-      queryOps: category === "query" ? units : 0,
-      uploadOps: category === "upload" ? units : 0,
-      ingestOps: category === "ingest" ? units : 0,
-      embedOps: category === "embed" ? units : 0,
-      costNano,
-      updatedAt: now.toISOString(),
-    };
-    try {
-      await dynamo.send(
-        new PutCommand({
-          TableName: tableName,
-          Item: item,
-          ConditionExpression: "attribute_not_exists(pk)",
-        }),
-      );
-    } catch (error: any) {
-      if (error.name === "ConditionalCheckFailedException") {
-        await recordUsage(userId, tableName, category, units);
-      } else {
-        throw error;
-      }
+  } catch (error: any) {
+    if (error.name === "ConditionalCheckFailedException") {
+      await recordUsage(userId, tableName, category, units);
+      return;
     }
+    throw error;
   }
-}
-
-function categoryField(category: UsageCategory): string {
-  if (category === "query") return "queryOps";
-  if (category === "upload") return "uploadOps";
-  if (category === "ingest") return "ingestOps";
-  return "embedOps";
 }
 
 export async function sumUsageNano(
@@ -180,26 +146,7 @@ export async function getUsageSummary(
 
   const startDay = dayKey(cycle.startMs);
   const endDay = dayKey(cycle.endMs - 1);
-  let spentNano = 0;
-  let lastKey: Record<string, any> | undefined;
-  do {
-    const result = await dynamo.send(
-      new QueryCommand({
-        TableName: tableName,
-        KeyConditionExpression: "pk = :pk AND sk BETWEEN :start AND :end",
-        ExpressionAttributeValues: {
-          ":pk": `ACCOUNT#${userId}`,
-          ":start": `USAGE#${startDay}`,
-          ":end": `USAGE#${endDay}`,
-        },
-        ExclusiveStartKey: lastKey,
-      }),
-    );
-    for (const item of result.Items ?? []) {
-      spentNano += (item.costNano as number) ?? 0;
-    }
-    lastKey = result.LastEvaluatedKey;
-  } while (lastKey);
+  const spentNano = await sumUsageNano(userId, tableName, startDay, endDay);
 
   const storageSeconds = Math.max(0, (nowMs - cycle.startMs) / 1000);
   const storageNano = storageCostNanoUsd(
@@ -234,4 +181,9 @@ export async function checkUsageLimit(
   return { allowed: !summary.paused, summary };
 }
 
-export { getAccount, getOrCreateAccount, nanoUsdToUsd };
+function categoryField(category: UsageCategory): string {
+  if (category === "query") return "queryOps";
+  if (category === "upload") return "uploadOps";
+  if (category === "ingest") return "ingestOps";
+  return "embedOps";
+}

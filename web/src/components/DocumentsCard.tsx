@@ -159,6 +159,7 @@ export function DocumentsCard({
   onDeleteSelected,
   onReindex,
   onView,
+  onUsageChange,
   tagVocabulary,
 }: {
   documents: Document[];
@@ -171,6 +172,7 @@ export function DocumentsCard({
   onDeleteSelected: (documentIds: string[]) => Promise<string[]>;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
+  onUsageChange?: () => void;
   tagVocabulary: TagVocabulary;
 }) {
   const {
@@ -461,6 +463,7 @@ export function DocumentsCard({
     syncingRef.current = false;
     setSyncing(false);
     await loadDocuments();
+    onUsageChange?.();
     if (failed) {
       notify(`${succeeded} synced, ${failed} need attention.`, "error");
     } else {

@@ -504,6 +504,7 @@ export default $config({
         {
           actions: [
             "s3:ListBucketVersions",
+            "s3:GetObject",
             "s3:DeleteObject",
             "s3:DeleteObjectVersion",
           ],
@@ -600,12 +601,7 @@ export default $config({
       environment: baseEnv,
       permissions: [
         {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:Query",
-          ],
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
           resources: [table.arn],
         },
       ],

@@ -48,8 +48,6 @@ export async function handler(event: any) {
     };
   }
 
-  await recordUsage(userId, TableName, "query", 1);
-
   try {
     if (!event.body) {
       return {
@@ -168,6 +166,8 @@ export async function handler(event: any) {
         },
       };
     });
+
+    await recordUsage(userId, TableName, "query", 1);
 
     return {
       statusCode: 200,

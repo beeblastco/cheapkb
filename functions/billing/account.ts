@@ -95,9 +95,12 @@ export async function updateStorageBytes(
       Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
       UpdateExpression:
         "SET storageBytes = if_not_exists(storageBytes, :zero) + :delta, updatedAt = :now",
+      ConditionExpression:
+        "attribute_not_exists(storageBytes) OR storageBytes >= :minDelta",
       ExpressionAttributeValues: {
         ":delta": deltaBytes,
         ":zero": 0,
+        ":minDelta": Math.max(0, -deltaBytes),
         ":now": now,
       },
     }),

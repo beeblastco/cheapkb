@@ -72,7 +72,8 @@ describe("S3 ingest adapter", () => {
 
     await expect(handler(s3Event())).rejects.toThrow("SQS unavailable");
 
-    expect(dynamoMock.commandCalls(UpdateCommand)[1].args[0].input).toEqual(
+    const rollbackCall = dynamoMock.commandCalls(UpdateCommand).at(-1);
+    expect(rollbackCall?.args[0].input).toEqual(
       expect.objectContaining({
         ExpressionAttributeValues: expect.objectContaining({
           ":uploaded": "UPLOADED",
