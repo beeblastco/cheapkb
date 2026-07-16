@@ -124,10 +124,7 @@ export default $config({
         GSI1: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
         GSI2: { hashKey: "gsi2pk", rangeKey: "gsi2sk" },
       },
-      ttl: {
-        attributeName: "ttl",
-        enabled: true,
-      },
+      ttl: "ttl",
       transform: {
         table: (a) => {
           a.name = name("meta");

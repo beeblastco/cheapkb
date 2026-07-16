@@ -47,10 +47,12 @@ const MENU_CONTENT = {
 export function Header({
   identity,
   usage,
+  onUsageChange,
   onSignOut,
 }: {
   identity?: ShooIdentity | null;
   usage?: UsageSummary | null;
+  onUsageChange?: () => void;
   onSignOut?: () => void;
 }) {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
@@ -70,7 +72,8 @@ export function Header({
         setPlans(plansData);
         setAccount(accountData);
       } catch {
-        // ignore
+        setPlans([]);
+        setAccount(null);
       }
     }
     const token = identity?.token;
@@ -211,6 +214,7 @@ export function Header({
                               plan.planId,
                             );
                             setAccount(updated);
+                            onUsageChange?.();
                           } finally {
                             setUpdating(false);
                           }

@@ -12,10 +12,7 @@ export function formatBytes(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.max(
     0,
-    Math.min(
-      Math.floor(Math.log(bytes) / Math.log(k)),
-      sizes.length - 1,
-    ),
+    Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1),
   );
   return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 }

@@ -91,10 +91,10 @@ function App() {
     usageRequest.current = requestId;
     try {
       const data = await getUsageSummary(identity.token);
-      if (requestId === usageRequest.current) {
-        setUsage(data);
-      }
+      if (requestId !== usageRequest.current) return;
+      setUsage(data);
     } catch (error) {
+      if (requestId !== usageRequest.current) return;
       notify((error as Error).message, "error");
     }
   }, [identity?.token, notify]);
@@ -300,7 +300,12 @@ function App() {
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col lg:h-dvh lg:overflow-hidden">
-        <Header identity={identity} usage={usage} onSignOut={signOut} />
+        <Header
+          identity={identity}
+          usage={usage}
+          onUsageChange={refreshUsage}
+          onSignOut={signOut}
+        />
         <main className="flex min-h-0 w-full flex-1 flex-col">
           <div className="mx-auto grid min-h-0 w-full max-w-380 flex-1 items-stretch gap-3 p-3 lg:grid-cols-12">
             <div className="min-h-0 min-w-0 lg:col-span-8 xl:col-span-9">

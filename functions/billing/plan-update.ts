@@ -19,8 +19,11 @@ export async function handler(event: any) {
     };
   }
 
-  const planId = body?.planId;
-  if (!planId || !PLANS[planId]) {
+  const planId =
+    typeof body?.planId === "string" && Object.hasOwn(PLANS, body.planId)
+      ? body.planId
+      : undefined;
+  if (!planId) {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
