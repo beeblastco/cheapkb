@@ -68,6 +68,7 @@ function App() {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
+  const usageRequest = useRef(0);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -86,9 +87,13 @@ function App() {
 
   const refreshUsage = useCallback(async () => {
     if (!identity?.token) return;
+    const requestId = usageRequest.current + 1;
+    usageRequest.current = requestId;
     try {
       const data = await getUsageSummary(identity.token);
-      setUsage(data);
+      if (requestId === usageRequest.current) {
+        setUsage(data);
+      }
     } catch (error) {
       notify((error as Error).message, "error");
     }
@@ -137,9 +142,13 @@ function App() {
   useEffect(() => {
     async function loadUsage() {
       if (!identity?.token) return;
+      const requestId = usageRequest.current + 1;
+      usageRequest.current = requestId;
       try {
         const data = await getUsageSummary(identity.token);
-        setUsage(data);
+        if (requestId === usageRequest.current) {
+          setUsage(data);
+        }
       } catch (error) {
         notify((error as Error).message, "error");
       }
@@ -236,7 +245,10 @@ function App() {
     );
     try {
       await request("DELETE", `/documents/${documentId}`);
-      if (refresh) await loadDocuments();
+      if (refresh) {
+        await loadDocuments();
+        refreshUsage();
+      }
       return true;
     } catch (error) {
       const message = (error as Error).message;
@@ -269,6 +281,9 @@ function App() {
     }
     await loadDocuments();
     const deleted = documentIds.length - failedDocumentIds.length;
+    if (deleted > 0) {
+      refreshUsage();
+    }
     notify(
       failedDocumentIds.length
         ? `${deleted} deleted, ${failedDocumentIds.length} failed.`

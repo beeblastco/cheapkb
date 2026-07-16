@@ -92,99 +92,110 @@ export async function handler(event: any) {
     };
   }
 
-  const filename = sanitizeFilename(body.filename);
-  const mimeType = body.mimeType;
-  const dedupeKey = createDedupeKey(userId, filename, mimeType);
-  const mappingKey = {
-    pk: `USER#${userId}`,
-    sk: `DOCUMENT#${dedupeKey}`,
-  };
-  const mapping = await dynamo.send(
-    new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
-  );
-  const now = new Date().toISOString();
-  let documentId: string;
-  let sourceKey: string;
-  let replacementToken: string | undefined;
-  let reused = false;
-
-  if (mapping?.Item) {
-    documentId = mapping.Item.documentId;
-    const result = await dynamo.send(
-      new GetCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        ConsistentRead: true,
-      }),
+  try {
+    const filename = sanitizeFilename(body.filename);
+    const mimeType = body.mimeType;
+    const dedupeKey = createDedupeKey(userId, filename, mimeType);
+    const mappingKey = {
+      pk: `USER#${userId}`,
+      sk: `DOCUMENT#${dedupeKey}`,
+    };
+    const mapping = await dynamo.send(
+      new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
     );
-    const document = result?.Item;
-    if (!document) return conflictResponse("Document mapping is invalid");
-    if (!REPLACEABLE_STATUSES.has(document.status)) {
-      return conflictResponse("Document is being processed");
+    const now = new Date().toISOString();
+    let documentId: string;
+    let sourceKey: string;
+    let replacementToken: string | undefined;
+    let reused = false;
+
+    if (mapping?.Item) {
+      documentId = mapping.Item.documentId;
+      const result = await dynamo.send(
+        new GetCommand({
+          TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          ConsistentRead: true,
+        }),
+      );
+      const document = result?.Item;
+      if (!document) return conflictResponse("Document mapping is invalid");
+      if (!REPLACEABLE_STATUSES.has(document.status)) {
+        return conflictResponse("Document is being processed");
+      }
+
+      replacementToken = randomUUID();
+      const reserved = await reserveReplacement(
+        document,
+        replacementToken,
+        filename,
+        body,
+        now,
+      );
+      if (!reserved) return conflictResponse("Document is being processed");
+      sourceKey = document.sourceKey;
+      reused = true;
+    } else {
+      documentId = `doc_${randomUUID()}`;
+      sourceKey = `raw/${documentId}/${filename}`;
+      const created = await createDocument(
+        documentId,
+        userId,
+        filename,
+        mimeType,
+        dedupeKey,
+        sourceKey,
+        body,
+        now,
+      );
+      if (!created) return conflictResponse("Document is being uploaded");
     }
 
-    replacementToken = randomUUID();
-    const reserved = await reserveReplacement(
-      document,
-      replacementToken,
-      filename,
-      body,
-      now,
-    );
-    if (!reserved) return conflictResponse("Document is being processed");
-    sourceKey = document.sourceKey;
-    reused = true;
-  } else {
-    documentId = `doc_${randomUUID()}`;
-    sourceKey = `raw/${documentId}/${filename}`;
-    const created = await createDocument(
-      documentId,
-      userId,
-      filename,
-      mimeType,
-      dedupeKey,
-      sourceKey,
-      body,
-      now,
-    );
-    if (!created) return conflictResponse("Document is being uploaded");
+    const fields: Record<string, string> = { "Content-Type": mimeType };
+    const conditions: any[] = [
+      ["content-length-range", 1, MAX_UPLOAD_BYTES],
+      ["eq", "$Content-Type", mimeType],
+    ];
+    if (replacementToken) {
+      fields["x-amz-meta-upload-token"] = replacementToken;
+      conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
+    }
+
+    const upload = await createPresignedPost(s3, {
+      Bucket: StorageBucketName,
+      Key: sourceKey,
+      Fields: fields,
+      Conditions: conditions,
+      Expires: 900,
+    });
+
+    await recordUsage(userId, TableName, "upload", 1);
+
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(remaining),
+      },
+      body: JSON.stringify({
+        documentId,
+        uploadUrl: upload.url,
+        uploadFields: upload.fields,
+        sourceKey,
+        maxUploadBytes: MAX_UPLOAD_BYTES,
+        reused,
+      }),
+    };
+  } catch (error) {
+    console.error("Upload handler error:", error);
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "An unexpected error occurred. Please try again.",
+      }),
+    };
   }
-
-  const fields: Record<string, string> = { "Content-Type": mimeType };
-  const conditions: any[] = [
-    ["content-length-range", 1, MAX_UPLOAD_BYTES],
-    ["eq", "$Content-Type", mimeType],
-  ];
-  if (replacementToken) {
-    fields["x-amz-meta-upload-token"] = replacementToken;
-    conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
-  }
-
-  const upload = await createPresignedPost(s3, {
-    Bucket: StorageBucketName,
-    Key: sourceKey,
-    Fields: fields,
-    Conditions: conditions,
-    Expires: 900,
-  });
-
-  await recordUsage(userId, TableName, "upload", 1);
-
-  return {
-    statusCode: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "X-RateLimit-Remaining": String(remaining),
-    },
-    body: JSON.stringify({
-      documentId,
-      uploadUrl: upload.url,
-      uploadFields: upload.fields,
-      sourceKey,
-      maxUploadBytes: MAX_UPLOAD_BYTES,
-      reused,
-    }),
-  };
 }
 
 async function reserveReplacement(
