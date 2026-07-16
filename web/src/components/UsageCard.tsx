@@ -1,4 +1,7 @@
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 import { AlertCircle } from "lucide-react";
@@ -11,7 +14,7 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           <CardTitle>Usage</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-4 w-full animate-pulse rounded bg-muted" />
+          <Skeleton className="h-44 w-full" />
         </CardContent>
       </Card>
     );
@@ -26,22 +29,17 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {summary.paused ? (
-          <div
-            className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive"
-            role="alert"
-          >
-            <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            <span>
-              Monthly allowance reached. Upgrade to continue using queries and
-              uploads.
-            </span>
-          </div>
+          <Alert variant="destructive">
+            <AlertCircle className="size-4" />
+            <AlertTitle>Monthly allowance reached</AlertTitle>
+            <AlertDescription>
+              Upgrade to continue using queries and uploads.
+            </AlertDescription>
+          </Alert>
         ) : null}
 
         <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">
-            {summary.planLabel} plan
-          </p>
+          <Badge variant="secondary">{summary.planLabel}</Badge>
           <p className="text-2xl font-semibold tracking-tight tabular-nums">
             {shown.toFixed(0)}%
             <span className="ml-2 text-base font-normal text-muted-foreground">

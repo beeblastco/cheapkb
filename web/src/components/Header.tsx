@@ -1,5 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +15,7 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -102,6 +105,11 @@ export function Header({
                 <span className="hidden max-w-48 truncate sm:block">
                   {profile.email || profile.name}
                 </span>
+                {usage ? (
+                  <Badge variant="secondary" className="hidden sm:flex">
+                    {usage.planLabel}
+                  </Badge>
+                ) : null}
                 <Avatar size="sm">
                   {profile.picture ? (
                     <AvatarImage alt={profile.name} src={profile.picture} />
@@ -122,13 +130,13 @@ export function Header({
                   <DropdownMenuItem onClick={() => setDialog("settings")}>
                     <Settings /> Settings
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    disabled
-                    className="flex items-center justify-between"
-                  >
-                    <span>Usage</span>
-                    <span className="text-muted-foreground">
-                      {usagePct.toFixed(0)}%
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled>
+                    <span className="flex flex-1 items-center justify-between">
+                      <span className="text-muted-foreground">Usage</span>
+                      <span className="font-medium tabular-nums">
+                        {usagePct.toFixed(0)}%
+                      </span>
                     </span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
@@ -174,61 +182,68 @@ export function Header({
           </DialogHeader>
           {dialog === "settings" ? (
             <div className="space-y-4">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">Current usage</p>
-                <p className="text-2xl font-semibold tracking-tight tabular-nums">
-                  {usagePct.toFixed(0)}%
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  {usage ? `${usage.planLabel} plan` : "—"}
-                </p>
-                {usage ? (
-                  <p className="text-sm text-muted-foreground">
-                    Storage: {formatBytes(usage.storageBytes)}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium">
+                    Current usage
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <p className="text-2xl font-semibold tracking-tight tabular-nums">
+                    {usagePct.toFixed(0)}%
+                    <span className="ml-2 text-base font-normal text-muted-foreground">
+                      used
+                    </span>
                   </p>
-                ) : null}
-              </div>
+                  <p className="text-sm text-muted-foreground">
+                    {usage ? `${usage.planLabel} plan` : "—"}
+                  </p>
+                  {usage ? (
+                    <p className="text-sm text-muted-foreground">
+                      Storage: {formatBytes(usage.storageBytes)}
+                    </p>
+                  ) : null}
+                </CardContent>
+              </Card>
               <div className="space-y-2">
                 <p className="text-sm font-medium">Plan</p>
                 <div className="grid gap-2">
                   {plans.map((plan) => (
-                    <div
-                      key={plan.planId}
-                      className="flex items-center justify-between rounded-md border p-3"
-                    >
-                      <div>
-                        <p className="font-medium">{plan.label}</p>
-                        <p className="text-sm text-muted-foreground">
-                          ${plan.allowanceUsd.toFixed(2)} allowance
-                        </p>
-                      </div>
-                      <Button
-                        disabled={updating || account?.planId === plan.planId}
-                        onClick={async () => {
-                          const token = identity?.token;
-                          if (!token) return;
-                          setUpdating(true);
-                          try {
-                            const updated = await updatePlan(
-                              token,
-                              plan.planId,
-                            );
-                            setAccount(updated);
-                            onUsageChange?.();
-                          } finally {
-                            setUpdating(false);
-                          }
-                        }}
-                        size="sm"
-                        variant={
-                          account?.planId === plan.planId
-                            ? "secondary"
-                            : "default"
-                        }
-                      >
-                        {account?.planId === plan.planId ? "Current" : "Select"}
-                      </Button>
-                    </div>
+                    <Card key={plan.planId}>
+                      <CardContent className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{plan.label}</p>
+                          <p className="text-sm text-muted-foreground">
+                            ${plan.allowanceUsd.toFixed(2)} allowance
+                          </p>
+                        </div>
+                        {account?.planId === plan.planId ? (
+                          <Badge variant="secondary">Current</Badge>
+                        ) : (
+                          <Button
+                            disabled={updating}
+                            onClick={async () => {
+                              const token = identity?.token;
+                              if (!token) return;
+                              setUpdating(true);
+                              try {
+                                const updated = await updatePlan(
+                                  token,
+                                  plan.planId,
+                                );
+                                setAccount(updated);
+                                onUsageChange?.();
+                              } finally {
+                                setUpdating(false);
+                              }
+                            }}
+                            size="sm"
+                          >
+                            Select
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
                   ))}
                 </div>
               </div>
