@@ -8,7 +8,7 @@ import {
   PutCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { centsToNanoUsd, DEFAULT_PLAN } from "./pricing";
+import { centsToNanoUsd, DEFAULT_PLAN, PLANS, type Plan } from "./pricing";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -67,6 +67,40 @@ export async function getOrCreateAccount(
     }
     throw error;
   }
+}
+
+export function planFromId(planId: string): Plan {
+  return PLANS[planId] ?? DEFAULT_PLAN;
+}
+
+export async function updatePlan(
+  userId: string,
+  tableName: string,
+  planId: string,
+): Promise<Account> {
+  const plan = planFromId(planId);
+  const pk = `ACCOUNT#${userId}`;
+  const sk = "PROFILE";
+  const now = new Date().toISOString();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk, sk },
+      UpdateExpression:
+        "SET planId = :planId, priceMonthlyCents = :price, monthlyAllowanceCents = :allowance, updatedAt = :now",
+      ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeValues: {
+        ":planId": plan.planId,
+        ":price": plan.priceMonthlyCents,
+        ":allowance": plan.monthlyAllowanceCents,
+        ":now": now,
+      },
+    }),
+  );
+  const result = await dynamo.send(
+    new GetCommand({ TableName: tableName, Key: { pk, sk } }),
+  );
+  return result.Item as Account;
 }
 
 export async function getAccount(

@@ -101,3 +101,20 @@ export interface UsageSummary {
   resetAt: string;
   storageBytes: number;
 }
+
+export interface Plan {
+  planId: string;
+  label: string;
+  priceMonthlyUsd: number;
+  allowanceUsd: number;
+}
+
+export interface Account {
+  userId: string;
+  planId: string;
+  priceMonthlyCents: number;
+  monthlyAllowanceCents: number;
+  storageBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}

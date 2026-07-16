@@ -15,10 +15,16 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { getUserProfile } from "@/lib/client";
-import type { ShooIdentity } from "@/lib/types";
+import {
+  getAccount,
+  getUserProfile,
+  listPlans,
+  updatePlan,
+} from "@/lib/client";
+import type { Account, Plan, ShooIdentity, UsageSummary } from "@/lib/types";
+import { formatBytes } from "@/lib/utils";
 import { HelpCircle, LogOut, Scale, Settings, Shield } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const MENU_CONTENT = {
   settings: {
@@ -40,13 +46,38 @@ const MENU_CONTENT = {
 
 export function Header({
   identity,
+  usage,
   onSignOut,
 }: {
   identity?: ShooIdentity | null;
+  usage?: UsageSummary | null;
   onSignOut?: () => void;
 }) {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [account, setAccount] = useState<Account | null>(null);
+  const [updating, setUpdating] = useState(false);
   const profile = identity?.token ? getUserProfile(identity) : null;
+  const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
+
+  useEffect(() => {
+    async function loadSettings(token: string) {
+      try {
+        const [plansData, accountData] = await Promise.all([
+          listPlans(token),
+          getAccount(token),
+        ]);
+        setPlans(plansData);
+        setAccount(accountData);
+      } catch {
+        // ignore
+      }
+    }
+    const token = identity?.token;
+    if (token && dialog === "settings") {
+      loadSettings(token);
+    }
+  }, [identity?.token, dialog]);
 
   return (
     <>
@@ -87,6 +118,15 @@ export function Header({
                   </DropdownMenuLabel>
                   <DropdownMenuItem onClick={() => setDialog("settings")}>
                     <Settings /> Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled
+                    className="flex items-center justify-between"
+                  >
+                    <span>Usage</span>
+                    <span className="text-muted-foreground">
+                      {usagePct.toFixed(0)}%
+                    </span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuGroup>
@@ -129,6 +169,67 @@ export function Header({
               {dialog ? MENU_CONTENT[dialog].description : ""}
             </DialogDescription>
           </DialogHeader>
+          {dialog === "settings" ? (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Current usage</p>
+                <p className="text-2xl font-semibold tracking-tight tabular-nums">
+                  {usagePct.toFixed(0)}%
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {usage ? `${usage.planLabel} plan` : "—"}
+                </p>
+                {usage ? (
+                  <p className="text-sm text-muted-foreground">
+                    Storage: {formatBytes(usage.storageBytes)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Plan</p>
+                <div className="grid gap-2">
+                  {plans.map((plan) => (
+                    <div
+                      key={plan.planId}
+                      className="flex items-center justify-between rounded-md border p-3"
+                    >
+                      <div>
+                        <p className="font-medium">{plan.label}</p>
+                        <p className="text-sm text-muted-foreground">
+                          ${plan.allowanceUsd.toFixed(2)} allowance
+                        </p>
+                      </div>
+                      <Button
+                        disabled={updating || account?.planId === plan.planId}
+                        onClick={async () => {
+                          const token = identity?.token;
+                          if (!token) return;
+                          setUpdating(true);
+                          try {
+                            const updated = await updatePlan(
+                              token,
+                              plan.planId,
+                            );
+                            setAccount(updated);
+                          } finally {
+                            setUpdating(false);
+                          }
+                        }}
+                        size="sm"
+                        variant={
+                          account?.planId === plan.planId
+                            ? "secondary"
+                            : "default"
+                        }
+                      >
+                        {account?.planId === plan.planId ? "Current" : "Select"}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </>

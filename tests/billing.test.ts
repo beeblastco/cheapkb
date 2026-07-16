@@ -51,8 +51,8 @@ describe("billing", () => {
       const account = await getOrCreateAccount("user-1", "table");
 
       expect(account.userId).toBe("user-1");
-      expect(account.planId).toBe("starter");
-      expect(account.monthlyAllowanceCents).toBe(400);
+      expect(account.planId).toBe("basic");
+      expect(account.monthlyAllowanceCents).toBe(100);
     });
 
     it("updates storage bytes", async () => {
@@ -91,9 +91,9 @@ describe("billing", () => {
             pk: "ACCOUNT#user-1",
             sk: "PROFILE",
             userId: "user-1",
-            planId: "starter",
-            priceMonthlyCents: 500,
-            monthlyAllowanceCents: 400,
+            planId: "basic",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 100,
             storageBytes: 0,
             createdAt: now.toISOString(),
             updatedAt: now.toISOString(),
@@ -103,8 +103,8 @@ describe("billing", () => {
 
       const summary = await getUsageSummary("user-1", "table");
 
-      expect(summary.planId).toBe("starter");
-      expect(summary.allowanceUsd).toBe(4);
+      expect(summary.planId).toBe("basic");
+      expect(summary.allowanceUsd).toBe(1);
       expect(summary.paused).toBe(false);
     });
 
@@ -120,9 +120,9 @@ describe("billing", () => {
             pk: "ACCOUNT#user-1",
             sk: "PROFILE",
             userId: "user-1",
-            planId: "starter",
-            priceMonthlyCents: 500,
-            monthlyAllowanceCents: 400,
+            planId: "basic",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 100,
             storageBytes: 0,
             createdAt: now.toISOString(),
             updatedAt: now.toISOString(),

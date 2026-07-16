@@ -117,11 +117,16 @@ export default $config({
         gsi1sk: "string",
         gsi2pk: "string",
         gsi2sk: "string",
+        ttl: "number",
       },
       primaryIndex: { hashKey: "pk", rangeKey: "sk" },
       globalIndexes: {
         GSI1: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
         GSI2: { hashKey: "gsi2pk", rangeKey: "gsi2sk" },
+      },
+      ttl: {
+        attributeName: "ttl",
+        enabled: true,
       },
       transform: {
         table: (a) => {
@@ -612,6 +617,61 @@ export default $config({
       },
     });
 
+    const billingPlansFn = new sst.aws.Function("BillingPlans", {
+      handler: "./functions/billing/plans.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Return available billing plans",
+      environment: baseEnv,
+      permissions: [],
+      transform: {
+        function: (a) => {
+          a.name = name("billing-plans");
+        },
+      },
+    });
+
+    const billingAccountFn = new sst.aws.Function("BillingAccount", {
+      handler: "./functions/billing/account-get.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Return current account profile and plan",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [table.arn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("billing-account");
+        },
+      },
+    });
+
+    const billingPlanUpdateFn = new sst.aws.Function("BillingPlanUpdate", {
+      handler: "./functions/billing/plan-update.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Update current account plan",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+          resources: [table.arn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("billing-plan-update");
+        },
+      },
+    });
+
     const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
       handler: "./functions/s3/ingest-adapter.handler",
       runtime: "nodejs22.x",
@@ -725,6 +785,9 @@ export default $config({
     api.route("PATCH /tags/{name}", adminTagsFn.arn);
     api.route("DELETE /tags/{name}", adminTagsFn.arn);
     api.route("GET /account/usage", billingFn.arn);
+    api.route("GET /account/plans", billingPlansFn.arn);
+    api.route("GET /account", billingAccountFn.arn);
+    api.route("PATCH /account/plan", billingPlanUpdateFn.arn);
 
     return {
       apiEndpoint: api.url,

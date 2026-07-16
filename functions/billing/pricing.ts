@@ -24,13 +24,31 @@ export const PRICING = {
   storagePerGbMonth: 23_000_000,
 } as const;
 
-// Default plan: pay $5/month, get $4 of usable credits.
-export const DEFAULT_PLAN = {
-  planId: "starter",
-  label: "Starter",
-  priceMonthlyCents: 500,
-  monthlyAllowanceCents: 400,
+export interface Plan {
+  planId: string;
+  label: string;
+  priceMonthlyCents: number;
+  monthlyAllowanceCents: number;
+}
+
+// Basic is free with a small monthly subsidy.
+// Pro is paid and includes a larger usable allowance.
+export const PLANS: Record<string, Plan> = {
+  basic: {
+    planId: "basic",
+    label: "Basic",
+    priceMonthlyCents: 0,
+    monthlyAllowanceCents: 100,
+  },
+  pro: {
+    planId: "pro",
+    label: "Pro",
+    priceMonthlyCents: 500,
+    monthlyAllowanceCents: 400,
+  },
 } as const;
+
+export const DEFAULT_PLAN = PLANS.basic;
 
 export function centsToNanoUsd(cents: number): number {
   return cents * NANO_PER_CENT;

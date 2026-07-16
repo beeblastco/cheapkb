@@ -2,7 +2,9 @@ import type { Badge } from "@/components/ui/badge";
 import type React from "react";
 import {
   DEFAULT_TAG_COLOR,
+  type Account,
   type Document,
+  type Plan,
   type QueryResult,
   type ResultGroup,
   type ShooIdentity,
@@ -253,6 +255,24 @@ export async function deleteTag(token: string, name: string): Promise<void> {
 export async function getUsageSummary(token: string): Promise<UsageSummary> {
   const data = await apiCall(token, "GET", "/account/usage");
   return data as unknown as UsageSummary;
+}
+
+export async function listPlans(token: string): Promise<Plan[]> {
+  const data = await apiCall(token, "GET", "/account/plans");
+  return Array.isArray(data.plans) ? (data.plans as Plan[]) : [];
+}
+
+export async function getAccount(token: string): Promise<Account> {
+  const data = await apiCall(token, "GET", "/account");
+  return data as unknown as Account;
+}
+
+export async function updatePlan(
+  token: string,
+  planId: string,
+): Promise<Account> {
+  const data = await apiCall(token, "PATCH", "/account/plan", { planId });
+  return data as unknown as Account;
 }
 
 export async function updateDocumentTags(

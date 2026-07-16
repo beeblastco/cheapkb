@@ -30,6 +30,7 @@ export interface UsageDay {
   embedOps: number;
   costNano: number;
   updatedAt: string;
+  ttl: number;
 }
 
 export interface UsageSummary {
@@ -79,13 +80,14 @@ export async function recordUsage(
   const pk = `ACCOUNT#${userId}`;
   const sk = `USAGE#${day}`;
   const field = categoryField(category);
+  const ttl = Math.floor(now.getTime() / 1000) + 90 * 24 * 60 * 60;
 
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName: tableName,
         Key: { pk, sk },
-        UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, userId = :userId, #day = :day, entityType = :entity, updatedAt = :t`,
+        UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, userId = :userId, #day = :day, entityType = :entity, updatedAt = :t, ttl = :ttl`,
         ExpressionAttributeNames: { "#day": "day" },
         ExpressionAttributeValues: {
           ":u": units,
@@ -95,6 +97,7 @@ export async function recordUsage(
           ":day": day,
           ":entity": "UsageDay",
           ":t": now.toISOString(),
+          ":ttl": ttl,
         },
       }),
     );
