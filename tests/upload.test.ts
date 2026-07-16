@@ -15,6 +15,10 @@ vi.mock("../functions/utils", () => ({
   extractUserId: vi.fn().mockResolvedValue({ userId: "user-a" }),
   checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 49 }),
 }));
+vi.mock("../functions/billing/usage", () => ({
+  checkUsageLimit: vi.fn().mockResolvedValue({ allowed: true }),
+  recordUsage: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@aws-sdk/s3-presigned-post", () => ({
   createPresignedPost: vi.fn().mockResolvedValue({
     url: "https://upload.example.com",

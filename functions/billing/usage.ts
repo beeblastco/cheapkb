@@ -128,10 +128,10 @@ export async function sumUsageNano(
         ExclusiveStartKey: lastKey,
       }),
     );
-    for (const item of result.Items ?? []) {
+    for (const item of result?.Items ?? []) {
       total += (item.costNano as number) ?? 0;
     }
-    lastKey = result.LastEvaluatedKey;
+    lastKey = result?.LastEvaluatedKey;
   } while (lastKey);
   return total;
 }
