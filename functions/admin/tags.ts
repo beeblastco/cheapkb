@@ -96,8 +96,8 @@ async function createTag(userId: string, event: any) {
   let body: any;
   try {
     body = JSON.parse(event.body ?? "{}");
-  } catch {
-    return json(400, { error: "Invalid JSON body" });
+  } catch (err) {
+    return json(400, { error: `Invalid JSON: ${(err as Error).message}` });
   }
 
   const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -190,8 +190,8 @@ async function updateTag(userId: string, event: any) {
   let body: any;
   try {
     body = JSON.parse(event.body ?? "{}");
-  } catch {
-    return json(400, { error: "Invalid JSON body" });
+  } catch (err) {
+    return json(400, { error: `Invalid JSON: ${(err as Error).message}` });
   }
 
   const color = parseColor(body.color);
@@ -233,8 +233,7 @@ function decodeTagName(event: any): string | ReturnType<typeof json> {
   try {
     decoded = raw ? decodeURIComponent(raw) : "";
   } catch {
-    // Malformed percent-encoding is a client error, not a 500.
-    return json(400, { error: "Invalid tag name" });
+    return json(400, { error: "Tag name contains invalid URL encoding" });
   }
   const name = decoded.trim();
   if (!name) return json(400, { error: "Tag name is required" });

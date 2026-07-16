@@ -1,0 +1,741 @@
+openapi: 3.0.3
+info:
+  title: cheapkb API
+  version: 1.0.0
+  description: |
+    RAG document ingestion and vector search API.
+    All requests and responses use JSON. Auth via Bearer token (Shoo JWKS).
+servers:
+  - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
+    description: Production
+security:
+  - bearerAuth: []
+
+paths:
+  /upload:
+    post:
+      operationId: uploadDocument
+      summary: Get a presigned POST form to upload a file
+      tags: [documents]
+      responses:
+        "200":
+          description: Presigned upload details
+          headers:
+            X-RateLimit-Remaining:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Document is being processed, is being uploaded, or mapping is invalid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadRequest" }
+
+  /ingest:
+    post:
+      operationId: ingestDocument
+      summary: Manually trigger the ingest pipeline
+      tags: [documents]
+      responses:
+        "200":
+          description: Pipeline triggered or already running
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/IngestResponse" }
+                  - {
+                      $ref: "#/components/schemas/IngestAlreadyStartedResponse",
+                    }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestRequest" }
+
+  /query:
+    post:
+      operationId: queryVectors
+      summary: Vector similarity search with metadata filters
+      tags: [search]
+      responses:
+        "200":
+          description: Search results
+          headers:
+            X-RateLimit-Remaining:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QueryRequest" }
+
+  /documents:
+    get:
+      operationId: listDocuments
+      summary: List all documents for the authenticated user
+      tags: [documents]
+      responses:
+        "200":
+          description: Document list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentListResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /documents/{id}:
+    get:
+      operationId: getDocument
+      summary: Get a single document with chunk details
+      tags: [documents]
+      parameters:
+        - { $ref: "#/components/parameters/DocumentId" }
+      responses:
+        "200":
+          description: Document with chunks
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentDetailResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateDocument
+      summary: Update document metadata (tags), propagate to chunks and vectors
+      tags: [documents]
+      parameters:
+        - { $ref: "#/components/parameters/DocumentId" }
+      responses:
+        "200":
+          description: Updated document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentUpdateResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Cannot edit while document is processing or concurrent edit
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentUpdateRequest" }
+    delete:
+      operationId: deleteDocument
+      summary: Delete document and all derived data
+      tags: [documents]
+      parameters:
+        - { $ref: "#/components/parameters/DocumentId" }
+      responses:
+        "200":
+          description: Document deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: Partial cleanup failure
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PartialDeleteResponse" }
+
+  /documents/{id}/reindex:
+    post:
+      operationId: reindexDocument
+      summary: Restart a failed document from its failed step
+      tags: [documents]
+      parameters:
+        - { $ref: "#/components/parameters/DocumentId" }
+      responses:
+        "200":
+          description: Reindex queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReindexResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tags:
+    get:
+      operationId: listTags
+      summary: List all tags for the authenticated user
+      tags: [tags]
+      responses:
+        "200":
+          description: Tag list sorted by name
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagListResponse" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createTag
+      summary: Create a new tag
+      tags: [tags]
+      responses:
+        "200":
+          description: Tag created or already exists (idempotent)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Tag limit reached or tag was concurrently deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagCreateRequest" }
+
+  /tags/{name}:
+    patch:
+      operationId: updateTagColor
+      summary: Recolor a tag
+      tags: [tags]
+      parameters:
+        - { $ref: "#/components/parameters/TagName" }
+      responses:
+        "200":
+          description: Tag updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagUpdateRequest" }
+    delete:
+      operationId: deleteTag
+      summary: Remove a tag from the user's vocabulary
+      tags: [tags]
+      parameters:
+        - { $ref: "#/components/parameters/TagName" }
+      responses:
+        "200":
+          description: Tag deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagDeleteResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Document identifier (doc_...)
+    TagName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string }
+      description: Tag name (URL-encoded)
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or invalid authorization token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found or not owned by caller
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Remaining:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalServerError:
+      description: Server error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    UploadRequest:
+      type: object
+      required: [filename, mimeType]
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+        mimeType:
+          type: string
+          enum: [application/pdf, text/markdown, text/plain]
+        title:
+          type: string
+          maxLength: 200
+        tags:
+          type: array
+          items: { type: string, maxLength: 100 }
+          maxItems: 20
+        authors:
+          type: array
+          items: { type: string, maxLength: 100 }
+          maxItems: 20
+        year:
+          type: integer
+          minimum: 1000
+          maximum: 9999
+
+    UploadResponse:
+      type: object
+      required:
+        [documentId, uploadUrl, uploadFields, maxUploadBytes, sourceKey, reused]
+      properties:
+        documentId:
+          type: string
+        uploadUrl:
+          type: string
+          format: uri
+        uploadFields:
+          type: object
+          additionalProperties: { type: string }
+        maxUploadBytes:
+          type: integer
+        sourceKey:
+          type: string
+        reused:
+          type: boolean
+
+    IngestRequest:
+      type: object
+      required: [documentId]
+      properties:
+        documentId:
+          type: string
+
+    IngestResponse:
+      type: object
+      required: [documentId, status]
+      properties:
+        documentId:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED]
+
+    IngestAlreadyStartedResponse:
+      type: object
+      required: [documentId, status, alreadyStarted]
+      properties:
+        documentId:
+          type: string
+        status:
+          type: string
+        alreadyStarted:
+          type: boolean
+          enum: [true]
+
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 4000
+        topK:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        filters:
+          type: object
+          properties:
+            documentId:
+              $ref: "#/components/schemas/FilterValue"
+            title:
+              $ref: "#/components/schemas/FilterValue"
+            tags:
+              $ref: "#/components/schemas/FilterValue"
+            authors:
+              $ref: "#/components/schemas/FilterValue"
+            year:
+              $ref: "#/components/schemas/FilterValue"
+
+    FilterValue:
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: object
+          properties:
+            $eq: {}
+            $gte: { type: number }
+            $lte: { type: number }
+            $in:
+              type: array
+              items: {}
+              maxItems: 100
+
+    QueryResponse:
+      type: object
+      required: [query, topK, resultCount, results]
+      properties:
+        query:
+          type: string
+        topK:
+          type: integer
+        resultCount:
+          type: integer
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/QueryResult" }
+
+    QueryResult:
+      type: object
+      required:
+        [documentId, chunkId, score, title, pageStart, pageEnd, text, source]
+      properties:
+        documentId:
+          type: string
+        chunkId:
+          type: string
+        score:
+          type: number
+          format: float
+          description: "Similarity score 0..1 (1 = perfect match)"
+        title:
+          type: string
+        pageStart:
+          type: integer
+        pageEnd:
+          type: integer
+        text:
+          type: string
+        source:
+          type: object
+          required: [bucket, key]
+          properties:
+            bucket:
+              type: string
+            key:
+              type: string
+
+    DocumentListResponse:
+      type: object
+      required: [count, documents]
+      properties:
+        count:
+          type: integer
+        documents:
+          type: array
+          items: { $ref: "#/components/schemas/DocumentSummary" }
+
+    DocumentSummary:
+      type: object
+      required:
+        [
+          documentId,
+          title,
+          status,
+          mimeType,
+          tags,
+          authors,
+          year,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        documentId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum:
+            [
+              UPLOADED,
+              UPDATING,
+              QUEUED,
+              PARSING,
+              PARSED,
+              CHUNKING,
+              CHUNKED,
+              EMBEDDING,
+              EMBEDDED,
+              FAILED,
+            ]
+        lastError:
+          type: string
+          nullable: true
+        retryCount:
+          type: integer
+        failedStep:
+          type: string
+          nullable: true
+        mimeType:
+          type: string
+        tags:
+          type: array
+          items: { type: string }
+          nullable: true
+        authors:
+          type: array
+          items: { type: string }
+          nullable: true
+        year:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    DocumentDetailResponse:
+      type: object
+      required: [document, chunks, chunkCount]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentSummary"
+        chunks:
+          type: array
+          items: { $ref: "#/components/schemas/ChunkSummary" }
+        chunkCount:
+          type: integer
+
+    ChunkSummary:
+      type: object
+      required: [chunkId, pageStart, pageEnd, tokenCount, status]
+      properties:
+        chunkId:
+          type: string
+        pageStart:
+          type: integer
+        pageEnd:
+          type: integer
+        tokenCount:
+          type: integer
+        status:
+          type: string
+
+    DocumentUpdateRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items: { type: string, maxLength: 100 }
+          maxItems: 20
+          nullable: true
+
+    DocumentUpdateResponse:
+      type: object
+      required: [documentId, tags, updatedVectors, updatedAt]
+      properties:
+        documentId:
+          type: string
+        tags:
+          type: array
+          items: { type: string }
+          nullable: true
+        updatedVectors:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+
+    ReindexResponse:
+      type: object
+      required: [documentId, status, restartFrom, message]
+      properties:
+        documentId:
+          type: string
+        status:
+          type: string
+          enum: [QUEUED]
+        restartFrom:
+          type: string
+          enum: [PARSING, CHUNKING, EMBEDDING]
+        message:
+          type: string
+
+    DeleteResponse:
+      type: object
+      required: [documentId, deleted]
+      properties:
+        documentId:
+          type: string
+        deleted:
+          type: boolean
+          enum: [true]
+
+    PartialDeleteResponse:
+      type: object
+      required: [documentId, deleted, warnings]
+      properties:
+        documentId:
+          type: string
+        deleted:
+          type: boolean
+          enum: [false]
+        warnings:
+          type: array
+          items: { type: string }
+
+    TagListResponse:
+      type: object
+      required: [count, tags]
+      properties:
+        count:
+          type: integer
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/Tag" }
+
+    Tag:
+      type: object
+      required: [name, color]
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+          enum: [gray, brown, orange, yellow, green, blue, purple, pink, red]
+        createdAt:
+          type: string
+          format: date-time
+
+    TagResponse:
+      type: object
+      required: [tag]
+      properties:
+        tag: { $ref: "#/components/schemas/Tag" }
+
+    TagCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 50
+          description: Tag name (trimmed before validation)
+        color:
+          type: string
+          enum: [gray, brown, orange, yellow, green, blue, purple, pink, red]
+          default: gray
+
+    TagUpdateRequest:
+      type: object
+      required: [color]
+      properties:
+        color:
+          type: string
+          enum: [gray, brown, orange, yellow, green, blue, purple, pink, red]
+
+    TagDeleteResponse:
+      type: object
+      required: [name, deleted]
+      properties:
+        name:
+          type: string
+        deleted:
+          type: boolean
+          enum: [true]

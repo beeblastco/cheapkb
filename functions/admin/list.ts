@@ -35,9 +35,9 @@ export async function handler(event: any) {
       retryCount: doc.retryCount ?? 0,
       failedStep: doc.failedStep ?? null,
       mimeType: doc.mimeType,
-      tags: doc.tags,
-      authors: doc.authors,
-      year: doc.year,
+      tags: doc.tags ?? null,
+      authors: doc.authors ?? null,
+      year: doc.year ?? null,
       createdAt: doc.createdAt,
       updatedAt: doc.updatedAt,
     }))

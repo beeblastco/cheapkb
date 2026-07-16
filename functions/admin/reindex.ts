@@ -51,11 +51,9 @@ export async function handler(event: any) {
   const doc = result.Item;
   if (doc.userId !== userId) {
     return {
-      statusCode: 403,
+      statusCode: 404,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "You do not have access to this document",
-      }),
+      body: JSON.stringify({ error: "Document not found" }),
     };
   }
   const now = new Date().toISOString();
@@ -126,25 +124,52 @@ export async function handler(event: any) {
   if (targetStep === "EMBEDDING") {
     for (let i = 0; i < messageBody.chunkKeys.length; i += 10) {
       const chunkKeys = messageBody.chunkKeys.slice(i, i + 10);
-      const response = await sqs.send(
-        new SendMessageBatchCommand({
-          QueueUrl: targetQueue,
-          Entries: chunkKeys.map((s3ChunkKey: string, index: number) => ({
-            Id: String(index),
-            MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
-          })),
-        }),
-      );
-      if (response.Failed?.length)
-        throw new Error("Failed to queue some chunks");
+      try {
+        const response = await sqs.send(
+          new SendMessageBatchCommand({
+            QueueUrl: targetQueue,
+            Entries: chunkKeys.map((s3ChunkKey: string, index: number) => ({
+              Id: String(index),
+              MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+            })),
+          }),
+        );
+        if (response.Failed?.length) {
+          return {
+            statusCode: 500,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              error: "Failed to queue some chunks for re-embedding",
+            }),
+          };
+        }
+      } catch {
+        return {
+          statusCode: 500,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "Failed to queue chunks for re-embedding",
+          }),
+        };
+      }
     }
   } else {
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: targetQueue,
-        MessageBody: JSON.stringify(messageBody),
-      }),
-    );
+    try {
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: targetQueue,
+          MessageBody: JSON.stringify(messageBody),
+        }),
+      );
+    } catch {
+      return {
+        statusCode: 500,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: `Failed to queue document for ${targetStep}`,
+        }),
+      };
+    }
   }
 
   return {
