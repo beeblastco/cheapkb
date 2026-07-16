@@ -67,7 +67,7 @@ export async function handler(event: any) {
       }),
     );
     sourceSize = head.ContentLength ?? 0;
-  } catch { }
+  } catch {}
   const errors: string[] = [];
   let chunkItems: any[] = [];
 

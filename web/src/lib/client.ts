@@ -87,9 +87,9 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
     const email = String(claims.email || "");
     const name = String(
       claims.name ||
-      [claims.given_name, claims.family_name].filter(Boolean).join(" ") ||
-      email ||
-      fallback,
+        [claims.given_name, claims.family_name].filter(Boolean).join(" ") ||
+        email ||
+        fallback,
     );
     return {
       email,
@@ -466,7 +466,7 @@ export async function uploadDocument(
     if (!metadata.reused) {
       try {
         await apiCall(token, "DELETE", `/documents/${metadata.documentId}`);
-      } catch { }
+      } catch {}
     }
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
     throw error;

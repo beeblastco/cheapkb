@@ -39,29 +39,29 @@ export function DocumentDialog({
     : detailedDocument?.authors;
   const fields: Array<[string, React.ReactNode]> = detailedDocument
     ? (
-      [
-        ["ID", detailedDocument.documentId],
-        ["MIME type", detailedDocument.mimeType],
-        ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
-        ["Uploaded", formatDate(detailedDocument.createdAt)],
-        ["Modified", formatDate(detailedDocument.updatedAt)],
         [
-          "Tags",
-          // A span, not a div: FieldDescription renders a <p>.
-          tags.length ? (
-            <span className="flex flex-wrap gap-1.5">
-              {tags.map((name) => (
-                <TagBadge color={colorOf(name)} key={name} name={name} />
-              ))}
-            </span>
-          ) : undefined,
-        ],
-        ["Authors", authors],
-        ["Last error", detailedDocument.lastError],
-      ] as Array<[string, React.ReactNode]>
-    ).filter(
-      ([, value]) => value !== undefined && value !== null && value !== "",
-    )
+          ["ID", detailedDocument.documentId],
+          ["MIME type", detailedDocument.mimeType],
+          ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
+          ["Uploaded", formatDate(detailedDocument.createdAt)],
+          ["Modified", formatDate(detailedDocument.updatedAt)],
+          [
+            "Tags",
+            // A span, not a div: FieldDescription renders a <p>.
+            tags.length ? (
+              <span className="flex flex-wrap gap-1.5">
+                {tags.map((name) => (
+                  <TagBadge color={colorOf(name)} key={name} name={name} />
+                ))}
+              </span>
+            ) : undefined,
+          ],
+          ["Authors", authors],
+          ["Last error", detailedDocument.lastError],
+        ] as Array<[string, React.ReactNode]>
+      ).filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      )
     : [];
 
   return (

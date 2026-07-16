@@ -15,7 +15,10 @@ const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES ?? "10485760", 10);
+const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "10485760",
+  10,
+);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
@@ -28,7 +31,13 @@ export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(userId, TableName, "UPLOAD", 50, 50);
+  const { allowed, remaining } = await checkRateLimit(
+    userId,
+    TableName,
+    "UPLOAD",
+    50,
+    50,
+  );
   if (!allowed) {
     return {
       statusCode: 429,
@@ -116,7 +125,13 @@ export async function handler(event: any) {
       }
 
       replacementToken = randomUUID();
-      const reserved = await reserveReplacement(document, replacementToken, filename, body, now);
+      const reserved = await reserveReplacement(
+        document,
+        replacementToken,
+        filename,
+        body,
+        now,
+      );
       if (!reserved) return conflictResponse("Document is being processed");
       sourceKey = document.sourceKey;
       reused = true;
