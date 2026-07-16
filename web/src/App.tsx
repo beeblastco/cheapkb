@@ -74,7 +74,7 @@ function App() {
     documentsRef.current = documents;
   }, [documents]);
 
-  const notify = useCallback((_message: string, _type?: string) => {}, []);
+  const notify = useCallback((_message: string, _type?: string) => { }, []);
 
   // Lifted above DocumentsCard so the detail panel can color tags too.
   const tagVocabulary = useTags(identity?.token ?? "");
@@ -239,11 +239,11 @@ function App() {
       current.map((document) =>
         document.documentId === documentId
           ? {
-              ...document,
-              lastError: null,
-              status: "DELETING",
-              updatedAt: now,
-            }
+            ...document,
+            lastError: null,
+            status: "DELETING",
+            updatedAt: now,
+          }
           : document,
       ),
     );

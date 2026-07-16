@@ -89,8 +89,8 @@ export function useTags(token: string): TagVocabulary {
       patch((current) =>
         current.some((tag) => byName(tag.name) === byName(saved.name))
           ? current.map((tag) =>
-              byName(tag.name) === byName(saved.name) ? saved : tag,
-            )
+            byName(tag.name) === byName(saved.name) ? saved : tag,
+          )
           : [...current, saved],
       ),
     onError: fail,

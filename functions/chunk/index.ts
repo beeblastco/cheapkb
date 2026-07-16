@@ -11,8 +11,8 @@ import {
   PutCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { decode, encode } from "gpt-tokenizer";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import { decode, encode } from "gpt-tokenizer";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
