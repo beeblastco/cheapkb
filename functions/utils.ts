@@ -26,8 +26,6 @@ const jwks = createRemoteJWKSet(
   new URL("/.well-known/jwks.json", SHOO_BASE_URL),
 );
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
 export async function verifyShooToken(idToken: string, appOrigin: string) {
   const audiences = [
     `origin:${new URL(appOrigin).origin}`,
@@ -74,81 +72,6 @@ export async function extractUserId(
       },
     };
   }
-}
-
-export async function checkRateLimit(
-  userId: string,
-  tableName: string,
-  operation: string,
-  maxTokens: number,
-  refillPerHour: number,
-): Promise<{ allowed: boolean; remaining: number }> {
-  const now = new Date();
-  const maxAttempts = 3;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const result = await dynamo.send(
-      new GetCommand({
-        TableName: tableName,
-        Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
-      }),
-    );
-    const item = result.Item as any;
-
-    if (!item) {
-      try {
-        await dynamo.send(
-          new PutCommand({
-            TableName: tableName,
-            Item: {
-              pk: `RATE#${userId}`,
-              sk: `LIMIT#${operation}`,
-              entityType: "RateLimit",
-              tokens: maxTokens - 1,
-              lastRefill: now.toISOString(),
-            },
-            ConditionExpression: "attribute_not_exists(pk)",
-          }),
-        );
-        return { allowed: true, remaining: maxTokens - 1 };
-      } catch (err: any) {
-        if (err.name === "ConditionalCheckFailedException") continue;
-        throw err;
-      }
-    }
-
-    const lastRefill = new Date(item.lastRefill);
-    const hoursPassed =
-      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
-    let tokens = Math.min(maxTokens, item.tokens + hoursPassed * refillPerHour);
-
-    if (tokens < 1) {
-      return { allowed: false, remaining: 0 };
-    }
-
-    tokens -= 1;
-    try {
-      await dynamo.send(
-        new UpdateCommand({
-          TableName: tableName,
-          Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
-          UpdateExpression: "SET tokens = :t, lastRefill = :lr",
-          ConditionExpression: "lastRefill = :oldLr",
-          ExpressionAttributeValues: {
-            ":t": tokens,
-            ":lr": now.toISOString(),
-            ":oldLr": item.lastRefill,
-          },
-        }),
-      );
-      return { allowed: true, remaining: Math.floor(tokens) };
-    } catch (err: any) {
-      if (err.name === "ConditionalCheckFailedException") continue;
-      throw err;
-    }
-  }
-
-  return { allowed: false, remaining: 0 };
 }
 
 // GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
@@ -367,4 +290,82 @@ export async function deleteS3Prefix(
   } while (keyMarker);
 
   return count;
+}
+
+export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+export async function checkRateLimit(
+  userId: string,
+  tableName: string,
+  operation: string,
+  maxTokens: number,
+  refillPerHour: number,
+  documentClient: DynamoDBDocumentClient = dynamo,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = new Date();
+  const maxAttempts = 3;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const result = await documentClient.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
+      }),
+    );
+    const item = result.Item as any;
+
+    if (!item) {
+      try {
+        await documentClient.send(
+          new PutCommand({
+            TableName: tableName,
+            Item: {
+              pk: `RATE#${userId}`,
+              sk: `LIMIT#${operation}`,
+              entityType: "RateLimit",
+              tokens: maxTokens - 1,
+              lastRefill: now.toISOString(),
+            },
+            ConditionExpression: "attribute_not_exists(pk)",
+          }),
+        );
+        return { allowed: true, remaining: maxTokens - 1 };
+      } catch (err: any) {
+        if (err.name === "ConditionalCheckFailedException") continue;
+        throw err;
+      }
+    }
+
+    const lastRefill = new Date(item.lastRefill);
+    const hoursPassed =
+      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
+    let tokens = Math.min(maxTokens, item.tokens + hoursPassed * refillPerHour);
+
+    if (tokens < 1) {
+      return { allowed: false, remaining: 0 };
+    }
+
+    tokens -= 1;
+    try {
+      await documentClient.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
+          UpdateExpression: "SET tokens = :t, lastRefill = :lr",
+          ConditionExpression: "lastRefill = :oldLr",
+          ExpressionAttributeValues: {
+            ":t": tokens,
+            ":lr": now.toISOString(),
+            ":oldLr": item.lastRefill,
+          },
+        }),
+      );
+      return { allowed: true, remaining: Math.floor(tokens) };
+    } catch (err: any) {
+      if (err.name === "ConditionalCheckFailedException") continue;
+      throw err;
+    }
+  }
+
+  return { allowed: false, remaining: 0 };
 }

@@ -18,9 +18,11 @@ import {
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../functions/utils", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../functions/utils")>()),
-  extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "owner" },
+  }),
 }));
 
 import { handler as update } from "../functions/admin/update";
@@ -109,7 +111,10 @@ describe("PATCH /documents/{id}", () => {
     dynamoMock.reset();
     s3Mock.reset();
     vectorsMock.reset();
-    dynamoMock.on(GetCommand).resolves(embeddedDocument());
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return embeddedDocument();
+    });
     dynamoMock.on(UpdateCommand).resolves({});
     dynamoMock.on(QueryCommand).resolves(chunkRecords());
     s3Mock.on(GetObjectCommand).resolves(chunkObject());
@@ -226,7 +231,10 @@ describe("PATCH /documents/{id}", () => {
 
   describe("access control and status guards", () => {
     it("rejects a document owned by someone else", async () => {
-      dynamoMock.on(GetCommand).resolves(embeddedDocument({ userId: "other" }));
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({ userId: "other" });
+      });
 
       const response = await update(patchEvent({ tags: ["research"] }));
 
@@ -235,7 +243,10 @@ describe("PATCH /documents/{id}", () => {
     });
 
     it("returns 404 for a missing document", async () => {
-      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return {};
+      });
 
       const response = await update(patchEvent({ tags: ["research"] }));
 
@@ -243,9 +254,10 @@ describe("PATCH /documents/{id}", () => {
     });
 
     it("refuses to edit a document that is mid-pipeline", async () => {
-      dynamoMock
-        .on(GetCommand)
-        .resolves(embeddedDocument({ status: "EMBEDDING" }));
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({ status: "EMBEDDING" });
+      });
 
       const response = await update(patchEvent({ tags: ["research"] }));
 
@@ -257,9 +269,10 @@ describe("PATCH /documents/{id}", () => {
     });
 
     it("conditions the write on the revision it read, not just the status", async () => {
-      dynamoMock
-        .on(GetCommand)
-        .resolves(embeddedDocument({ updatedAt: "2026-01-01T00:00:00.000Z" }));
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({ updatedAt: "2026-01-01T00:00:00.000Z" });
+      });
 
       await update(patchEvent({ tags: ["research"] }));
 
@@ -307,9 +320,10 @@ describe("PATCH /documents/{id}", () => {
     });
 
     it("restores the original status rather than assuming EMBEDDED", async () => {
-      dynamoMock
-        .on(GetCommand)
-        .resolves(embeddedDocument({ status: "FAILED" }));
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({ status: "FAILED" });
+      });
 
       await update(patchEvent({ tags: ["research"] }));
 
@@ -320,13 +334,14 @@ describe("PATCH /documents/{id}", () => {
     it("rejects a second edit that reads while the first is propagating", async () => {
       // The loser's read sees UPDATING, which is not editable, so it never
       // reaches the store rewrites the winner is midway through.
-      dynamoMock.on(GetCommand).resolves(
-        embeddedDocument({
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({
           status: "UPDATING",
           previousStatus: "EMBEDDED",
           updatedAt: new Date().toISOString(),
-        }),
-      );
+        });
+      });
 
       const response = await update(patchEvent({ tags: ["research"] }));
 
@@ -337,14 +352,15 @@ describe("PATCH /documents/{id}", () => {
     });
 
     it("takes over a lease abandoned by a dead handler", async () => {
-      dynamoMock.on(GetCommand).resolves(
-        embeddedDocument({
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({
           status: "UPDATING",
           previousStatus: "EMBEDDED",
           // Older than the TTL, so no live handler can still hold it.
           updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-        }),
-      );
+        });
+      });
 
       const response = await update(patchEvent({ tags: ["research"] }));
 

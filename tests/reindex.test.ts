@@ -17,8 +17,11 @@ vi.mock("sst", () => ({
     Embed: { url: "embed-queue" },
   },
 }));
-vi.mock("../functions/utils", () => ({
-  extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "owner" },
+  }),
 }));
 
 import { handler } from "../functions/admin/reindex";
@@ -36,8 +39,11 @@ describe("reindex migration", () => {
   });
 
   it("re-embeds completed documents so tenant metadata can be migrated", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: { documentId: "doc-1", userId: "owner", status: "EMBEDDED" },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: { documentId: "doc-1", userId: "owner", status: "EMBEDDED" },
+      };
     });
     dynamoMock.on(UpdateCommand).resolves({});
     s3Mock.on(ListObjectsV2Command).resolves({

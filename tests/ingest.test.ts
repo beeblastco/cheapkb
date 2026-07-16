@@ -11,8 +11,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Ingest: { url: "queue" } },
 }));
-vi.mock("../functions/utils", () => ({
-  extractUserId: vi.fn().mockResolvedValue({ userId: "user-a" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "user-a" },
+  }),
 }));
 
 import { handler } from "../functions/admin/ingest";
@@ -28,13 +31,16 @@ describe("manual ingest authorization", () => {
   });
 
   it("does not update or enqueue another user's document", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "user-b",
-        sourceKey: "raw/doc-1/file.pdf",
-        mimeType: "application/pdf",
-      },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "user-b",
+          sourceKey: "raw/doc-1/file.pdf",
+          mimeType: "application/pdf",
+        },
+      };
     });
 
     const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
@@ -45,14 +51,17 @@ describe("manual ingest authorization", () => {
   });
 
   it("queues an uploaded document exactly once", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "user-a",
-        sourceKey: "raw/doc-1/file.pdf",
-        mimeType: "application/pdf",
-        status: "UPLOADED",
-      },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "user-a",
+          sourceKey: "raw/doc-1/file.pdf",
+          mimeType: "application/pdf",
+          status: "UPLOADED",
+        },
+      };
     });
     dynamoMock.on(UpdateCommand).resolves({});
     sqsMock.on(SendMessageCommand).resolves({});
@@ -64,14 +73,17 @@ describe("manual ingest authorization", () => {
   });
 
   it("does not enqueue when the S3 adapter already started ingestion", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "user-a",
-        sourceKey: "raw/doc-1/file.pdf",
-        mimeType: "application/pdf",
-        status: "UPLOADED",
-      },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "user-a",
+          sourceKey: "raw/doc-1/file.pdf",
+          mimeType: "application/pdf",
+          status: "UPLOADED",
+        },
+      };
     });
     dynamoMock
       .on(UpdateCommand)
@@ -87,14 +99,17 @@ describe("manual ingest authorization", () => {
   });
 
   it("rolls back to uploaded when SQS rejects the job", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "user-a",
-        sourceKey: "raw/doc-1/file.pdf",
-        mimeType: "application/pdf",
-        status: "UPLOADED",
-      },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "user-a",
+          sourceKey: "raw/doc-1/file.pdf",
+          mimeType: "application/pdf",
+          status: "UPLOADED",
+        },
+      };
     });
     dynamoMock.on(UpdateCommand).resolves({});
     sqsMock.on(SendMessageCommand).rejects(new Error("SQS unavailable"));

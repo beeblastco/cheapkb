@@ -20,9 +20,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
-vi.mock("../functions/utils", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../functions/utils")>()),
-  extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "owner" },
+  }),
 }));
 
 import { handler } from "../functions/admin/delete";
@@ -37,13 +39,16 @@ describe("document deletion", () => {
     s3Mock.reset();
     vectorsMock.reset();
     dynamoMock.reset();
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "owner",
-        dedupeKey: "dedupe-1",
-        sourceKey: "raw/doc-1/file.pdf",
-      },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "owner",
+          dedupeKey: "dedupe-1",
+          sourceKey: "raw/doc-1/file.pdf",
+        },
+      };
     });
   });
 

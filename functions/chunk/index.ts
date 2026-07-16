@@ -93,6 +93,7 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   for (const { chunk, i } of chunks) {
     const chunkId = `chunk_${documentId}_${i}`;
     const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
+    const tokenCount = encode(chunk.text).length;
     await s3.send(
       new PutObjectCommand({
         Bucket: StorageBucketName,
@@ -102,6 +103,7 @@ async function chunkDocument(documentId: string, parsedKey: string) {
           userId,
           chunkId,
           text: chunk.text,
+          tokenCount,
           title,
           tags,
           authors,
@@ -123,7 +125,7 @@ async function chunkDocument(documentId: string, parsedKey: string) {
           s3ChunkKey,
           pageStart: chunk.pageStart,
           pageEnd: chunk.pageEnd,
-          tokenCount: encode(chunk.text).length,
+          tokenCount,
           status: "QUEUED",
           createdAt: now,
         },

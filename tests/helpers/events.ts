@@ -5,7 +5,7 @@ const API_EVENT: APIGatewayProxyEventV2 = {
   routeKey: "$default",
   rawPath: "/",
   rawQueryString: "",
-  headers: {},
+  headers: { authorization: "Bearer dummy" },
   requestContext: {
     accountId: "123456789012",
     apiId: "api-id",

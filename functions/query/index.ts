@@ -5,23 +5,25 @@ import {
 } from "@aws-sdk/client-s3vectors";
 import { checkRateLimit, extractUserId } from "../utils";
 import { checkUsageLimit, recordUsage } from "../billing/utils";
+import { encode } from "gpt-tokenizer";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
-const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-const TableName = process.env.TABLE_NAME!;
-const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const FILTER_KEYS = new Set(["documentId", "title", "tags", "authors", "year"]);
 const FILTER_OPERATORS = new Set(["$eq", "$gte", "$lte", "$in"]);
+
+function env(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set`);
+  return value;
+}
 
 export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
-
   const { allowed: rateAllowed, remaining } = await checkRateLimit(
     userId,
-    TableName,
+    env("TABLE_NAME"),
     "QUERY",
     100,
     100,
@@ -36,8 +38,10 @@ export async function handler(event: any) {
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
     };
   }
-
-  const { allowed: usageAllowed } = await checkUsageLimit(userId, TableName);
+  const { allowed: usageAllowed } = await checkUsageLimit(
+    userId,
+    env("TABLE_NAME"),
+  );
   if (!usageAllowed) {
     return {
       statusCode: 429,
@@ -116,11 +120,12 @@ export async function handler(event: any) {
       };
     }
     const queryVector = await embedQuery(query.trim());
+    const queryTokens = encode(query.trim()).length;
 
     const searchResp = await vectors.send(
       new QueryVectorsCommand({
-        vectorBucketName: VectorBucketName,
-        indexName: VectorIndexName,
+        vectorBucketName: env("VECTOR_BUCKET_NAME"),
+        indexName: env("VECTOR_INDEX_NAME"),
         queryVector: { float32: Array.from(queryVector) },
         topK: topK,
         filter: vectorFilter,
@@ -138,7 +143,7 @@ export async function handler(event: any) {
         try {
           const resp = await s3.send(
             new GetObjectCommand({
-              Bucket: StorageBucketName,
+              Bucket: env("STORAGE_BUCKET_NAME"),
               Key: chunkKey,
             }),
           );
@@ -161,13 +166,14 @@ export async function handler(event: any) {
         pageEnd: metadata.pageEnd,
         text: texts[i],
         source: {
-          bucket: StorageBucketName,
+          bucket: env("STORAGE_BUCKET_NAME"),
           key: `raw/${metadata.documentId}/`,
         },
       };
     });
 
-    await recordUsage(userId, TableName, "query", 1);
+    await recordUsage(userId, env("TABLE_NAME"), "query", 1);
+    await recordUsage(userId, env("TABLE_NAME"), "embed", queryTokens);
 
     return {
       statusCode: 200,

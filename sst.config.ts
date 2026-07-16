@@ -193,6 +193,8 @@ export default $config({
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
       MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "10485760",
       MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200",
+      EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
+        process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.01",
       APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
     };
 

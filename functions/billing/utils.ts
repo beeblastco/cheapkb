@@ -14,11 +14,19 @@ import type { Account, Plan, UsageCategory, UsageSummary } from "./types";
 export const NANO_PER_USD = 1_000_000_000;
 export const NANO_PER_CENT = NANO_PER_USD / 100;
 
+const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
+  const raw = process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.01";
+  const parsed = parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.01;
+})();
+
 export const PRICING = {
   queryPerRequest: 5_000,
   uploadPerRequest: 2_000,
   ingestPerDocument: 5_000,
-  embedPerChunk: 500,
+  embedPerToken: Math.round(
+    (EMBEDDING_INPUT_PRICE_PER_1M_TOKENS * NANO_PER_USD) / 1_000_000,
+  ),
   storagePerGbMonth: 23_000_000,
 } as const;
 
@@ -205,7 +213,7 @@ export async function recordUsage(
   if (category === "query") costNano = units * PRICING.queryPerRequest;
   if (category === "upload") costNano = units * PRICING.uploadPerRequest;
   if (category === "ingest") costNano = units * PRICING.ingestPerDocument;
-  if (category === "embed") costNano = units * PRICING.embedPerChunk;
+  if (category === "embed") costNano = units * PRICING.embedPerToken;
 
   const now = new Date();
   const day = dayKey(now.getTime());
@@ -312,5 +320,7 @@ function categoryField(category: UsageCategory): string {
   if (category === "query") return "queryOps";
   if (category === "upload") return "uploadOps";
   if (category === "ingest") return "ingestOps";
-  return "embedOps";
+  // embedTokens tracks input tokens (not chunk count) so cost is based on
+  // the configured embedding model price per 1M input tokens.
+  return "embedTokens";
 }

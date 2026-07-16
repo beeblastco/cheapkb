@@ -10,8 +10,11 @@ import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../functions/utils", () => ({
-  extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "owner" },
+  }),
 }));
 
 import { handler as tags } from "../functions/admin/tags";
@@ -31,6 +34,13 @@ function withMethod(
       http: { ...base.requestContext.http, method },
     },
   };
+}
+
+function isRateLimitCall(call: any) {
+  const input = call.args[0].input;
+  return (
+    input.Key?.pk?.startsWith("RATE#") || input.Item?.pk?.startsWith("RATE#")
+  );
 }
 
 describe("tag APIs", () => {
@@ -119,7 +129,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input;
+      const put = dynamoMock
+        .commandCalls(PutCommand)
+        .find((c) => !isRateLimitCall(c))!.args[0].input;
       expect(put.Item).toEqual(
         expect.objectContaining({
           pk: "USER#owner",
@@ -145,9 +157,10 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      expect(dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item).toEqual(
-        expect.objectContaining({ color: "purple" }),
-      );
+      expect(
+        dynamoMock.commandCalls(PutCommand).find((c) => !isRateLimitCall(c))!
+          .args[0].input.Item,
+      ).toEqual(expect.objectContaining({ color: "purple" }));
       expect(JSON.parse(response.body).tag.color).toBe("purple");
     });
 
@@ -159,7 +172,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(400);
-      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+      expect(
+        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
 
     it("returns the stored canonical tag when a differently-cased duplicate is created", async () => {
@@ -184,7 +199,9 @@ describe("tag APIs", () => {
         color: "green",
         createdAt: "2026-01-01T00:00:00.000Z",
       });
-      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+      expect(
+        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
 
     it("returns the winner's record when a concurrent create wins the race", async () => {
@@ -240,7 +257,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(409);
-      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+      expect(
+        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
 
     it("rejects an empty tag name", async () => {
@@ -249,7 +268,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(400);
-      expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+      expect(
+        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
   });
 
@@ -271,7 +292,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      const update = dynamoMock
+        .commandCalls(UpdateCommand)
+        .find((c) => !isRateLimitCall(c))!.args[0].input;
       expect(update.Key).toEqual({
         pk: "USER#owner",
         sk: "TAG#machine learning",
@@ -295,7 +318,11 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(400);
-      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(
+        dynamoMock
+          .commandCalls(UpdateCommand)
+          .filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
 
     it("rejects a missing color rather than clearing it", async () => {
@@ -307,7 +334,11 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(400);
-      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      expect(
+        dynamoMock
+          .commandCalls(UpdateCommand)
+          .filter((c) => !isRateLimitCall(c)),
+      ).toHaveLength(0);
     });
 
     it("returns 404 when the tag no longer exists", async () => {

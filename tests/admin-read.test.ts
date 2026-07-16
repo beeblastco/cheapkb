@@ -6,8 +6,11 @@ import {
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../functions/utils", () => ({
-  extractUserId: vi.fn().mockResolvedValue({ userId: "owner" }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "owner" },
+  }),
 }));
 
 import { handler as getDocument } from "../functions/admin/get";

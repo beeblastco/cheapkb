@@ -11,9 +11,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
-vi.mock("../functions/utils", () => ({
-  extractUserId: vi.fn().mockResolvedValue({ userId: "user-a" }),
-  checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 49 }),
+vi.mock("jose", () => ({
+  createRemoteJWKSet: vi.fn(),
+  jwtVerify: vi.fn().mockResolvedValue({
+    payload: { pairwise_sub: "user-a" },
+  }),
 }));
 vi.mock("../functions/billing/utils", () => ({
   checkUsageLimit: vi.fn().mockResolvedValue({ allowed: true }),
@@ -46,7 +48,15 @@ describe("upload validation", () => {
 
     expect(response.statusCode).toBe(400);
     expect(createPresignedPost).not.toHaveBeenCalled();
-    expect(dynamoMock.calls()).toHaveLength(0);
+    expect(
+      dynamoMock
+        .calls()
+        .filter(
+          (c) =>
+            !c.args[0].input.Key?.pk?.startsWith("RATE#") &&
+            !c.args[0].input.Item?.pk?.startsWith("RATE#"),
+        ),
+    ).toHaveLength(0);
   });
 
   it("creates a size-constrained presigned POST", async () => {
@@ -72,6 +82,7 @@ describe("upload validation", () => {
   it("reuses a completed document with the same filename and mime type", async () => {
     dynamoMock
       .on(GetCommand)
+      .resolvesOnce({})
       .resolvesOnce({ Item: { documentId: "doc-existing" } })
       .resolvesOnce({
         Item: {
@@ -108,6 +119,7 @@ describe("upload validation", () => {
   ])("rejects a duplicate while status is %s", async (status) => {
     dynamoMock
       .on(GetCommand)
+      .resolvesOnce({})
       .resolvesOnce({ Item: { documentId: "doc-existing" } })
       .resolvesOnce({
         Item: {

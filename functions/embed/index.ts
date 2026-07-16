@@ -6,6 +6,7 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { encode } from "gpt-tokenizer";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import { recordUsage } from "../billing/utils";
 
@@ -122,10 +123,15 @@ async function processBatch(
       continue;
     }
     texts.push(chunkData.text);
+    const tokenCount =
+      typeof chunkData.tokenCount === "number" && chunkData.tokenCount > 0
+        ? chunkData.tokenCount
+        : encode(chunkData.text ?? "").length;
     metadata.push({
       documentId: chunk.documentId,
       userId,
       chunkId: chunkData.chunkId,
+      tokenCount,
       ...(chunkData.title ? { title: chunkData.title } : {}),
       ...(chunkData.tags ? { tags: chunkData.tags } : {}),
       ...(chunkData.authors ? { authors: chunkData.authors } : {}),
@@ -181,7 +187,8 @@ async function processBatch(
       docCounts[vector.metadata.documentId] =
         (docCounts[vector.metadata.documentId] ?? 0) + 1;
       const userId = vector.metadata.userId as string;
-      usageByUser[userId] = (usageByUser[userId] ?? 0) + 1;
+      const tokens = (vector.metadata.tokenCount as number) ?? 0;
+      usageByUser[userId] = (usageByUser[userId] ?? 0) + tokens;
     }
   }
   for (const [documentId, count] of Object.entries(docCounts)) {

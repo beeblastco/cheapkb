@@ -20,18 +20,42 @@ const STORAGE_ORIGIN =
   "https://cheapkb-storage-954475336309-us-east-1.s3.us-east-1.amazonaws.com";
 
 describe("frontend", () => {
+  let originalWindow: any;
+  let originalDocument: any;
+  let originalLocalStorage: any;
+  let originalSessionStorage: any;
+  let originalFormData: any;
+  let originalFetch: any;
+  let originalViteApiUrl: string | undefined;
+
   beforeEach(() => {
     const dom = new JSDOM("", { url: "https://cheapkb.test" });
-    vi.stubGlobal("window", dom.window);
-    vi.stubGlobal("document", dom.window.document);
-    vi.stubGlobal("localStorage", dom.window.localStorage);
-    vi.stubGlobal("sessionStorage", dom.window.sessionStorage);
-    vi.stubGlobal("FormData", dom.window.FormData);
-    vi.stubEnv("VITE_API_URL", API_URL);
+    originalWindow = globalThis.window;
+    originalDocument = globalThis.document;
+    originalLocalStorage = globalThis.localStorage;
+    originalSessionStorage = globalThis.sessionStorage;
+    originalFormData = globalThis.FormData;
+    originalFetch = globalThis.fetch;
+    originalViteApiUrl = process.env.VITE_API_URL;
+
+    globalThis.window = dom.window as unknown as Window &
+      typeof globalThis.window;
+    globalThis.document = dom.window.document as unknown as Document &
+      typeof globalThis.document;
+    globalThis.localStorage = dom.window.localStorage as unknown as Storage;
+    globalThis.sessionStorage = dom.window.sessionStorage as unknown as Storage;
+    globalThis.FormData = dom.window.FormData as unknown as typeof FormData;
+    process.env.VITE_API_URL = API_URL;
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+    globalThis.FormData = originalFormData;
+    globalThis.fetch = originalFetch;
+    process.env.VITE_API_URL = originalViteApiUrl;
     vi.restoreAllMocks();
   });
 
@@ -43,7 +67,7 @@ describe("frontend", () => {
           headers: { "Content-Type": "application/json" },
         }),
       );
-      vi.stubGlobal("fetch", fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
       await expect(
         apiCall("token", "POST", "/query", { q: "cheap RAG" }),
@@ -67,7 +91,7 @@ describe("frontend", () => {
           headers: { "Content-Type": "application/json" },
         }),
       );
-      vi.stubGlobal("fetch", fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
       await expect(
         updateDocumentTags("token", "doc 1", ["research"]),
@@ -125,7 +149,7 @@ describe("frontend", () => {
         )
         .mockResolvedValueOnce(new Response(null, { status: 204 }))
         .mockResolvedValueOnce(jsonResponse({ queued: true }));
-      vi.stubGlobal("fetch", fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
       const file = new window.File(["hello"], "file.txt", {
         type: "text/plain",
       });
@@ -160,7 +184,7 @@ describe("frontend", () => {
         )
         .mockResolvedValueOnce(new Response(null, { status: 500 }))
         .mockResolvedValueOnce(jsonResponse({ deleted: true }));
-      vi.stubGlobal("fetch", fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
       const file = new window.File(["hello"], "file.txt", {
         type: "text/plain",
       });
@@ -191,7 +215,7 @@ describe("frontend", () => {
           }),
         )
         .mockResolvedValueOnce(new Response(null, { status: 500 }));
-      vi.stubGlobal("fetch", fetchMock);
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
       const file = new window.File(["hello"], "file.txt", {
         type: "text/plain",
       });

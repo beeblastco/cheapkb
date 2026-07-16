@@ -1,26 +1,18 @@
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-} from "@aws-sdk/lib-dynamodb";
-import { mockClient } from "aws-sdk-client-mock";
-import { beforeEach, describe, expect, it } from "vitest";
-
-import { checkRateLimit } from "../functions/utils";
-
-const dynamoMock = mockClient(DynamoDBDocumentClient);
+import { describe, expect, it, vi } from "vitest";
 
 describe("rate limit buckets", () => {
-  beforeEach(() => dynamoMock.reset());
-
   it("uses an operation-specific key", async () => {
-    dynamoMock.on(GetCommand).resolves({});
-    dynamoMock.on(PutCommand).resolves({});
+    const { checkRateLimit } = await import("../functions/utils");
 
-    await checkRateLimit("user", "table", "QUERY", 100, 100);
+    const send = vi.fn().mockResolvedValue({});
+    const client = { send } as any;
 
-    expect(dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item?.sk).toBe(
-      "LIMIT#QUERY",
+    await checkRateLimit("user", "table", "QUERY", 100, 100, client);
+
+    const putCall = send.mock.calls.find(
+      ([command]) => (command as any).constructor?.name === "PutCommand",
     );
+    expect(putCall).toBeDefined();
+    expect((putCall![0] as any).input.Item?.sk).toBe("LIMIT#QUERY");
   });
 });

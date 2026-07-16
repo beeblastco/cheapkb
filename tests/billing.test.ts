@@ -75,6 +75,44 @@ describe("billing", () => {
       );
     });
 
+    it("records an embed usage event priced by tokens", async () => {
+      dynamoMock.on(UpdateCommand).resolves({});
+
+      await recordUsage("user-1", "table", "embed", 500);
+
+      const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(update.UpdateExpression).toContain("embedTokens");
+      expect(update.ExpressionAttributeValues[":u"]).toBe(500);
+      expect(update.ExpressionAttributeValues[":c"]).toBe(
+        500 * PRICING.embedPerToken,
+      );
+    });
+
+    it("records a query plus its embedding token usage", async () => {
+      dynamoMock.on(UpdateCommand).resolves({});
+
+      const queryTokens = 12;
+      await recordUsage("user-1", "table", "query", 1);
+      await recordUsage("user-1", "table", "embed", queryTokens);
+
+      const calls = dynamoMock.commandCalls(UpdateCommand);
+      expect(calls).toHaveLength(2);
+
+      const queryUpdate = calls[0].args[0].input;
+      expect(queryUpdate.UpdateExpression).toContain("queryOps");
+      expect(queryUpdate.ExpressionAttributeValues[":u"]).toBe(1);
+      expect(queryUpdate.ExpressionAttributeValues[":c"]).toBe(
+        PRICING.queryPerRequest,
+      );
+
+      const embedUpdate = calls[1].args[0].input;
+      expect(embedUpdate.UpdateExpression).toContain("embedTokens");
+      expect(embedUpdate.ExpressionAttributeValues[":u"]).toBe(queryTokens);
+      expect(embedUpdate.ExpressionAttributeValues[":c"]).toBe(
+        queryTokens * PRICING.embedPerToken,
+      );
+    });
+
     it("returns usage summary with default plan", async () => {
       const now = new Date();
       dynamoMock
@@ -104,7 +142,7 @@ describe("billing", () => {
       expect(summary.paused).toBe(false);
     });
 
-    it("marks summary as paused when usage exceeds allowance", async () => {
+    it("marks summary as paused when usage exceeds the monthly allowance", async () => {
       const now = new Date();
       dynamoMock
         .on(GetCommand, {
@@ -124,8 +162,9 @@ describe("billing", () => {
             updatedAt: now.toISOString(),
           },
         });
+      // Basic allowance is $1 = 1_000_000_000 nano-USD; exceed it by 1 nano.
       dynamoMock.on(QueryCommand).resolves({
-        Items: [{ costNano: 400 * 10_000_000 + 1 }],
+        Items: [{ costNano: 1_000_000_001 }],
       });
 
       const summary = await getUsageSummary("user-1", "table");
