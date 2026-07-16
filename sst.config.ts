@@ -584,6 +584,31 @@ export default $config({
       },
     });
 
+    const billingFn = new sst.aws.Function("Billing", {
+      handler: "./functions/billing/get.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Return current account usage and billing summary",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+            "dynamodb:Query",
+          ],
+          resources: [table.arn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("billing");
+        },
+      },
+    });
+
     const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
       handler: "./functions/s3/ingest-adapter.handler",
       runtime: "nodejs22.x",
@@ -695,6 +720,7 @@ export default $config({
     api.route("POST /tags", adminTagsFn.arn);
     api.route("PATCH /tags/{name}", adminTagsFn.arn);
     api.route("DELETE /tags/{name}", adminTagsFn.arn);
+    api.route("GET /account/usage", billingFn.arn);
 
     return {
       apiEndpoint: api.url,

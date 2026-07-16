@@ -12,6 +12,8 @@ import {
   deleteDocumentVectors,
   getDocument,
 } from "../utils";
+import { recordUsage } from "../billing/usage";
+import { updateStorageBytes } from "../billing/account";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -102,6 +104,9 @@ export async function handler(event: any) {
       );
       continue;
     }
+
+    await recordUsage(doc.userId, TableName, "ingest", 1);
+    await updateStorageBytes(doc.userId, TableName, objectSize);
 
     try {
       await sqs.send(

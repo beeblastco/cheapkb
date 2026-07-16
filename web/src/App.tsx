@@ -2,6 +2,7 @@ import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
 import { QueryCard } from "@/components/QueryCard";
+import { UsageCard } from "@/components/UsageCard";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -15,6 +16,7 @@ import { useTags } from "@/hooks/use-tags";
 import {
   apiCall,
   getIdentity,
+  getUsageSummary,
   handleSignInCallback,
   isActiveStatus,
   mergeDocuments,
@@ -23,7 +25,7 @@ import {
   startSignIn,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, ShooIdentity } from "@/lib/types";
+import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -64,6 +66,7 @@ function App() {
     unknown
   > | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
+  const [usage, setUsage] = useState<UsageSummary | null>(null);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
 
@@ -121,6 +124,19 @@ function App() {
   useEffect(() => {
     if (identity?.token) loadDocuments(true);
   }, [identity?.token, loadDocuments]);
+
+  useEffect(() => {
+    async function loadUsage() {
+      if (!identity?.token) return;
+      try {
+        const data = await getUsageSummary(identity.token);
+        setUsage(data);
+      } catch (error) {
+        notify((error as Error).message, "error");
+      }
+    }
+    loadUsage();
+  }, [identity?.token, notify]);
 
   useEffect(() => {
     const hasInflight = documents.some(
@@ -278,7 +294,8 @@ function App() {
                 tagVocabulary={tagVocabulary}
               />
             </div>
-            <div className="min-h-0 min-w-0 lg:col-span-4 xl:col-span-3">
+            <div className="flex min-h-0 flex-col gap-3 min-w-0 lg:col-span-4 xl:col-span-3">
+              <UsageCard summary={usage} />
               <QueryCard request={request} onView={showDocument} />
             </div>
           </div>

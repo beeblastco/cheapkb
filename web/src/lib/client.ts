@@ -9,6 +9,7 @@ import {
   type Tag,
   TAG_COLORS,
   type TagColor,
+  type UsageSummary,
   type UserProfile,
 } from "./types";
 
@@ -246,6 +247,11 @@ function normalizeTag(tag: Tag): Tag {
 
 export async function deleteTag(token: string, name: string): Promise<void> {
   await apiCall(token, "DELETE", `/tags/${encodeURIComponent(name)}`);
+}
+
+export async function getUsageSummary(token: string): Promise<UsageSummary> {
+  const data = await apiCall(token, "GET", "/account/usage");
+  return data as unknown as UsageSummary;
 }
 
 export async function updateDocumentTags(

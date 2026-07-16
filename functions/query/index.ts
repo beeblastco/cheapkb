@@ -4,6 +4,7 @@ import {
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import { checkRateLimit, extractUserId } from "../utils";
+import { checkUsageLimit, recordUsage } from "../billing/usage";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -18,14 +19,14 @@ export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(
+  const { allowed: rateAllowed, remaining } = await checkRateLimit(
     userId,
     TableName,
     "QUERY",
     100,
     100,
   );
-  if (!allowed) {
+  if (!rateAllowed) {
     return {
       statusCode: 429,
       headers: {
@@ -35,6 +36,19 @@ export async function handler(event: any) {
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
     };
   }
+
+  const { allowed: usageAllowed } = await checkUsageLimit(userId, TableName);
+  if (!usageAllowed) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Monthly usage allowance reached. Upgrade to continue.",
+      }),
+    };
+  }
+
+  await recordUsage(userId, TableName, "query", 1);
 
   try {
     if (!event.body) {

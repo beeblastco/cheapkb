@@ -13,7 +13,8 @@ import {
   deleteS3Prefix,
   extractUserId,
 } from "../utils";
-
+import { HeadObjectCommand } from "@aws-sdk/client-s3";
+import { updateStorageBytes } from "../billing/account";
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -59,6 +60,17 @@ export async function handler(event: any) {
       }),
     };
   }
+
+  let sourceSize = 0;
+  try {
+    const head = await s3.send(
+      new HeadObjectCommand({
+        Bucket: StorageBucketName,
+        Key: doc.sourceKey,
+      }),
+    );
+    sourceSize = head.ContentLength ?? 0;
+  } catch {}
   const errors: string[] = [];
   let chunkItems: any[] = [];
 
@@ -116,6 +128,7 @@ export async function handler(event: any) {
         Key: { pk: `DOC#${documentId}`, sk: "META" },
       }),
     );
+    await updateStorageBytes(doc.userId, TableName, -sourceSize);
   } catch (err: any) {
     return {
       statusCode: 500,

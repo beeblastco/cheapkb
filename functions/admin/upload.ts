@@ -9,6 +9,7 @@ import {
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { createHash, randomUUID } from "node:crypto";
 import { checkRateLimit, extractUserId } from "../utils";
+import { checkUsageLimit, recordUsage } from "../billing/usage";
 
 const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -45,6 +46,17 @@ export async function handler(event: any) {
         "X-RateLimit-Remaining": String(remaining),
       },
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
+    };
+  }
+
+  const { allowed: usageAllowed } = await checkUsageLimit(userId, TableName);
+  if (!usageAllowed) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Monthly usage allowance reached. Upgrade to continue.",
+      }),
     };
   }
 
@@ -152,6 +164,8 @@ export async function handler(event: any) {
     Conditions: conditions,
     Expires: 900,
   });
+
+  await recordUsage(userId, TableName, "upload", 1);
 
   return {
     statusCode: 200,

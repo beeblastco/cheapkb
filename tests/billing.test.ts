@@ -1,0 +1,110 @@
+import { mockClient } from "aws-sdk-client-mock";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+
+import {
+  getOrCreateAccount,
+  updateStorageBytes,
+} from "../functions/billing/account";
+import {
+  centsToNanoUsd,
+  NANO_PER_CENT,
+  PRICING,
+  storageCostNanoUsd,
+} from "../functions/billing/pricing";
+import {
+  dayKey,
+  getUsageSummary,
+  recordUsage,
+} from "../functions/billing/usage";
+
+const dynamoMock = mockClient(DynamoDBDocumentClient);
+
+describe("billing", () => {
+  beforeEach(() => dynamoMock.reset());
+
+  describe("pricing", () => {
+    it("converts cents to nano-usd", () => {
+      expect(centsToNanoUsd(400)).toBe(400 * NANO_PER_CENT);
+    });
+
+    it("calculates storage cost for one GB over a month", () => {
+      const bytes = 1024 * 1024 * 1024;
+      const seconds = 30 * 24 * 60 * 60;
+      expect(storageCostNanoUsd(bytes, seconds)).toBe(
+        PRICING.storagePerGbMonth,
+      );
+    });
+  });
+
+  describe("account", () => {
+    it("creates a default account when none exists", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(PutCommand).resolves({});
+
+      const account = await getOrCreateAccount("user-1", "table");
+
+      expect(account.userId).toBe("user-1");
+      expect(account.planId).toBe("starter");
+      expect(account.monthlyAllowanceCents).toBe(400);
+    });
+
+    it("updates storage bytes", async () => {
+      dynamoMock.on(UpdateCommand).resolves({});
+
+      await updateStorageBytes("user-1", "table", 1024);
+
+      const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(call.ExpressionAttributeValues[":delta"]).toBe(1024);
+    });
+  });
+
+  describe("usage", () => {
+    it("records a query usage event", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock.on(PutCommand).resolves({});
+
+      await recordUsage("user-1", "table", "query", 2);
+
+      const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item;
+      expect(put.queryOps).toBe(2);
+      expect(put.costNano).toBe(2 * PRICING.queryPerRequest);
+    });
+
+    it("returns usage summary with default plan", async () => {
+      const now = new Date();
+      const today = dayKey(now.getTime());
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "ACCOUNT#user-1", sk: "PROFILE" },
+        })
+        .resolves({
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            userId: "user-1",
+            planId: "starter",
+            priceMonthlyCents: 500,
+            monthlyAllowanceCents: 400,
+            storageBytes: 0,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          },
+        });
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const summary = await getUsageSummary("user-1", "table");
+
+      expect(summary.planId).toBe("starter");
+      expect(summary.allowanceUsd).toBe(4);
+      expect(summary.paused).toBe(false);
+    });
+  });
+});

@@ -81,3 +81,16 @@ export interface UploadQueueItem {
   title: string;
   year: string;
 }
+
+export interface UsageSummary {
+  planId: string;
+  planLabel: string;
+  priceMonthlyUsd: number;
+  allowanceUsd: number;
+  spentUsd: number;
+  storageUsd: number;
+  pctUsed: number;
+  paused: boolean;
+  resetAt: string;
+  storageBytes: number;
+}
