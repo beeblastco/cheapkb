@@ -60,7 +60,7 @@ describe("document read APIs", () => {
         apiEvent({ pathParameters: { id: "doc-1" } }),
       );
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(404);
       expect(dynamoMock.commandCalls(QueryCommand)).toHaveLength(0);
     });
 

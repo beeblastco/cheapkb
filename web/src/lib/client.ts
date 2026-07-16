@@ -45,6 +45,7 @@ interface UploadMetadata {
   uploadUrl: string;
   uploadFields: Record<string, string>;
   maxUploadBytes: number;
+  sourceKey: string;
   reused: boolean;
 }
 

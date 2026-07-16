@@ -230,7 +230,7 @@ describe("PATCH /documents/{id}", () => {
 
       const response = await update(patchEvent({ tags: ["research"] }));
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(404);
       expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
 
@@ -359,9 +359,13 @@ describe("PATCH /documents/{id}", () => {
     it("releases the lease when propagation fails so the document stays editable", async () => {
       vectorsMock.on(PutVectorsCommand).rejects(new Error("vector store down"));
 
-      await expect(update(patchEvent({ tags: ["research"] }))).rejects.toThrow(
-        "vector store down",
-      );
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response).toEqual({
+        statusCode: 500,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Failed to update document tags" }),
+      });
 
       const release = dynamoMock.commandCalls(UpdateCommand)[1].args[0].input;
       expect(release.ExpressionAttributeValues![":restoreTo"]).toBe("EMBEDDED");

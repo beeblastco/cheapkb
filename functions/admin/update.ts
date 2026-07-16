@@ -51,8 +51,8 @@ export async function handler(event: any) {
   let body: any;
   try {
     body = JSON.parse(event.body);
-  } catch {
-    return json(400, { error: "Invalid JSON body" });
+  } catch (err) {
+    return json(400, { error: `Invalid JSON: ${(err as Error).message}` });
   }
 
   const validationError = validateBody(body);
@@ -61,7 +61,7 @@ export async function handler(event: any) {
   const document = await getDocument(documentId, dynamo, TableName);
   if (!document) return json(404, { error: "Document not found" });
   if (document.userId !== userId) {
-    return json(403, { error: "You do not have access to this document" });
+    return json(404, { error: "Document not found" });
   }
   if (!isEditable(document)) {
     return json(409, {
@@ -97,7 +97,7 @@ export async function handler(event: any) {
     const updatedAt = await finalizeLease(document, lease, tags);
     return json(200, {
       documentId,
-      tags: tags ?? [],
+      tags,
       updatedVectors,
       updatedAt,
     });
@@ -105,7 +105,7 @@ export async function handler(event: any) {
     // The META row still holds the old tags, so releasing the lease reports the
     // edit as not applied. Retrying re-propagates and converges.
     await releaseLease(document, lease);
-    throw error;
+    return json(500, { error: "Failed to update document tags" });
   }
 }
 
@@ -286,9 +286,9 @@ function validateBody(body: any): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return "Request body must be an object";
   }
-  if (body.tags === undefined) return "tags is required";
+  if (body.tags === undefined) return "Tags is required";
   if (body.tags !== null && !isShortStringArray(body.tags)) {
-    return "tags must be an array of short strings";
+    return "Tags must be an array of at most 20 strings, each 100 characters or fewer";
   }
   return null;
 }

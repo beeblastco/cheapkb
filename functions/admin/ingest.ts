@@ -29,20 +29,22 @@ export async function handler(event: any) {
   let body: any;
   try {
     body = JSON.parse(event.body);
-  } catch {
+  } catch (err) {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Invalid JSON in request body" }),
+      body: JSON.stringify({
+        error: `Invalid JSON: ${(err as Error).message}`,
+      }),
     };
   }
 
   const documentId = body.documentId;
-  if (!documentId) {
+  if (typeof documentId !== "string") {
     return {
       statusCode: 400,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "documentId is required" }),
+      body: JSON.stringify({ error: "Document ID is required" }),
     };
   }
 
@@ -101,7 +103,11 @@ export async function handler(event: any) {
         }),
       };
     }
-    throw error;
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Failed to update document status" }),
+    };
   }
 
   try {
@@ -117,7 +123,13 @@ export async function handler(event: any) {
     );
   } catch (error) {
     await rollbackQueueStatus(documentId);
-    throw error;
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Failed to queue document for processing",
+      }),
+    };
   }
 
   return {

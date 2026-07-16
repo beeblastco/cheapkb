@@ -87,23 +87,6 @@ Every production deployment uploads a temporary text document through the real p
 
 The dark frontend keeps recent pending and failed documents visible while DynamoDB's list index catches up. Pending uploads survive a refresh for up to 30 minutes, while local-only failed rows expire after 5 minutes. Server-side failures remain visible until they are retried or deleted.
 
-## Configuration
-
-```bash
-EMBEDDING_PROVIDER_URL=...
-EMBEDDING_API_KEY=...
-EMBEDDING_MODEL=text-embedding-3-small
-CHUNK_MAX_TOKENS=700
-CHUNK_OVERLAP_TOKENS=100
-VECTOR_BATCH=500
-EMBED_BATCH=25
-MAX_UPLOAD_BYTES=10485760
-MAX_CHUNKS_PER_DOCUMENT=200
-APP_ORIGIN=http://localhost:5173  # Your app origin for shoo JWT audience
-```
-
-Vector dimension is **1024** with cosine distance.
-
 ## Test
 
 Tests use shared typed API Gateway, S3, and SQS event fixtures. Backend tests cover tenant boundaries, pipeline retries, cleanup ordering, rate limits, and infrastructure safeguards; frontend tests cover browser behavior and the production build.

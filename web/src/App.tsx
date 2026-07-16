@@ -31,7 +31,6 @@ function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
-        <Header />
         <main className="flex flex-1 items-center justify-center px-4">
           <Card className="w-full max-w-sm">
             <CardHeader>
