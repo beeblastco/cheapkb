@@ -31,7 +31,13 @@ export async function handler(event: any) {
     const { userId, response: authError } = await extractUserId(event);
     if (authError) return authError;
 
-    const { allowed, remaining } = await checkRateLimit(userId, TableName, "UPLOAD", 50, 50);
+    const { allowed, remaining } = await checkRateLimit(
+      userId,
+      TableName,
+      "UPLOAD",
+      50,
+      50,
+    );
     if (!allowed) {
       return {
         statusCode: 429,
@@ -185,7 +191,9 @@ async function reserveReplacement(
   body: any,
   now: string,
 ) {
-  const replacementExpiresAt = new Date(Date.now() + REPLACEMENT_TTL_MS).toISOString();
+  const replacementExpiresAt = new Date(
+    Date.now() + REPLACEMENT_TTL_MS,
+  ).toISOString();
 
   try {
     await dynamo.send(

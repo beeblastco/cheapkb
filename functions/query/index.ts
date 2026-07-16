@@ -18,7 +18,13 @@ export async function handler(event: any) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(userId, TableName, "QUERY", 100, 100);
+  const { allowed, remaining } = await checkRateLimit(
+    userId,
+    TableName,
+    "QUERY",
+    100,
+    100,
+  );
   if (!allowed) {
     return {
       statusCode: 429,
