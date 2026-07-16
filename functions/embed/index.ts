@@ -7,7 +7,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
-import { recordUsage } from "../billing/usage";
+import { recordUsage } from "../billing/utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});

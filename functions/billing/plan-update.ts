@@ -1,6 +1,5 @@
 import { extractUserId } from "../utils";
-import { updatePlan } from "./account";
-import { PLANS } from "./pricing";
+import { PLANS, updatePlan } from "./utils";
 
 const TableName = process.env.TABLE_NAME!;
 

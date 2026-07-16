@@ -15,7 +15,7 @@ vi.mock("../functions/utils", () => ({
   extractUserId: vi.fn().mockResolvedValue({ userId: "user-a" }),
   checkRateLimit: vi.fn().mockResolvedValue({ allowed: true, remaining: 49 }),
 }));
-vi.mock("../functions/billing/usage", () => ({
+vi.mock("../functions/billing/utils", () => ({
   checkUsageLimit: vi.fn().mockResolvedValue({ allowed: true }),
   recordUsage: vi.fn().mockResolvedValue(undefined),
 }));
@@ -36,7 +36,7 @@ describe("upload validation", () => {
     dynamoMock.reset();
     dynamoMock.on(GetCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
-    vi.mocked(createPresignedPost).mockClear();
+    vi.clearAllMocks();
   });
 
   it("rejects unsupported content types before creating storage", async () => {

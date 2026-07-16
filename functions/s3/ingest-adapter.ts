@@ -12,8 +12,7 @@ import {
   deleteDocumentVectors,
   getDocument,
 } from "../utils";
-import { recordUsage } from "../billing/usage";
-import { updateStorageBytes } from "../billing/account";
+import { recordUsage, updateStorageBytes } from "../billing/utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});

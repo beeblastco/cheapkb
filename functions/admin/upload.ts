@@ -9,7 +9,7 @@ import {
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { createHash, randomUUID } from "node:crypto";
 import { checkRateLimit, extractUserId } from "../utils";
-import { checkUsageLimit, recordUsage } from "../billing/usage";
+import { checkUsageLimit, recordUsage } from "../billing/utils";
 
 const s3 = new S3Client({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));

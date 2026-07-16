@@ -9,20 +9,16 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 
 import {
-  getOrCreateAccount,
-  updateStorageBytes,
-} from "../functions/billing/account";
-import {
   centsToNanoUsd,
+  dayKey,
+  getOrCreateAccount,
+  getUsageSummary,
   NANO_PER_CENT,
   PRICING,
-  storageCostNanoUsd,
-} from "../functions/billing/pricing";
-import {
-  dayKey,
-  getUsageSummary,
   recordUsage,
-} from "../functions/billing/usage";
+  storageCostNanoUsd,
+  updateStorageBytes,
+} from "../functions/billing/utils";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 

@@ -595,7 +595,7 @@ export default $config({
     });
 
     const billingFn = new sst.aws.Function("Billing", {
-      handler: "./functions/billing/get.handler",
+      handler: "./functions/billing/usage.handler",
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
@@ -630,7 +630,7 @@ export default $config({
     });
 
     const billingAccountFn = new sst.aws.Function("BillingAccount", {
-      handler: "./functions/billing/account-get.handler",
+      handler: "./functions/billing/account.handler",
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",

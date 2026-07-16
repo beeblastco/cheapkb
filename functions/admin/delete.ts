@@ -14,7 +14,7 @@ import {
   extractUserId,
 } from "../utils";
 import { HeadObjectCommand } from "@aws-sdk/client-s3";
-import { updateStorageBytes } from "../billing/account";
+import { updateStorageBytes } from "../billing/utils";
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));

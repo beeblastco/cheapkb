@@ -4,7 +4,7 @@ import {
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
 import { checkRateLimit, extractUserId } from "../utils";
-import { checkUsageLimit, recordUsage } from "../billing/usage";
+import { checkUsageLimit, recordUsage } from "../billing/utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});

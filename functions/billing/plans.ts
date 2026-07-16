@@ -1,5 +1,5 @@
 import { extractUserId } from "../utils";
-import { PLANS } from "./pricing";
+import { PLANS } from "./utils";
 
 export async function handler(event: any) {
   const { response: authError } = await extractUserId(event);
