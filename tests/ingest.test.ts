@@ -99,9 +99,15 @@ describe("manual ingest authorization", () => {
     dynamoMock.on(UpdateCommand).resolves({});
     sqsMock.on(SendMessageCommand).rejects(new Error("SQS unavailable"));
 
-    await expect(
-      handler(jsonApiEvent({ documentId: "doc-1" })),
-    ).rejects.toThrow("SQS unavailable");
+    const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
+
+    expect(response).toEqual({
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Failed to queue document for processing",
+      }),
+    });
 
     expect(dynamoMock.commandCalls(UpdateCommand)[1].args[0].input).toEqual(
       expect.objectContaining({

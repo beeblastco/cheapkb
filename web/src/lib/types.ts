@@ -15,10 +15,13 @@ export interface Document {
   documentId: string;
   title?: string;
   status: DocumentStatus | string;
+  lastError?: string | null;
+  retryCount?: number;
+  failedStep?: string | null;
   mimeType?: string;
   tags?: string[];
   authors?: string[];
-  lastError?: string | null;
+  year?: number | null;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -47,9 +50,13 @@ export interface Tag {
 
 export interface QueryResult {
   documentId: string;
+  chunkId: string;
+  score: number;
   title?: string;
-  score?: number;
+  pageStart?: number;
+  pageEnd?: number;
   text?: string;
+  source?: { bucket: string; key: string };
 }
 
 export interface ResultGroup {

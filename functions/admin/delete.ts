@@ -53,11 +53,9 @@ export async function handler(event: any) {
   const doc = result.Item;
   if (doc.userId !== userId) {
     return {
-      statusCode: 403,
+      statusCode: 404,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "You do not have access to this document",
-      }),
+      body: JSON.stringify({ error: "Document not found" }),
     };
   }
 

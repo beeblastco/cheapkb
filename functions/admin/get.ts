@@ -38,11 +38,9 @@ export async function handler(event: any) {
 
   if (result.Item.userId !== userId) {
     return {
-      statusCode: 403,
+      statusCode: 404,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "You do not have access to this document",
-      }),
+      body: JSON.stringify({ error: "Document not found" }),
     };
   }
 
@@ -60,7 +58,7 @@ export async function handler(event: any) {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      document: result.Item,
+      document: pickDocumentFields(result.Item),
       chunks: (chunksResult.Items ?? []).map((c) => ({
         chunkId: c.chunkId,
         pageStart: c.pageStart,
@@ -70,5 +68,22 @@ export async function handler(event: any) {
       })),
       chunkCount: chunksResult.Count ?? 0,
     }),
+  };
+}
+
+function pickDocumentFields(item: any) {
+  return {
+    documentId: item.documentId,
+    title: item.title,
+    status: item.status,
+    lastError: item.lastError ?? null,
+    retryCount: item.retryCount ?? 0,
+    failedStep: item.failedStep ?? null,
+    mimeType: item.mimeType,
+    tags: item.tags ?? null,
+    authors: item.authors ?? null,
+    year: item.year ?? null,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
   };
 }

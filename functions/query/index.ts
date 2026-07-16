@@ -61,11 +61,13 @@ export async function handler(event: any) {
     let body: any;
     try {
       body = JSON.parse(event.body);
-    } catch {
+    } catch (err) {
       return {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Invalid JSON in request body" }),
+        body: JSON.stringify({
+          error: `Invalid JSON: ${(err as Error).message}`,
+        }),
       };
     }
     const { query, topK = 10, filters } = body;
@@ -73,7 +75,7 @@ export async function handler(event: any) {
       return {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "query is required" }),
+        body: JSON.stringify({ error: "Query is required" }),
       };
     }
     if (query.length > 4000) {
@@ -81,15 +83,17 @@ export async function handler(event: any) {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          error: "query must be 4000 characters or fewer",
+          error: "Query must be 4000 characters or fewer",
         }),
       };
     }
-    if (!Number.isInteger(topK) || topK < 1 || topK > 50) {
+    if (!Number.isInteger(topK) || topK < 1 || topK > 100) {
       return {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "topK must be an integer from 1 to 50" }),
+        body: JSON.stringify({
+          error: "TopK must be an integer from 1 to 100",
+        }),
       };
     }
     if (
@@ -99,7 +103,7 @@ export async function handler(event: any) {
       return {
         statusCode: 400,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "filters must be an object" }),
+        body: JSON.stringify({ error: "Filters must be an object" }),
       };
     }
 
@@ -120,7 +124,7 @@ export async function handler(event: any) {
         vectorBucketName: VectorBucketName,
         indexName: VectorIndexName,
         queryVector: { float32: Array.from(queryVector) },
-        topK,
+        topK: topK,
         filter: vectorFilter,
         returnMetadata: true,
         returnDistance: true,
@@ -172,10 +176,10 @@ export async function handler(event: any) {
         "X-RateLimit-Remaining": String(remaining),
       },
       body: JSON.stringify({
-        query,
-        topK,
+        query: query,
+        topK: topK,
         resultCount: results.length,
-        results,
+        results: results,
       }),
     };
   } catch (err: any) {
@@ -219,7 +223,11 @@ export function buildFilter(
   const result: Record<string, any> = { userId };
   for (const [key, value] of Object.entries(filters ?? {})) {
     if (key === "userId") continue;
-    if (!FILTER_KEYS.has(key)) throw new Error(`Unsupported filter: ${key}`);
+    if (!FILTER_KEYS.has(key)) {
+      throw new Error(
+        `Unsupported filter: ${key}. Allowed keys: ${[...FILTER_KEYS].join(", ")}`,
+      );
+    }
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const op = value as Record<string, unknown>;
       const entries = Object.entries(op);
@@ -231,7 +239,9 @@ export function buildFilter(
             !isValidOperatorValue(operator, operatorValue),
         )
       ) {
-        throw new Error(`Unsupported operator for filter: ${key}`);
+        throw new Error(
+          `Unsupported operator for filter: ${key}. Allowed operators: ${[...FILTER_OPERATORS].join(", ")}`,
+        );
       }
       result[key] = Object.fromEntries(entries);
     } else {
@@ -240,7 +250,9 @@ export function buildFilter(
         typeof value !== "number" &&
         typeof value !== "boolean"
       ) {
-        throw new Error(`Invalid filter value: ${key}`);
+        throw new Error(
+          `Invalid filter value for: ${key}. Must be a string, number, boolean, or operator object`,
+        );
       }
       result[key] = value;
     }
