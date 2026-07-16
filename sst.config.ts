@@ -244,6 +244,7 @@ export default $config({
           actions: [
             "dynamodb:GetItem",
             "dynamodb:PutItem",
+            "dynamodb:Query",
             "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
@@ -372,7 +373,11 @@ export default $config({
             resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
           },
           {
-            actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+            actions: [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+            ],
             resources: [table.arn],
           },
           {
@@ -405,6 +410,7 @@ export default $config({
           actions: [
             "dynamodb:GetItem",
             "dynamodb:PutItem",
+            "dynamodb:Query",
             "dynamodb:UpdateItem",
           ],
           resources: [table.arn],
@@ -507,6 +513,7 @@ export default $config({
           actions: [
             "dynamodb:GetItem",
             "dynamodb:Query",
+            "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
             "dynamodb:BatchWriteItem",
           ],
@@ -621,6 +628,7 @@ export default $config({
         {
           actions: [
             "dynamodb:GetItem",
+            "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:Query",
             "dynamodb:DeleteItem",

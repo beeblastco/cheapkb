@@ -7,6 +7,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import { recordUsage } from "../billing/usage";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -170,6 +171,7 @@ async function processBatch(
   }
 
   const docCounts: Record<string, number> = {};
+  const usageByUser: Record<string, number> = {};
   for (const vector of vectorBatch) {
     const changed = await markChunkEmbedded(
       vector.metadata.documentId,
@@ -178,10 +180,15 @@ async function processBatch(
     if (changed) {
       docCounts[vector.metadata.documentId] =
         (docCounts[vector.metadata.documentId] ?? 0) + 1;
+      const userId = vector.metadata.userId as string;
+      usageByUser[userId] = (usageByUser[userId] ?? 0) + 1;
     }
   }
   for (const [documentId, count] of Object.entries(docCounts)) {
     await markEmbedded(documentId, count);
+  }
+  for (const [userId, count] of Object.entries(usageByUser)) {
+    await recordUsage(userId, TableName, "embed", count);
   }
 
   console.log(`[embed] OK: ${vectorBatch.length} vectors written`);
