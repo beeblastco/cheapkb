@@ -228,6 +228,8 @@ export function Header({
                                   plan.planId,
                                 );
                                 setAccount(updated);
+                                // Refresh usage after plan change. Future
+                                // backend can push account events here.
                                 onUsageChange?.();
                               } finally {
                                 setUpdating(false);

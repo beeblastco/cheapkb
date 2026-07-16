@@ -99,6 +99,10 @@ function App() {
     }
   }, [identity?.token, notify]);
 
+  // Called by child components after actions that affect usage (upload,
+  // query, plan change, delete). Future backend can push real-time usage
+  // updates here (e.g. WebSocket or SSE) instead of polling.
+
   const loadDocuments = useCallback(
     async (showLoading = false) => {
       if (!identity?.token) return;

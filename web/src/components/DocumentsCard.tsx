@@ -463,6 +463,8 @@ export function DocumentsCard({
     syncingRef.current = false;
     setSyncing(false);
     await loadDocuments();
+    // Notify App to refresh usage. Future backend can emit billing events
+    // here instead of relying on the client to poll.
     onUsageChange?.();
     if (failed) {
       notify(`${succeeded} synced, ${failed} need attention.`, "error");

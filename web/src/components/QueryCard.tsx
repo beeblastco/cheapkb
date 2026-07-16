@@ -91,6 +91,8 @@ export function QueryCard({
           results: (data.results as QueryResult[]) || [],
         },
       ]);
+      // Refresh usage after a billed query. Future backend can push usage
+      // updates here instead of polling from the parent.
       onUsageChange?.();
     } catch (requestError) {
       setTurns((current) => [
