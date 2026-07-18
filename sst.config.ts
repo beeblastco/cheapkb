@@ -206,12 +206,12 @@ export default $config({
         hashKey: "pk",
         rangeKey: "sk",
         item: JSON.stringify({
-          pk: `PLAN#${plan.planId}`,
-          sk: "PLAN",
-          planId: plan.planId,
-          label: plan.label,
-          priceMonthlyCents: plan.priceMonthlyCents,
-          monthlyAllowanceCents: plan.monthlyAllowanceCents,
+          pk: { S: `PLAN#${plan.planId}` },
+          sk: { S: "PLAN" },
+          planId: { S: plan.planId },
+          label: { S: plan.label },
+          priceMonthlyCents: { N: String(plan.priceMonthlyCents) },
+          monthlyAllowanceCents: { N: String(plan.monthlyAllowanceCents) },
         }),
       });
     }
