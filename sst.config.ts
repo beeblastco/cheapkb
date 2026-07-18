@@ -116,7 +116,6 @@ export default $config({
         gsi1sk: "string",
         gsi2pk: "string",
         gsi2sk: "string",
-        ttl: "number",
       },
       primaryIndex: { hashKey: "pk", rangeKey: "sk" },
       globalIndexes: {
