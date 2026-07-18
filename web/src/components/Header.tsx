@@ -14,13 +14,20 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { getUserProfile } from "@/lib/client";
-import type { ShooIdentity, UsageSummary } from "@/lib/types";
+import {
+  centsToUsd,
+  getAccount,
+  getUserProfile,
+  listPlans,
+  updatePlan,
+} from "@/lib/client";
+import type { Account, Plan, ShooIdentity, UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 import { HelpCircle, LogOut, Scale, Settings, Shield } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const MENU_CONTENT = {
   settings: {
@@ -52,8 +59,31 @@ export function Header({
   onSignOut?: () => void;
 }) {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [account, setAccount] = useState<Account | null>(null);
+  const [updating, setUpdating] = useState(false);
   const profile = identity?.token ? getUserProfile(identity) : null;
   const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
+
+  useEffect(() => {
+    async function loadSettings(token: string) {
+      try {
+        const [plansData, accountData] = await Promise.all([
+          listPlans(token),
+          getAccount(token),
+        ]);
+        setPlans(plansData);
+        setAccount(accountData);
+      } catch {
+        setPlans([]);
+        setAccount(null);
+      }
+    }
+    const token = identity?.token;
+    if (token && dialog === "settings") {
+      loadSettings(token);
+    }
+  }, [identity?.token, dialog]);
 
   return (
     <>
@@ -94,6 +124,15 @@ export function Header({
                   </DropdownMenuLabel>
                   <DropdownMenuItem onClick={() => setDialog("settings")}>
                     <Settings /> Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem disabled>
+                    <span className="flex flex-1 items-center justify-between">
+                      <span className="text-muted-foreground">Usage</span>
+                      <span className="font-medium tabular-nums">
+                        {usagePct.toFixed(0)}%
+                      </span>
+                    </span>
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
                 <DropdownMenuGroup>
@@ -161,6 +200,53 @@ export function Header({
                   ) : null}
                 </CardContent>
               </Card>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Plan</p>
+                <div className="grid gap-2">
+                  {plans.map((plan) => (
+                    <Card key={plan.planId}>
+                      <CardContent className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{plan.label}</p>
+                          <p className="text-sm text-muted-foreground">
+                            ${centsToUsd(plan.monthlyAllowanceCents).toFixed(2)}{" "}
+                            allowance
+                          </p>
+                        </div>
+                        {account?.planId === plan.planId ? (
+                          <span className="text-sm font-medium text-muted-foreground">
+                            Current
+                          </span>
+                        ) : (
+                          <Button
+                            disabled={updating}
+                            onClick={async () => {
+                              const token = identity?.token;
+                              if (!token) return;
+                              setUpdating(true);
+                              try {
+                                const updated = await updatePlan(
+                                  token,
+                                  plan.planId,
+                                );
+                                setAccount(updated);
+                                // Refresh usage after plan change. Future
+                                // backend can push account events here.
+                                onUsageChange?.();
+                              } finally {
+                                setUpdating(false);
+                              }
+                            }}
+                            size="sm"
+                          >
+                            Select
+                          </Button>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
             </div>
           ) : null}
         </DialogContent>
