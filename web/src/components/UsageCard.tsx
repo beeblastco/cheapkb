@@ -1,9 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Progress,
-  ProgressLabel,
-  ProgressValue,
-} from "@/components/ui/progress";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
@@ -42,10 +38,7 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           </p>
         </div>
 
-        <Progress value={shown}>
-          <ProgressLabel>Usage progress</ProgressLabel>
-          <ProgressValue />
-        </Progress>
+        <Progress value={shown} />
 
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
