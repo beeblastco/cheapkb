@@ -1,0 +1,16 @@
+{
+  "extends": "../web/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client", "jsdom"],
+    "allowImportingTsExtensions": false,
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": [
+    "**/*.ts",
+    "../web/src/lib/**/*.ts",
+    "../web/src/sst-env.d.ts",
+    "../web/src/components/ui/badge.tsx"
+  ],
+  "exclude": ["node_modules", "../dist", "../.sst", "../web/dist"]
+}

@@ -1,0 +1,14 @@
+node_modules
+.sst
+dist
+.env
+.env.*
+!.env.example
+*.pyc
+__pycache__
+.DS_Store
+.venv
+*.d
+*.log
+*.tsbuildinfo
+.migration
