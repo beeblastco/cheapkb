@@ -46,6 +46,21 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           <ProgressLabel />
           <ProgressValue />
         </Progress>
+
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <p className="text-muted-foreground">Storage</p>
+            <p className="font-medium tabular-nums">
+              {formatBytes(summary.storageBytes)}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground">Resets</p>
+            <p className="font-medium">
+              {new Date(summary.resetAt).toLocaleDateString()}
+            </p>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
