@@ -344,6 +344,10 @@ export default $config({
           resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
         },
         {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
+        },
+        {
           actions: ["s3:PutObject"],
           resources: [pulumi.interpolate`${storage.arn}/raw/*`],
         },
@@ -507,6 +511,10 @@ export default $config({
             "dynamodb:UpdateItem",
           ],
           resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+        },
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
         },
         {
           actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
