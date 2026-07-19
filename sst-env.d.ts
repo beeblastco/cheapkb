@@ -6,6 +6,10 @@
 
 declare module "sst" {
   export interface Resource {
+    "Accounts": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "AdminDelete": {
       "name": string
       "type": "sst.aws.Function"
@@ -22,9 +26,21 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "AdminUpdate": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "Api": {
       "type": "sst.aws.ApiGatewayV2"
       "url": string
+    }
+    "Billing": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "BillingAccount": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "Chunk": {
       "type": "sst.aws.Queue"
@@ -66,13 +82,65 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "Plans": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "PlansAssign": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "PlansCreate": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "PlansDelete": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "PlansGet": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "PlansList": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "PlansUpdate": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "Query": {
       "name": string
       "type": "sst.aws.Function"
     }
+    "RateLimits": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "Storage": {
       "name": string
       "type": "sst.aws.Bucket"
+    }
+    "Tags": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "TagsCreate": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "TagsDelete": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "TagsList": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "TagsUpdate": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "Upload": {
       "name": string

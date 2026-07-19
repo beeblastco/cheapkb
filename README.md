@@ -6,6 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-22.x-green.svg)](https://nodejs.org/)
 
 Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed, and search vectors within the AWS Free Tier.
+The authenticated workspace pairs document management and document-grounded questions with a compact plan and usage summary.
 
 ## Stack
 

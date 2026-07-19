@@ -7,12 +7,12 @@ import { formatBytes } from "@/lib/utils";
 export function UsageCard({ summary }: { summary: UsageSummary | null }) {
   if (!summary) {
     return (
-      <Card>
+      <Card className="shrink-0">
         <CardHeader>
           <CardTitle>Usage</CardTitle>
         </CardHeader>
         <CardContent>
-          <Skeleton className="h-44 w-full" />
+          <Skeleton className="h-24 w-full" />
         </CardContent>
       </Card>
     );
@@ -21,39 +21,38 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
   const shown = Math.min(summary.pctUsed, 100);
 
   return (
-    <Card>
+    <Card className="min-w-0 shrink-0">
       <CardHeader>
-        <CardTitle>Usage</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">
+        <CardTitle className="flex items-baseline gap-2">
+          <span>Usage</span>
+          <span className="whitespace-nowrap text-sm font-normal text-muted-foreground">
             {summary.planLabel} plan
-          </p>
-          <p className="text-2xl font-semibold tracking-tight tabular-nums">
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex min-w-0 flex-col gap-3">
+        <div className="grid grid-cols-2 items-baseline gap-3 text-sm">
+          <p className="whitespace-nowrap text-xl font-semibold tracking-tight tabular-nums">
             {shown.toFixed(0)}%
-            <span className="ml-2 text-base font-normal text-muted-foreground">
+            <span className="ml-1.5 text-sm font-normal text-muted-foreground">
               used
             </span>
           </p>
-        </div>
-
-        <Progress value={shown} />
-
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <p className="text-muted-foreground">Storage</p>
-            <p className="font-medium tabular-nums">
+          <p className="flex items-baseline gap-1.5 whitespace-nowrap">
+            <span className="text-muted-foreground">Storage</span>
+            <span className="font-medium tabular-nums">
               {formatBytes(summary.storageBytes)}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Resets</p>
-            <p className="font-medium">
-              {new Date(summary.resetAt).toLocaleDateString()}
-            </p>
-          </div>
+            </span>
+          </p>
         </div>
+        <div className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+          <p>Resets</p>
+          <p className="whitespace-nowrap font-medium tabular-nums">
+            {new Date(summary.resetAt).toLocaleDateString()}
+          </p>
+        </div>
+
+        <Progress className="w-full shrink-0" value={shown} />
       </CardContent>
     </Card>
   );

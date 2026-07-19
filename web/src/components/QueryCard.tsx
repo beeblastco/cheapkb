@@ -1,6 +1,7 @@
 import { Bubble, BubbleContent, BubbleGroup } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
+import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
 import {
   InputGroup,
   InputGroupAddon,
@@ -34,11 +35,6 @@ import type { QueryResult } from "@/lib/types";
 import { ArrowUp } from "lucide-react";
 import { useState } from "react";
 
-const SUGGESTIONS = [
-  "Summarize the key points",
-  "What are the main themes?",
-  "Find the most relevant evidence",
-];
 const TOP_K_OPTIONS = [
   { label: "3 results", value: "3" },
   { label: "5 results", value: "5" },
@@ -117,6 +113,15 @@ export function QueryCard({
           <MessageScroller>
             <MessageScrollerViewport>
               <MessageScrollerContent>
+                {!turns.length && !loading ? (
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyDescription>
+                        Ask questions about your documents
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : null}
                 {turns.map((turn) => (
                   <MessageScrollerItem
                     key={turn.id}
@@ -154,20 +159,6 @@ export function QueryCard({
       </CardContent>
 
       <CardFooter className="flex-col items-stretch gap-3">
-        {!turns.length && !loading ? (
-          <div className="flex flex-wrap gap-2">
-            {SUGGESTIONS.map((suggestion) => (
-              <Button
-                key={suggestion}
-                onClick={() => setQuery(suggestion)}
-                size="xs"
-                variant="outline"
-              >
-                {suggestion}
-              </Button>
-            ))}
-          </div>
-        ) : null}
         <InputGroup>
           <InputGroupTextarea
             aria-label="Ask a question"
@@ -179,7 +170,7 @@ export function QueryCard({
                 void submit();
               }
             }}
-            placeholder="Ask your documents…"
+            placeholder="Ask about your documents…"
             value={query}
           />
           <InputGroupAddon align="block-end">
