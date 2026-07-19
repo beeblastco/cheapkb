@@ -341,11 +341,7 @@ export default $config({
             "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
-          resources: [
-            table.arn,
-            accountsTable.arn,
-            rateLimitsTable.arn,
-          ],
+          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
         },
         {
           actions: ["dynamodb:GetItem"],
@@ -514,11 +510,7 @@ export default $config({
             "dynamodb:Query",
             "dynamodb:UpdateItem",
           ],
-          resources: [
-            table.arn,
-            accountsTable.arn,
-            rateLimitsTable.arn,
-          ],
+          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
         },
         {
           actions: ["dynamodb:GetItem"],
