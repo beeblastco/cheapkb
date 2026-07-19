@@ -15,4 +15,28 @@ describe("rate limit buckets", () => {
     expect(putCall).toBeDefined();
     expect((putCall![0] as any).input.Item?.sk).toBe("LIMIT#QUERY");
   });
+
+  it("peek reports the balance without consuming a token", async () => {
+    const { peekRateLimit } = await import("../functions/utils");
+
+    const send = vi.fn().mockResolvedValue({});
+    const client = { send } as any;
+
+    const result = await peekRateLimit(
+      "user",
+      "table",
+      "QUERY",
+      100,
+      100,
+      client,
+    );
+
+    expect(result).toEqual({ allowed: true, remaining: 100 });
+    const writeCall = send.mock.calls.find(([command]) =>
+      ["PutCommand", "UpdateCommand"].includes(
+        (command as any).constructor?.name,
+      ),
+    );
+    expect(writeCall).toBeUndefined();
+  });
 });

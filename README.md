@@ -77,6 +77,13 @@ Base URL: `https://<api-id>.execute-api.<region>.amazonaws.com/v1`. All endpoint
 | GET    | `/account/plans`         | Plans available to account | -          |
 | PATCH  | `/account/plan`          | Assign a plan              | -          |
 
+Rate limits use a token bucket per user and operation. Only successful requests
+draw from the quota above; failed requests (4xx/5xx) draw from a separate,
+looser error bucket (3x the success limit) so a caller can keep retrying a
+failing request without burning their working quota, while still being capped
+if they hit errors relentlessly. Both buckets return `429` with
+`X-RateLimit-Remaining` reporting the success balance.
+
 Full request/response schemas: [docs/openapi.yaml](docs/openapi.yaml).
 
 ## Test

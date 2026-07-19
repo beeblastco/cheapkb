@@ -426,6 +426,32 @@ export async function checkRateLimit(
   return { allowed: false, remaining: 0 };
 }
 
+export async function peekRateLimit(
+  userId: string,
+  tableName: string,
+  operation: string,
+  maxTokens: number,
+  refillPerHour: number,
+  documentClient: DynamoDBDocumentClient = dynamo,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const result = await documentClient.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
+    }),
+  );
+  const item = result.Item as Record<string, unknown> | null;
+  if (!item) return { allowed: true, remaining: maxTokens };
+
+  const lastRefill = new Date(item.lastRefill as string);
+  const hoursPassed = (Date.now() - lastRefill.getTime()) / (1000 * 60 * 60);
+  const tokens = Math.min(
+    maxTokens,
+    (item.tokens as number) + hoursPassed * refillPerHour,
+  );
+  return { allowed: tokens >= 1, remaining: Math.floor(tokens) };
+}
+
 export async function getPlan(
   planId: string,
   plansTableName: string,

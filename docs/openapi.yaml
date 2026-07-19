@@ -512,7 +512,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     RateLimited:
-      description: Rate limit exceeded
+      description: >
+        Rate limit exceeded. Failed requests draw from a separate error bucket,
+        so only successful requests reduce the operation quota. X-RateLimit-Remaining
+        reports the remaining success balance.
       headers:
         X-RateLimit-Remaining:
           schema: { type: integer }

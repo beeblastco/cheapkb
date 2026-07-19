@@ -1,4 +1,7 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import type { DocumentType } from "@smithy/types";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
@@ -10,6 +13,7 @@ import {
   checkRateLimit,
   checkUsageLimit,
   extractUserId,
+  peekRateLimit,
   recordQueryAndEmbedUsage,
 } from "../utils";
 import type { QueryResult } from "../types";
@@ -50,23 +54,39 @@ function env(name: string): string {
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
-  const { allowed: rateAllowed, remaining } = await checkRateLimit(
-    userId,
-    env("RATE_LIMITS_TABLE_NAME"),
-    "QUERY",
-    100,
-    100,
-  );
-  if (!rateAllowed) {
+
+  const rateTable = env("RATE_LIMITS_TABLE_NAME");
+  const rate = await peekRateLimit(userId, rateTable, "QUERY", 100, 100);
+  if (!rate.allowed) {
     return {
       statusCode: 429,
       headers: {
         "Content-Type": "application/json",
-        "X-RateLimit-Remaining": String(remaining),
+        "X-RateLimit-Remaining": String(rate.remaining),
       },
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
     };
   }
+  const errorRate = await peekRateLimit(
+    userId,
+    rateTable,
+    "QUERY_ERROR",
+    300,
+    300,
+  );
+  if (!errorRate.allowed) {
+    return {
+      statusCode: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(rate.remaining),
+      },
+      body: JSON.stringify({
+        error: "Too many failed requests. Try again later.",
+      }),
+    };
+  }
+
   const { allowed: usageAllowed } = await checkUsageLimit(
     userId,
     env("ACCOUNTS_TABLE_NAME"),
@@ -81,6 +101,27 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  const response = await processQuery(event, userId);
+  if ((response.statusCode ?? 0) >= 400) {
+    await checkRateLimit(userId, rateTable, "QUERY_ERROR", 300, 300);
+    response.headers = {
+      ...response.headers,
+      "X-RateLimit-Remaining": String(rate.remaining),
+    };
+  } else {
+    const consumed = await checkRateLimit(userId, rateTable, "QUERY", 100, 100);
+    response.headers = {
+      ...response.headers,
+      "X-RateLimit-Remaining": String(consumed.remaining),
+    };
+  }
+  return response;
+}
+
+async function processQuery(
+  event: APIGatewayProxyEventV2,
+  userId: string,
+): Promise<APIGatewayProxyStructuredResultV2> {
   try {
     if (!event.body) {
       return {
@@ -216,10 +257,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "X-RateLimit-Remaining": String(remaining),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query: query,
         topK: topK,

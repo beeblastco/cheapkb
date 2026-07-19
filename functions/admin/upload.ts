@@ -8,13 +8,17 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import type { Conditions } from "@aws-sdk/s3-presigned-post/dist-types/types";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import { createHash, randomUUID } from "node:crypto";
 import type { DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
   extractUserId,
+  peekRateLimit,
   recordUsage,
 } from "../utils";
 
@@ -40,22 +44,41 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(
+  const rate = await peekRateLimit(
     userId,
     RateLimitsTableName,
     "UPLOAD",
     50,
     50,
   );
-  if (!allowed) {
+  if (!rate.allowed) {
     return {
       statusCode: 429,
       headers: {
         "Content-Type": "application/json",
-        "X-RateLimit-Remaining": String(remaining),
+        "X-RateLimit-Remaining": String(rate.remaining),
       },
       body: JSON.stringify({
         error: "Rate limit exceeded. Try again later.",
+      }),
+    };
+  }
+  const errorRate = await peekRateLimit(
+    userId,
+    RateLimitsTableName,
+    "UPLOAD_ERROR",
+    150,
+    150,
+  );
+  if (!errorRate.allowed) {
+    return {
+      statusCode: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(rate.remaining),
+      },
+      body: JSON.stringify({
+        error: "Too many failed requests. Try again later.",
       }),
     };
   }
@@ -74,6 +97,33 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  const response = await processUpload(event, userId);
+  if ((response.statusCode ?? 0) >= 400) {
+    await checkRateLimit(userId, RateLimitsTableName, "UPLOAD_ERROR", 150, 150);
+    response.headers = {
+      ...response.headers,
+      "X-RateLimit-Remaining": String(rate.remaining),
+    };
+  } else {
+    const consumed = await checkRateLimit(
+      userId,
+      RateLimitsTableName,
+      "UPLOAD",
+      50,
+      50,
+    );
+    response.headers = {
+      ...response.headers,
+      "X-RateLimit-Remaining": String(consumed.remaining),
+    };
+  }
+  return response;
+}
+
+async function processUpload(
+  event: APIGatewayProxyEventV2,
+  userId: string,
+): Promise<APIGatewayProxyStructuredResultV2> {
   if (!event.body) {
     return {
       statusCode: 400,
@@ -185,10 +235,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "X-RateLimit-Remaining": String(remaining),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         documentId,
         uploadUrl: upload.url,
