@@ -345,8 +345,11 @@ export default $config({
             table.arn,
             accountsTable.arn,
             rateLimitsTable.arn,
-            plansTable.arn,
           ],
+        },
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
         },
         {
           actions: ["s3:PutObject"],
@@ -515,8 +518,11 @@ export default $config({
             table.arn,
             accountsTable.arn,
             rateLimitsTable.arn,
-            plansTable.arn,
           ],
+        },
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
         },
         {
           actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
