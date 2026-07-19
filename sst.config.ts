@@ -341,7 +341,12 @@ export default $config({
             "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
-          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+          resources: [
+            table.arn,
+            accountsTable.arn,
+            rateLimitsTable.arn,
+            plansTable.arn,
+          ],
         },
         {
           actions: ["s3:PutObject"],
@@ -506,7 +511,12 @@ export default $config({
             "dynamodb:Query",
             "dynamodb:UpdateItem",
           ],
-          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+          resources: [
+            table.arn,
+            accountsTable.arn,
+            rateLimitsTable.arn,
+            plansTable.arn,
+          ],
         },
         {
           actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
