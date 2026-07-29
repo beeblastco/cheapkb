@@ -666,8 +666,8 @@ export async function recordUsage(
     new UpdateCommand({
       TableName: tableName,
       Key: { pk, sk },
-      UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, ttl = :ttl`,
-      ExpressionAttributeNames: { "#day": "day" },
+      UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
+      ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
       ExpressionAttributeValues: {
         ":u": units,
         ":c": costNano,
@@ -702,8 +702,8 @@ export async function recordQueryAndEmbedUsage(
       TableName: tableName,
       Key: { pk, sk },
       UpdateExpression:
-        "SET queryOps = if_not_exists(queryOps, :zero) + :q, embedTokens = if_not_exists(embedTokens, :zero) + :e, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, ttl = :ttl",
-      ExpressionAttributeNames: { "#day": "day" },
+        "SET queryOps = if_not_exists(queryOps, :zero) + :q, embedTokens = if_not_exists(embedTokens, :zero) + :e, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl",
+      ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
       ExpressionAttributeValues: {
         ":q": queryUnits,
         ":e": embedTokens,
