@@ -11,20 +11,22 @@ flowchart LR
     Parse["Parse"]
     Chunk["Chunk"]
     Embed["Embed"]
-    ChunkQ[["Chunk queue"]]
-    EmbedQ[["Embed queue"]]
-    IngestQ[["Ingest queue"]]
+    PipelineQ[["Pipeline queue"]]
+    Dispatch["Pipeline<br/>routes by stage"]
     DDB[("DynamoDB")]
     Vectors[("S3 Vectors")]
 
     Client -->|POST /upload| API --> S3raw
-    S3raw -->|ObjectCreated| IngestAdapter --> IngestQ
-    Client -->|POST /ingest| API --> IngestQ
-    IngestQ --> Parse --> S3
+    S3raw -->|ObjectCreated| IngestAdapter --> PipelineQ
+    Client -->|POST /ingest| API --> PipelineQ
+    PipelineQ --> Dispatch
+    Dispatch -->|stage: parse| Parse --> S3
     Parse --> DDB
-    Parse --> ChunkQ --> Chunk --> S3
+    Parse -->|stage: chunk| PipelineQ
+    Dispatch -->|stage: chunk| Chunk --> S3
     Chunk --> DDB
-    Chunk --> EmbedQ --> Embed
+    Chunk -->|stage: embed| PipelineQ
+    Dispatch -->|stage: embed| Embed
     Embed --> DDB
     Embed --> Vectors
     Client -->|POST /query| API --> Vectors
@@ -37,13 +39,17 @@ flowchart LR
 
 ## Pipeline Stages
 
-| Stage | Lambda (memory) | Timeout | Output                      |
-| ----- | --------------- | ------- | --------------------------- |
-| Parse | 1024 MB         | 300 s   | `parsed/{id}/v1/pages.json` |
-| Chunk | 1024 MB         | 300 s   | `chunks/{id}/*.json`        |
-| Embed | 128 MB          | 300 s   | S3 Vectors                  |
+All three stages run in the single `Pipeline` Lambda (1024 MB, 300 s), which routes each message by its `stage` field.
 
-Each stage writes to DynamoDB before queueing the next stage. Consumers return failed message identifiers to SQS, which retries only those records and sends them to the stage DLQ after 3 receives. After the third failure the document is marked `FAILED` with `failedStep` set to the failing stage.
+| Stage | Message fields             | Output                      |
+| ----- | -------------------------- | --------------------------- |
+| parse | `documentId`, `sourceKey`  | `parsed/{id}/v1/pages.json` |
+| chunk | `documentId`, `parsedKey`  | `chunks/{id}/*.json`        |
+| embed | `documentId`, `s3ChunkKey` | S3 Vectors                  |
+
+Each stage writes to DynamoDB before queueing the next stage. Consumers return failed message identifiers to SQS, which retries only those records and sends them to the pipeline DLQ after 3 receives. After the third failure the document is marked `FAILED` with `failedStep` set to the failing stage.
+
+The stages share one queue because each Lambda SQS event source idle-polls roughly 260k requests per month against the 1M free tier regardless of traffic. Records whose `stage` is missing, unknown, or unparseable are returned to SQS and land in the DLQ.
 
 ## DynamoDB Schema
 
@@ -72,7 +78,7 @@ chunks/{documentId}/chunk_*.json   # One JSON per chunk
 
 ## Batch + Parallelism
 
-- `Chunk` writes chunk JSON and DynamoDB records, then sends chunks to the embed queue in groups of 10.
+- `Chunk` writes chunk JSON and DynamoDB records, then sends `stage: embed` messages back to the pipeline queue in groups of 10.
 - Documents are capped at `MAX_CHUNKS_PER_DOCUMENT` (default 200) to bound embedding and vector-storage cost.
 - `Embed` reads chunks in batches of `EMBED_BATCH` (default 25), embeds them in one request, and writes vectors in batches of `VECTOR_BATCH` (default 500).
 - `Query` fetches all matched chunk JSONs in parallel.
