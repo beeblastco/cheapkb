@@ -41,11 +41,11 @@ flowchart LR
 
 All three stages run in the single `Pipeline` Lambda (1024 MB, 300 s), which routes each message by its `stage` field.
 
-| Stage | Message fields             | Output                      |
-| ----- | -------------------------- | --------------------------- |
-| parse | `documentId`, `sourceKey`  | `parsed/{id}/v1/pages.json` |
-| chunk | `documentId`, `parsedKey`  | `chunks/{id}/*.json`        |
-| embed | `documentId`, `s3ChunkKey` | S3 Vectors                  |
+| Stage | Message fields                            | Output                      |
+| ----- | ----------------------------------------- | --------------------------- |
+| parse | `documentId`, `sourceKey`, `mimeType`     | `parsed/{id}/v1/pages.json` |
+| chunk | `documentId`, `parsedKey`                 | `chunks/{id}/*.json`        |
+| embed | `documentId`, `s3ChunkKey`                | S3 Vectors                  |
 
 Each stage writes to DynamoDB before queueing the next stage. Consumers return failed message identifiers to SQS, which retries only those records and sends them to the pipeline DLQ after 3 receives. After the third failure the document is marked `FAILED` with `failedStep` set to the failing stage.
 

@@ -55,7 +55,8 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
 function readStage(record: SQSRecord): Stage | undefined {
   try {
     const { stage } = JSON.parse(record.body);
-    return typeof stage === "string" && stage in STAGE_HANDLERS
+    return typeof stage === "string" &&
+      Object.hasOwn(STAGE_HANDLERS, stage)
       ? (stage as Stage)
       : undefined;
   } catch {
