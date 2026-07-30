@@ -15,7 +15,7 @@ import { extractUserId } from "../utils";
 const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
-const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
+const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 
 interface IngestBody {
   documentId?: unknown;
@@ -119,8 +119,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
   try {
     await sqs.send(
       new SendMessageCommand({
-        QueueUrl: IngestQueueUrl,
+        QueueUrl: PipelineQueueUrl,
         MessageBody: JSON.stringify({
+          stage: "parse",
           documentId,
           sourceKey: doc.sourceKey,
           mimeType: doc.mimeType,

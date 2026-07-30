@@ -19,9 +19,7 @@ const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
-const ChunkQueueUrl = process.env.CHUNK_QUEUE_URL!;
-const EmbedQueueUrl = process.env.EMBED_QUEUE_URL!;
+const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 
 interface ReindexMessage {
   documentId: string;
@@ -70,7 +68,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const status = doc.status;
   const failedStep = doc.failedStep;
 
-  let targetQueue: string;
+  let targetStage: string;
   let targetStep: string;
   let messageBody: ReindexMessage;
 
@@ -89,7 +87,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
         }),
       };
     }
-    targetQueue = EmbedQueueUrl;
+    targetStage = "embed";
     targetStep = "EMBEDDING";
     messageBody = { documentId, chunkKeys };
     await resetChunkStatuses(documentId, chunkKeys);
@@ -97,14 +95,14 @@ export async function handler(event: APIGatewayProxyEventV2) {
     status === "PARSED" ||
     (status === "FAILED" && failedStep === "CHUNKING")
   ) {
-    targetQueue = ChunkQueueUrl;
+    targetStage = "chunk";
     targetStep = "CHUNKING";
     messageBody = {
       documentId,
       parsedKey: `parsed/${documentId}/v1/pages.json`,
     };
   } else {
-    targetQueue = IngestQueueUrl;
+    targetStage = "parse";
     targetStep = "PARSING";
     messageBody = {
       documentId,
@@ -138,10 +136,14 @@ export async function handler(event: APIGatewayProxyEventV2) {
       try {
         const response = await sqs.send(
           new SendMessageBatchCommand({
-            QueueUrl: targetQueue,
+            QueueUrl: PipelineQueueUrl,
             Entries: chunkKeys.map((s3ChunkKey: string, index: number) => ({
               Id: String(index),
-              MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+              MessageBody: JSON.stringify({
+                stage: "embed",
+                documentId,
+                s3ChunkKey,
+              }),
             })),
           }),
         );
@@ -168,8 +170,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     try {
       await sqs.send(
         new SendMessageCommand({
-          QueueUrl: targetQueue,
-          MessageBody: JSON.stringify(messageBody),
+          QueueUrl: PipelineQueueUrl,
+          MessageBody: JSON.stringify({ stage: targetStage, ...messageBody }),
         }),
       );
     } catch {

@@ -14,7 +14,7 @@ const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const ChunkQueueUrl = process.env.CHUNK_QUEUE_URL!;
+const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -105,8 +105,8 @@ async function parseDocument(
 
   await sqs.send(
     new SendMessageCommand({
-      QueueUrl: ChunkQueueUrl,
-      MessageBody: JSON.stringify({ documentId, parsedKey }),
+      QueueUrl: PipelineQueueUrl,
+      MessageBody: JSON.stringify({ stage: "chunk", documentId, parsedKey }),
     }),
   );
 

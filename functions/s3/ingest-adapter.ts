@@ -25,7 +25,7 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-const IngestQueueUrl = process.env.INGEST_QUEUE_URL!;
+const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "10485760",
   10,
@@ -120,8 +120,9 @@ export async function handler(event: S3Event) {
     try {
       await sqs.send(
         new SendMessageCommand({
-          QueueUrl: IngestQueueUrl,
+          QueueUrl: PipelineQueueUrl,
           MessageBody: JSON.stringify({
+            stage: "parse",
             documentId,
             sourceKey: key,
             mimeType: doc.mimeType ?? "application/octet-stream",

@@ -216,51 +216,22 @@ export default $config({
       });
     }
 
-    const ingestDlq = new sst.aws.Queue("IngestDLQ", {
+    const pipelineDlq = new sst.aws.Queue("PipelineDLQ", {
       transform: {
         queue: (a) => {
-          a.name = name("ingest-dlq");
+          a.name = name("pipeline-dlq");
         },
       },
     });
-    const chunkDlq = new sst.aws.Queue("ChunkDLQ", {
-      transform: {
-        queue: (a) => {
-          a.name = name("chunk-dlq");
-        },
-      },
-    });
-    const embedDlq = new sst.aws.Queue("EmbedDLQ", {
-      transform: {
-        queue: (a) => {
-          a.name = name("embed-dlq");
-        },
-      },
-    });
-    const ingestQueue = new sst.aws.Queue("Ingest", {
+    // Parse, chunk and embed share one queue because each Lambda event source
+    // idle-polls ~260k SQS requests/month against the 1M free tier.
+    const pipelineQueue = new sst.aws.Queue("Pipeline", {
       visibilityTimeout: "900 seconds",
-      dlq: { queue: ingestDlq.arn, retry: 3 },
+      dlq: { queue: pipelineDlq.arn, retry: 3 },
       transform: {
         queue: (a) => {
-          a.name = name("ingest-queue");
-        },
-      },
-    });
-    const chunkQueue = new sst.aws.Queue("Chunk", {
-      visibilityTimeout: "900 seconds",
-      dlq: { queue: chunkDlq.arn, retry: 3 },
-      transform: {
-        queue: (a) => {
-          a.name = name("chunk-queue");
-        },
-      },
-    });
-    const embedQueue = new sst.aws.Queue("Embed", {
-      visibilityTimeout: "900 seconds",
-      dlq: { queue: embedDlq.arn, retry: 3 },
-      transform: {
-        queue: (a) => {
-          a.name = name("embed-queue");
+          a.name = name("pipeline-queue");
+          a.receiveWaitTimeSeconds = 20;
         },
       },
     });
@@ -273,9 +244,7 @@ export default $config({
       RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
       DEFAULT_PLAN_ID,
       STORAGE_BUCKET_NAME: storage.name,
-      INGEST_QUEUE_URL: ingestQueue.url,
-      CHUNK_QUEUE_URL: chunkQueue.url,
-      EMBED_QUEUE_URL: embedQueue.url,
+      PIPELINE_QUEUE_URL: pipelineQueue.url,
       VECTOR_BUCKET_NAME: vectorBucketName,
       VECTOR_INDEX_NAME: vectorIndexName,
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
@@ -372,7 +341,7 @@ export default $config({
           actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
           resources: [table.arn],
         },
-        { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
+        { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
       ],
       transform: {
         function: (a) => {
@@ -381,84 +350,14 @@ export default $config({
       },
     });
 
-    ingestQueue.subscribe(
+    pipelineQueue.subscribe(
       {
-        handler: "./functions/parse/index.handler",
+        handler: "./functions/pipeline/index.handler",
         runtime: "nodejs22.x",
         timeout: "300 seconds",
         memory: "1024 MB",
-        description: "Extract text from raw document files using pdf-parse",
-        environment: baseEnv,
-        permissions: [
-          {
-            actions: ["s3:GetObject"],
-            resources: [pulumi.interpolate`${storage.arn}/raw/*`],
-          },
-          {
-            actions: ["s3:PutObject"],
-            resources: [pulumi.interpolate`${storage.arn}/parsed/*`],
-          },
-          {
-            actions: ["dynamodb:UpdateItem"],
-            resources: [table.arn],
-          },
-          {
-            actions: ["sqs:SendMessage"],
-            resources: [chunkQueue.arn],
-          },
-        ],
-        transform: {
-          function: (a) => {
-            a.name = name("parse");
-          },
-        },
-      },
-      { batch: { partialResponses: true } },
-    );
-
-    chunkQueue.subscribe(
-      {
-        handler: "./functions/chunk/index.handler",
-        runtime: "nodejs22.x",
-        timeout: "300 seconds",
-        memory: "1024 MB",
-        description: "Split parsed text into embeddable chunks",
-        environment: baseEnv,
-        permissions: [
-          {
-            actions: ["s3:GetObject"],
-            resources: [pulumi.interpolate`${storage.arn}/parsed/*`],
-          },
-          {
-            actions: ["s3:PutObject"],
-            resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
-          },
-          {
-            actions: [
-              "dynamodb:GetItem",
-              "dynamodb:PutItem",
-              "dynamodb:UpdateItem",
-            ],
-            resources: [table.arn],
-          },
-          { actions: ["sqs:SendMessage"], resources: [embedQueue.arn] },
-        ],
-        transform: {
-          function: (a) => {
-            a.name = name("chunk");
-          },
-        },
-      },
-      { batch: { partialResponses: true } },
-    );
-
-    embedQueue.subscribe(
-      {
-        handler: "./functions/embed/index.handler",
-        runtime: "nodejs22.x",
-        timeout: "300 seconds",
-        memory: "128 MB",
-        description: "Generate vectors from chunks and store in S3 Vectors",
+        description:
+          "Route pipeline messages to the parse, chunk and embed stages",
         environment: {
           ...embedEnv,
           VECTOR_BATCH: process.env.VECTOR_BATCH!,
@@ -467,7 +366,18 @@ export default $config({
         permissions: [
           {
             actions: ["s3:GetObject"],
-            resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+            resources: [
+              pulumi.interpolate`${storage.arn}/raw/*`,
+              pulumi.interpolate`${storage.arn}/parsed/*`,
+              pulumi.interpolate`${storage.arn}/chunks/*`,
+            ],
+          },
+          {
+            actions: ["s3:PutObject"],
+            resources: [
+              pulumi.interpolate`${storage.arn}/parsed/*`,
+              pulumi.interpolate`${storage.arn}/chunks/*`,
+            ],
           },
           {
             actions: [
@@ -481,16 +391,16 @@ export default $config({
             actions: ["s3vectors:PutVectors"],
             resources: [vectorIndexArn],
           },
+          { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
         ],
         transform: {
           function: (a) => {
-            a.name = name("embed");
+            a.name = name("pipeline");
           },
         },
       },
       { batch: { partialResponses: true } },
     );
-
     const queryFn = new sst.aws.Function("Query", {
       handler: "./functions/query/index.handler",
       runtime: "nodejs22.x",
@@ -583,7 +493,7 @@ export default $config({
         { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: ["sqs:SendMessage"],
-          resources: [ingestQueue.arn, chunkQueue.arn, embedQueue.arn],
+          resources: [pipelineQueue.arn],
         },
       ],
       transform: {
@@ -948,7 +858,7 @@ export default $config({
           actions: ["s3vectors:DeleteVectors"],
           resources: [vectorIndexArn],
         },
-        { actions: ["sqs:SendMessage"], resources: [ingestQueue.arn] },
+        { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
       ],
       transform: {
         function: (a) => {

@@ -19,7 +19,7 @@ const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const EmbedQueueUrl = process.env.EMBED_QUEUE_URL!;
+const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -156,10 +156,14 @@ async function chunkDocument(documentId: string, parsedKey: string) {
     const group = chunkKeys.slice(i, i + sendSize);
     const response = await sqs.send(
       new SendMessageBatchCommand({
-        QueueUrl: EmbedQueueUrl,
+        QueueUrl: PipelineQueueUrl,
         Entries: group.map((s3ChunkKey, index) => ({
           Id: String(index),
-          MessageBody: JSON.stringify({ documentId, s3ChunkKey }),
+          MessageBody: JSON.stringify({
+            stage: "embed",
+            documentId,
+            s3ChunkKey,
+          }),
         })),
       }),
     );

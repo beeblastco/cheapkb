@@ -4,8 +4,18 @@ import { describe, expect, it } from "vitest";
 describe("infrastructure hardening", () => {
   const config = fs.readFileSync("sst.config.ts", "utf8");
 
-  it("enables partial SQS failures for every pipeline consumer", () => {
-    expect(config.match(/partialResponses: true/g)).toHaveLength(3);
+  it("enables partial SQS failures for the pipeline consumer", () => {
+    expect(config.match(/partialResponses: true/g)).toHaveLength(1);
+  });
+
+  // Every extra Lambda event source idle-polls ~260k SQS requests/month, so the
+  // three stages must stay on one queue to fit the 1M free tier.
+  it("keeps all pipeline stages on a single queue", () => {
+    expect(config.match(/\.subscribe\(/g)).toHaveLength(1);
+    expect(config).toContain("PIPELINE_QUEUE_URL: pipelineQueue.url");
+    expect(config).not.toContain("INGEST_QUEUE_URL");
+    expect(config).not.toContain("CHUNK_QUEUE_URL");
+    expect(config).not.toContain("EMBED_QUEUE_URL");
   });
 
   it("scopes vector permissions to the stage index", () => {
