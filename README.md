@@ -101,7 +101,7 @@ CI deploys automatically on merge to `main` via `.github/workflows/deploy.yml`. 
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — data flow, DynamoDB schema, cleanup, replacement uploads
+- [Architecture](docs/ARCHITECTURE.md) — service diagram, data flow, DynamoDB schema, cleanup, replacement uploads
 - [Frontend](docs/FRONTEND.md) — web workspace, auth flow, uploads
 - [Billing and usage](docs/BILLING.md) — plans, usage cycles, storage accounting
 - [API reference](docs/openapi.yaml) — OpenAPI 3 spec

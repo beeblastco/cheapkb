@@ -1,41 +1,8 @@
 # Architecture
 
-## Data Flow
+![Architecture Diagram](architecture.png)
 
-```mermaid
-flowchart LR
-    Client([Client])
-    API["API Gateway"]
-    S3raw[("S3 raw/")]
-    IngestAdapter["IngestAdapter<br/>S3 event"]
-    Parse["Parse"]
-    Chunk["Chunk"]
-    Embed["Embed"]
-    PipelineQ[["Pipeline queue"]]
-    Dispatch["Pipeline<br/>routes by stage"]
-    DDB[("DynamoDB")]
-    Vectors[("S3 Vectors")]
-
-    Client -->|POST /upload| API --> S3raw
-    S3raw -->|ObjectCreated| IngestAdapter --> PipelineQ
-    Client -->|POST /ingest| API --> PipelineQ
-    PipelineQ --> Dispatch
-    Dispatch -->|stage: parse| Parse --> S3
-    Parse --> DDB
-    Parse -->|stage: chunk| PipelineQ
-    Dispatch -->|stage: chunk| Chunk --> S3
-    Chunk --> DDB
-    Chunk -->|stage: embed| PipelineQ
-    Dispatch -->|stage: embed| Embed
-    Embed --> DDB
-    Embed --> Vectors
-    Client -->|POST /query| API --> Vectors
-    Client -->|DELETE| API --> Vectors
-    S3raw -->|ObjectRemoved| CleanupAdapter
-    CleanupAdapter --> Vectors
-    CleanupAdapter --> S3
-    CleanupAdapter --> DDB
-```
+The architecture diagram above illustrates the data flow and AWS service interactions for the CheapKB system.
 
 ## Pipeline Stages
 
