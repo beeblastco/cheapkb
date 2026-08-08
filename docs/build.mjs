@@ -192,6 +192,10 @@ console.log(
     advice: res.audit.advice,
   }),
 );
+// Never persist a diagram that failed validation.
+if (res.ok === false) {
+  throw new Error("diagram failed validation: " + JSON.stringify(res.errors));
+}
 writeFileSync(
   new URL("./architecture.drawio", import.meta.url),
   d.mxfile("cheapkb architecture"),
@@ -216,5 +220,7 @@ try {
   );
   console.log("RENDERED:", png);
 } catch (e) {
+  // Full renders must fail loudly so architecture.png never goes stale.
+  if (process.argv.includes("--full")) throw e;
   console.error("RENDER-SKIPPED:", String(e.message).split("\n")[0]);
 }
