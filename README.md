@@ -14,21 +14,11 @@ Node.js 22.x, TypeScript, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Client([Client]) -->|POST /upload| API["API Gateway"]
-    API --> S3raw[("S3 raw/")]
-    S3raw -->|ObjectCreated| IngestAdapter["IngestAdapter"] --> PipelineQ
-    Client -->|POST /ingest| API --> PipelineQ[["Pipeline queue"]]
-    PipelineQ --> Dispatch["Pipeline"]
-    Dispatch -->|stage: parse| Parse["Parse"] --> PipelineQ
-    Dispatch -->|stage: chunk| Chunk["Chunk"] --> PipelineQ
-    Dispatch -->|stage: embed| Embed["Embed"] --> Vectors[("S3 Vectors")]
-```
-
-Documents flow through an SQS-backed pipeline (parse → chunk → embed → S3 Vectors), with each stage retried independently and failures routed to a dead-letter queue. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full data flow, DynamoDB schema, cleanup, and replacement-upload behavior.
+Documents flow through an SQS-backed pipeline (parse → chunk → embed → S3 Vectors), with each stage retried independently and failures routed to a dead-letter queue.
 
 All three stages share one queue and one Lambda event source. Each message carries a `stage` field that the `Pipeline` function uses to route it, and each stage re-enqueues the next one. This is a cost constraint, not a style choice: a Lambda SQS event source keeps a minimum of two pollers long-polling at 20s whether or not messages exist, which costs about 260k SQS requests per month per queue while completely idle. Three queues put the project at roughly 780k of the 1M monthly free tier before serving a single request. Do not split the stages back onto separate queues.
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the service diagram, the full data flow, the DynamoDB schema, cleanup, and replacement-upload behavior.
 
 ## Quickstart
 
@@ -101,7 +91,7 @@ CI deploys automatically on merge to `main` via `.github/workflows/deploy.yml`. 
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — data flow, DynamoDB schema, cleanup, replacement uploads
+- [Architecture](docs/ARCHITECTURE.md) — service diagram, data flow, DynamoDB schema, cleanup, replacement uploads
 - [Frontend](docs/FRONTEND.md) — web workspace, auth flow, uploads
 - [Billing and usage](docs/BILLING.md) — plans, usage cycles, storage accounting
 - [API reference](docs/openapi.yaml) — OpenAPI 3 spec
