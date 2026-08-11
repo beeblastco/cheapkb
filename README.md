@@ -8,6 +8,9 @@
 Cost-effective serverless knowledge base on AWS. Ingest documents, chunk, embed, and search vectors within the AWS Free Tier.
 The authenticated workspace pairs document management and document-grounded questions with a compact plan and usage summary.
 
+Current API:
+Web: https://ds8aejb7efd81.cloudfront.net
+
 ## Stack
 
 Node.js 22.x, TypeScript, [SST v4](https://sst.dev), API Gateway, Lambda, S3, S3 Vectors, DynamoDB, and SQS. A React + Vite + shadcn/ui frontend is served from S3 through CloudFront. Auth uses [shoo.dev](https://shoo.dev) PKCE with server-side JWT verification via [jose](https://github.com/panva/jose); documents are scoped per user in a DynamoDB single-table design.
