@@ -99,7 +99,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     targetStep = "CHUNKING";
     messageBody = {
       documentId,
-      parsedKey: `parsed/${documentId}/v1/pages.json`,
+      parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
     };
   } else {
     targetStage = "parse";

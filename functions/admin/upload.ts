@@ -28,9 +28,17 @@ const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "10485760",
   10,
 );
+const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
   "text/markdown",
   "text/plain",
 ]);
@@ -164,8 +172,11 @@ export async function handler(event: APIGatewayProxyEventV2) {
     }
 
     const fields: Record<string, string> = { "Content-Type": mimeType };
+    const maxUploadBytes = mimeType.startsWith("image/")
+      ? MAX_IMAGE_UPLOAD_BYTES
+      : MAX_UPLOAD_BYTES;
     const conditions: Conditions[] = [
-      ["content-length-range", 1, MAX_UPLOAD_BYTES],
+      ["content-length-range", 1, maxUploadBytes],
       ["eq", "$Content-Type", mimeType],
     ];
     if (replacementToken) {
@@ -194,7 +205,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
         uploadUrl: upload.url,
         uploadFields: upload.fields,
         sourceKey,
-        maxUploadBytes: MAX_UPLOAD_BYTES,
+        maxUploadBytes,
         reused,
       }),
     };

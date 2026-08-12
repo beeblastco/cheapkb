@@ -34,6 +34,9 @@ export interface Account {
   priceMonthlyCents: number;
   monthlyAllowanceCents: number;
   storageBytes: number;
+  storageCostCycleStart?: string;
+  storageCostNano?: number;
+  storageCostUpdatedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -100,6 +103,9 @@ export interface DocumentRow {
   chunkCount?: number;
   embeddedCount?: number;
   countedBytes?: number;
+  dispatchEventId?: string;
+  dispatchLeaseUntil?: string;
+  dispatchState?: "CLAIMED" | "SENT";
 }
 
 export interface Plan {
@@ -114,6 +120,8 @@ export interface QueryResult {
   chunkId: string;
   score: number;
   title?: string;
+  modality?: "image" | "text";
+  mimeType?: string;
   pageStart?: number;
   pageEnd?: number;
   text?: string;

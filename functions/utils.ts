@@ -21,7 +21,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
-  ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DocumentType } from "@smithy/types";
@@ -51,9 +51,9 @@ const NANO_PER_USD = 1_000_000_000;
 const NANO_PER_CENT = NANO_PER_USD / 100;
 
 const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
-  const raw = process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.01";
+  const raw = process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12";
   const parsed = parseFloat(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.01;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.12;
 })();
 
 const EMBEDDING_INPUT_PRICE_PER_TOKEN =
@@ -439,24 +439,6 @@ export async function getPlan(
   return (result?.Item as unknown as Plan) ?? null;
 }
 
-export async function listPlans(plansTableName: string): Promise<Plan[]> {
-  const plans: Plan[] = [];
-  let lastKey: Record<string, unknown> | undefined;
-  do {
-    const result = await dynamo.send(
-      new ScanCommand({
-        TableName: plansTableName,
-        ExclusiveStartKey: lastKey,
-      }),
-    );
-    for (const item of result?.Items ?? []) {
-      plans.push(item as unknown as Plan);
-    }
-    lastKey = result.LastEvaluatedKey;
-  } while (lastKey);
-  return plans;
-}
-
 export async function getDefaultPlan(
   plansTableName?: string,
 ): Promise<Plan | null> {
@@ -486,6 +468,9 @@ export async function getOrCreateAccount(
     priceMonthlyCents: defaultPlan?.priceMonthlyCents ?? 0,
     monthlyAllowanceCents: defaultPlan?.monthlyAllowanceCents ?? 0,
     storageBytes: 0,
+    storageCostCycleStart: now,
+    storageCostNano: 0,
+    storageCostUpdatedAt: now,
     createdAt: now,
     updatedAt: now,
   };
@@ -521,20 +506,33 @@ export async function getUsageSummary(
   const endDay = dayKey(cycle.endMs - 1);
   const spentNano = await sumUsageNano(userId, tableName, startDay, endDay);
 
-  const storageSeconds = Math.max(0, (nowMs - cycle.startMs) / 1000);
-  const storageNano = storageCostNanoUsd(
-    account.storageBytes ?? 0,
-    storageSeconds,
-  );
+  const cycleStart = new Date(cycle.startMs).toISOString();
+  const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
+  const tracksCurrentCycle =
+    account.storageCostCycleStart === cycleStart &&
+    Number.isFinite(storageUpdatedAt) &&
+    storageUpdatedAt >= cycle.startMs &&
+    storageUpdatedAt <= nowMs;
+  const storageNano = tracksCurrentCycle
+    ? (account.storageCostNano ?? 0) +
+      storageCostNanoUsd(
+        account.storageBytes ?? 0,
+        (nowMs - storageUpdatedAt) / 1000,
+      )
+    : storageCostNanoUsd(
+        account.storageBytes ?? 0,
+        (nowMs - cycle.startMs) / 1000,
+      );
   const totalSpentNano = spentNano + storageNano;
-  const allowanceNano = allowanceNanoUsd(account);
-
-  const plan = await getPlan(account.planId, process.env.PLANS_TABLE_NAME!);
+  const plan = await getDefaultPlan();
+  const priceMonthlyCents = plan?.priceMonthlyCents ?? 0;
+  const monthlyAllowanceCents = plan?.monthlyAllowanceCents ?? 0;
+  const allowanceNano = centsToNanoUsd(monthlyAllowanceCents);
 
   return {
-    planId: account.planId,
-    planLabel: plan?.label ?? account.planId,
-    priceMonthlyUsd: nanoUsdToUsd(account.priceMonthlyCents * NANO_PER_CENT),
+    planId: plan?.planId ?? defaultPlanId(),
+    planLabel: plan?.label ?? defaultPlanId(),
+    priceMonthlyUsd: nanoUsdToUsd(priceMonthlyCents * NANO_PER_CENT),
     allowanceUsd: nanoUsdToUsd(allowanceNano),
     spentUsd: nanoUsdToUsd(totalSpentNano),
     storageUsd: nanoUsdToUsd(storageNano),
@@ -585,59 +583,111 @@ export async function sumUsageNano(
   return total;
 }
 
-export async function updatePlan(
-  userId: string,
-  plansTableName: string,
-  accountsTableName: string,
-  planId: string,
-): Promise<AccountRow | null> {
-  const plan = await getPlan(planId, plansTableName);
-  if (!plan) return null;
-  const pk = `ACCOUNT#${userId}`;
-  const sk = "PROFILE";
-  const now = new Date().toISOString();
-  await getOrCreateAccount(userId, accountsTableName);
-  const result = await dynamo.send(
-    new UpdateCommand({
-      TableName: accountsTableName,
-      Key: { pk, sk },
-      UpdateExpression:
-        "SET planId = :planId, priceMonthlyCents = :price, monthlyAllowanceCents = :allowance, updatedAt = :now",
-      ExpressionAttributeValues: {
-        ":planId": plan.planId,
-        ":price": plan.priceMonthlyCents,
-        ":allowance": plan.monthlyAllowanceCents,
-        ":now": now,
-      },
-      ReturnValues: "ALL_NEW",
-    }),
-  );
-  return result.Attributes as AccountRow;
-}
-
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
   deltaBytes: number,
+  operationId?: string,
 ) {
   if (deltaBytes === 0) return;
-  const now = new Date().toISOString();
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
-      UpdateExpression:
-        "SET storageBytes = if_not_exists(storageBytes, :zero) + :delta, updatedAt = :now",
-      ConditionExpression:
-        "attribute_not_exists(storageBytes) OR storageBytes >= :minDelta",
-      ExpressionAttributeValues: {
-        ":delta": deltaBytes,
-        ":zero": 0,
-        ":minDelta": Math.max(0, -deltaBytes),
-        ":now": now,
+  const pk = `ACCOUNT#${userId}`;
+  const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (operationKey) {
+      const existing = await dynamo.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk, sk: operationKey },
+          ConsistentRead: true,
+        }),
+      );
+      if (existing.Item) return;
+    }
+
+    const result = await dynamo.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { pk, sk: "PROFILE" },
+        ConsistentRead: true,
+      }),
+    );
+    const account = result.Item as AccountRow | undefined;
+    if (!account) throw new Error("Account profile not found");
+
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    const cycle = currentCycle(account, nowMs);
+    const cycleStart = new Date(cycle.startMs).toISOString();
+    const storageBytes = account.storageBytes ?? 0;
+    const nextStorageBytes = storageBytes + deltaBytes;
+    if (nextStorageBytes < 0)
+      throw new Error("Storage usage cannot be negative");
+
+    const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
+    const tracksCurrentCycle =
+      account.storageCostCycleStart === cycleStart &&
+      Number.isFinite(previousUpdateMs) &&
+      previousUpdateMs >= cycle.startMs &&
+      previousUpdateMs <= nowMs;
+    const previousCost = tracksCurrentCycle
+      ? (account.storageCostNano ?? 0)
+      : 0;
+    const elapsedSeconds = tracksCurrentCycle
+      ? (nowMs - previousUpdateMs) / 1000
+      : (nowMs - cycle.startMs) / 1000;
+    const storageCostNano =
+      previousCost + storageCostNanoUsd(storageBytes, elapsedSeconds);
+    const storageUpdatedCondition = account.storageCostUpdatedAt
+      ? "storageCostUpdatedAt = :previousUpdate"
+      : "attribute_not_exists(storageCostUpdatedAt)";
+    const transactItems: ConstructorParameters<
+      typeof TransactWriteCommand
+    >[0]["TransactItems"] = [
+      {
+        Update: {
+          TableName: tableName,
+          Key: { pk, sk: "PROFILE" },
+          UpdateExpression:
+            "SET storageBytes = :nextBytes, storageCostNano = :cost, storageCostUpdatedAt = :now, storageCostCycleStart = :cycleStart, updatedAt = :now",
+          ConditionExpression: `storageBytes = :currentBytes AND ${storageUpdatedCondition}`,
+          ExpressionAttributeValues: {
+            ":cost": storageCostNano,
+            ":currentBytes": storageBytes,
+            ":cycleStart": cycleStart,
+            ":nextBytes": nextStorageBytes,
+            ":now": now,
+            ...(account.storageCostUpdatedAt
+              ? { ":previousUpdate": account.storageCostUpdatedAt }
+              : {}),
+          },
+        },
       },
-    }),
-  );
+    ];
+    if (operationKey) {
+      transactItems.push({
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk,
+            sk: operationKey,
+            ttl: Math.floor(nowMs / 1000) + 90 * 24 * 60 * 60,
+          },
+          ConditionExpression: "attribute_not_exists(pk)",
+        },
+      });
+    }
+
+    try {
+      await dynamo.send(
+        new TransactWriteCommand({ TransactItems: transactItems }),
+      );
+      return;
+    } catch (error) {
+      if ((error as Error).name !== "TransactionCanceledException") throw error;
+    }
+  }
+  throw new Error("Storage usage changed concurrently");
 }
 
 export async function recordUsage(
@@ -645,6 +695,7 @@ export async function recordUsage(
   tableName: string,
   category: UsageCategory,
   units: number,
+  operationId?: string,
 ): Promise<void> {
   if (units <= 0) return;
 
@@ -662,85 +713,78 @@ export async function recordUsage(
   const field = categoryField(category);
   const ttl = Math.floor(now.getTime() / 1000) + 90 * 24 * 60 * 60;
 
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: { pk, sk },
-      UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
-      ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
-      ExpressionAttributeValues: {
-        ":u": units,
-        ":c": costNano,
-        ":zero": 0,
-        ":day": day,
-        ":t": now.toISOString(),
-        ":ttl": ttl,
-      },
-    }),
-  );
+  const update = {
+    TableName: tableName,
+    Key: { pk, sk },
+    UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
+    ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
+    ExpressionAttributeValues: {
+      ":u": units,
+      ":c": costNano,
+      ":zero": 0,
+      ":day": day,
+      ":t": now.toISOString(),
+      ":ttl": ttl,
+    },
+  };
+  if (!operationId) {
+    await dynamo.send(new UpdateCommand(update));
+    return;
+  }
+
+  try {
+    await dynamo.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Update: update },
+          {
+            Put: {
+              TableName: tableName,
+              Item: { pk, sk: `USAGEEVENT#${operationId}`, ttl },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+        ],
+      }),
+    );
+  } catch (error) {
+    if ((error as Error).name !== "TransactionCanceledException") throw error;
+    const existing = await dynamo.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { pk, sk: `USAGEEVENT#${operationId}` },
+        ConsistentRead: true,
+      }),
+    );
+    if (!existing.Item) throw error;
+  }
 }
 
-export async function recordQueryAndEmbedUsage(
-  userId: string,
-  tableName: string,
-  queryUnits: number,
-  embedTokens: number,
-): Promise<void> {
-  if (queryUnits <= 0 && embedTokens <= 0) return;
-
-  const now = new Date();
-  const day = dayKey(now.getTime());
-  const pk = `ACCOUNT#${userId}`;
-  const sk = `USAGE#${day}`;
-  const ttl = Math.floor(now.getTime() / 1000) + 90 * 24 * 60 * 60;
-  const costNano =
-    queryUnits * PRICING.queryPerRequest +
-    Math.round(embedTokens * PRICING.embedPerToken);
-
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: tableName,
-      Key: { pk, sk },
-      UpdateExpression:
-        "SET queryOps = if_not_exists(queryOps, :zero) + :q, embedTokens = if_not_exists(embedTokens, :zero) + :e, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl",
-      ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
-      ExpressionAttributeValues: {
-        ":q": queryUnits,
-        ":e": embedTokens,
-        ":c": costNano,
-        ":zero": 0,
-        ":day": day,
-        ":t": now.toISOString(),
-        ":ttl": ttl,
-      },
-    }),
-  );
+function applyTags(
+  metadata: DocumentType | undefined,
+  tags: string[] | null,
+): DocumentType {
+  const next: Record<string, DocumentType> = {
+    ...(metadata as Record<string, DocumentType> | undefined),
+  };
+  // The embed step omits the key rather than storing an empty value; match it so
+  // retagged vectors keep the same shape as freshly built ones.
+  if (tags && tags.length > 0) next.tags = tags;
+  else delete next.tags;
+  return next;
 }
 
-function defaultPlanId(): string {
-  return process.env.DEFAULT_PLAN_ID ?? "basic";
+// embedTokens tracks input tokens (not chunk count) so cost is based on
+// the configured embedding model price per 1M input tokens.
+function categoryField(category: UsageCategory): string {
+  if (category === "query") return "queryOps";
+  if (category === "upload") return "uploadOps";
+  if (category === "ingest") return "ingestOps";
+  return "embedTokens";
 }
 
 function centsToNanoUsd(cents: number): number {
   return cents * NANO_PER_CENT;
-}
-
-function nanoUsdToUsd(nano: number): number {
-  return nano / NANO_PER_USD;
-}
-
-function storageCostNanoUsd(bytes: number, seconds: number): number {
-  const gb = bytes / (1024 * 1024 * 1024);
-  const prorated = (seconds / SECONDS_PER_MONTH) * gb;
-  return Math.round(prorated * PRICING.storagePerGbMonth);
-}
-
-function allowanceNanoUsd(account: Account): number {
-  return centsToNanoUsd(account.monthlyAllowanceCents);
-}
-
-function dayKey(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
 }
 
 // Billing cycles anchor on account creation day-of-month and advance by full
@@ -767,6 +811,18 @@ function currentCycle(account: Account, nowMs: number) {
   };
 }
 
+function dayKey(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function defaultPlanId(): string {
+  return process.env.DEFAULT_PLAN_ID ?? "basic";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function monthAnchor(
   year: number,
   monthIndex: number,
@@ -777,31 +833,14 @@ function monthAnchor(
   return Date.UTC(year, monthIndex, Math.min(day, lastDay), ...time);
 }
 
-function applyTags(
-  metadata: DocumentType | undefined,
-  tags: string[] | null,
-): DocumentType {
-  const next: Record<string, DocumentType> = {
-    ...(metadata as Record<string, DocumentType> | undefined),
-  };
-  // The embed step omits the key rather than storing an empty value; match it so
-  // retagged vectors keep the same shape as freshly built ones.
-  if (tags && tags.length > 0) next.tags = tags;
-  else delete next.tags;
-  return next;
+function nanoUsdToUsd(nano: number): number {
+  return nano / NANO_PER_USD;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// embedTokens tracks input tokens (not chunk count) so cost is based on
-// the configured embedding model price per 1M input tokens.
-function categoryField(category: UsageCategory): string {
-  if (category === "query") return "queryOps";
-  if (category === "upload") return "uploadOps";
-  if (category === "ingest") return "ingestOps";
-  return "embedTokens";
+function storageCostNanoUsd(bytes: number, seconds: number): number {
+  const gb = bytes / (1024 * 1024 * 1024);
+  const prorated = (seconds / SECONDS_PER_MONTH) * gb;
+  return Math.round(prorated * PRICING.storagePerGbMonth);
 }
 
 export {

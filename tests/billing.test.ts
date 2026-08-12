@@ -1,10 +1,11 @@
 import { mockClient } from "aws-sdk-client-mock";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 
@@ -72,12 +73,67 @@ describe("billing", () => {
     });
 
     it("updates storage bytes", async () => {
-      dynamoMock.on(UpdateCommand).resolves({});
+      const now = new Date().toISOString();
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          planId: "basic",
+          priceMonthlyCents: 0,
+          monthlyAllowanceCents: 100,
+          storageBytes: 0,
+          storageCostCycleStart: now,
+          storageCostNano: 0,
+          storageCostUpdatedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
 
       await updateStorageBytes("user-1", "table", 1024);
 
-      const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
-      expect(call.ExpressionAttributeValues[":delta"]).toBe(1024);
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":nextBytes"]).toBe(1024);
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(0);
+    });
+
+    it("accrues the old storage size before a deletion", async () => {
+      const cycleStart = "2024-01-01T00:00:00.000Z";
+      const now = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          planId: "basic",
+          priceMonthlyCents: 0,
+          monthlyAllowanceCents: 100,
+          storageBytes: 1024 * 1024 * 1024,
+          storageCostCycleStart: cycleStart,
+          storageCostNano: 0,
+          storageCostUpdatedAt: cycleStart,
+          createdAt: cycleStart,
+          updatedAt: cycleStart,
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      try {
+        await updateStorageBytes("user-1", "table", -(1024 * 1024 * 1024));
+      } finally {
+        clock.mockRestore();
+      }
+
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":nextBytes"]).toBe(0);
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(
+        PRICING.storagePerGbMonth / 2,
+      );
     });
   });
 
@@ -151,7 +207,23 @@ describe("billing", () => {
       expect(update.UpdateExpression).toContain("embedTokens");
       expect(update.ExpressionAttributeValues[":u"]).toBe(500);
       expect(update.ExpressionAttributeValues[":c"]).toBe(
-        500 * PRICING.embedPerToken,
+        Math.round(500 * PRICING.embedPerToken),
+      );
+    });
+
+    it("records an idempotency marker with retried usage", async () => {
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      await recordUsage("user-1", "table", "ingest", 1, "doc-1:sequence-1");
+
+      const transaction =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems;
+      expect(transaction?.[0].Update?.ExpressionAttributeValues?.[":u"]).toBe(
+        1,
+      );
+      expect(transaction?.[1].Put?.Item?.sk).toBe(
+        "USAGEEVENT#doc-1:sequence-1",
       );
     });
 
@@ -176,7 +248,7 @@ describe("billing", () => {
       expect(embedUpdate.UpdateExpression).toContain("embedTokens");
       expect(embedUpdate.ExpressionAttributeValues[":u"]).toBe(queryTokens);
       expect(embedUpdate.ExpressionAttributeValues[":c"]).toBe(
-        queryTokens * PRICING.embedPerToken,
+        Math.round(queryTokens * PRICING.embedPerToken),
       );
     });
 
@@ -199,6 +271,19 @@ describe("billing", () => {
             updatedAt: now.toISOString(),
           },
         });
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "PLAN#basic", sk: "PLAN" },
+        })
+        .resolves({
+          Item: {
+            planId: "basic",
+            label: "Basic",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 100,
+          },
+        });
       dynamoMock.on(QueryCommand).resolves({ Items: [] });
 
       const summary = await getUsageSummary("user-1", "table");
@@ -206,6 +291,63 @@ describe("billing", () => {
       expect(summary.planId).toBe("basic");
       expect(summary.allowanceUsd).toBe(1);
       expect(summary.paused).toBe(false);
+    });
+
+    it("uses the deploy-owned default for an account with an old custom plan", async () => {
+      const now = new Date();
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "ACCOUNT#user-1", sk: "PROFILE" },
+        })
+        .resolves({
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            planId: "pro",
+            priceMonthlyCents: 500,
+            monthlyAllowanceCents: 400,
+            storageBytes: 0,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          },
+        });
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "PLAN#pro", sk: "PLAN" },
+        })
+        .resolves({
+          Item: {
+            pk: "PLAN#pro",
+            sk: "PLAN",
+            planId: "pro",
+            label: "Pro",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 999_999_999,
+          },
+        });
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "PLAN#basic", sk: "PLAN" },
+        })
+        .resolves({
+          Item: {
+            pk: "PLAN#basic",
+            sk: "PLAN",
+            planId: "basic",
+            label: "Basic",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 100,
+          },
+        });
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const summary = await getUsageSummary("user-1", "table");
+
+      expect(summary.planId).toBe("basic");
+      expect(summary.allowanceUsd).toBe(1);
     });
 
     it("marks summary as paused when usage exceeds the monthly allowance", async () => {
@@ -225,6 +367,19 @@ describe("billing", () => {
             storageBytes: 0,
             createdAt: now.toISOString(),
             updatedAt: now.toISOString(),
+          },
+        });
+      dynamoMock
+        .on(GetCommand, {
+          TableName: "table",
+          Key: { pk: "PLAN#basic", sk: "PLAN" },
+        })
+        .resolves({
+          Item: {
+            planId: "basic",
+            label: "Basic",
+            priceMonthlyCents: 0,
+            monthlyAllowanceCents: 100,
           },
         });
       // Basic allowance is $1 = 1_000_000_000 nano-USD; exceed it by 1 nano.

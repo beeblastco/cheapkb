@@ -3,7 +3,7 @@ info:
   title: cheapkb API
   version: 1.0.0
   description: |
-    RAG document ingestion and vector search API.
+    Multimodal RAG document ingestion and text/image vector search API.
     All requests and responses use JSON. Auth via Bearer token (Shoo JWKS).
 servers:
   - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
@@ -78,7 +78,7 @@ paths:
   /query:
     post:
       operationId: queryVectors
-      summary: Vector similarity search with metadata filters
+      summary: Text, image, or mixed vector similarity search with metadata filters
       tags: [search]
       responses:
         "200":
@@ -327,147 +327,6 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
-  /account/plan:
-    patch:
-      operationId: assignAccountPlan
-      summary: Assign a plan to the authenticated account
-      tags: [account]
-      responses:
-        "200":
-          description: Updated account
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AccountResponse" }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/PlanAssignRequest" }
-
-  /account/plans:
-    get:
-      operationId: listAccountPlans
-      summary: List available plans for the authenticated account
-      tags: [account]
-      responses:
-        "200":
-          description: Plan list
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/PlanListResponse" }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /plans:
-    get:
-      operationId: listPlans
-      summary: List all plans
-      tags: [plans]
-      responses:
-        "200":
-          description: Plan list
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/PlanListResponse" }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      operationId: createPlan
-      summary: Create a plan
-      tags: [plans]
-      responses:
-        "201":
-          description: Plan created
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Plan" }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          description: Plan already exists
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/Plan" }
-
-  /plans/{id}:
-    get:
-      operationId: getPlan
-      summary: Get a single plan
-      tags: [plans]
-      parameters:
-        - { $ref: "#/components/parameters/PlanId" }
-      responses:
-        "200":
-          description: Plan
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Plan" }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    patch:
-      operationId: updatePlan
-      summary: Update a plan
-      tags: [plans]
-      parameters:
-        - { $ref: "#/components/parameters/PlanId" }
-      responses:
-        "200":
-          description: Updated plan
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Plan" }
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/PlanUpdateRequest" }
-    delete:
-      operationId: deletePlan
-      summary: Delete a plan
-      tags: [plans]
-      parameters:
-        - { $ref: "#/components/parameters/PlanId" }
-      responses:
-        "200":
-          description: Plan deleted
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [planId]
-                properties:
-                  planId: { type: string }
-        "400":
-          description: Missing id or attempt to delete the default plan
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
 components:
   securitySchemes:
     bearerAuth:
@@ -488,13 +347,6 @@ components:
       required: true
       schema: { type: string }
       description: Tag name (URL-encoded)
-    PlanId:
-      name: id
-      in: path
-      required: true
-      schema: { type: string }
-      description: Plan identifier
-
   responses:
     BadRequest:
       description: Validation error
@@ -543,7 +395,16 @@ components:
           maxLength: 255
         mimeType:
           type: string
-          enum: [application/pdf, text/markdown, text/plain]
+          enum:
+            [
+              application/pdf,
+              image/gif,
+              image/jpeg,
+              image/png,
+              image/webp,
+              text/markdown,
+              text/plain,
+            ]
         title:
           type: string
           maxLength: 200
@@ -611,11 +472,17 @@ components:
 
     QueryRequest:
       type: object
-      required: [query]
+      anyOf:
+        - required: [query]
+        - required: [image]
       properties:
         query:
           type: string
+          description: Optional text query, up to 4,000 characters
           maxLength: 4000
+        image:
+          type: string
+          description: JPEG, PNG, WebP, or GIF data URI up to 5 MB
         topK:
           type: integer
           minimum: 1
@@ -631,6 +498,10 @@ components:
             tags:
               $ref: "#/components/schemas/FilterValue"
             authors:
+              $ref: "#/components/schemas/FilterValue"
+            mimeType:
+              $ref: "#/components/schemas/FilterValue"
+            modality:
               $ref: "#/components/schemas/FilterValue"
             year:
               $ref: "#/components/schemas/FilterValue"
@@ -652,10 +523,14 @@ components:
 
     QueryResponse:
       type: object
-      required: [query, topK, resultCount, results]
+      required: [query, inputModality, topK, resultCount, results]
       properties:
         query:
           type: string
+          description: Trimmed text query; empty for image-only requests
+        inputModality:
+          type: string
+          enum: [text, image, mixed]
         topK:
           type: integer
         resultCount:
@@ -678,6 +553,11 @@ components:
           format: float
           description: "Similarity score 0..1 (1 = perfect match)"
         title:
+          type: string
+        modality:
+          type: string
+          enum: [text, image]
+        mimeType:
           type: string
         pageStart:
           type: integer
@@ -780,7 +660,7 @@ components:
 
     ChunkSummary:
       type: object
-      required: [chunkId, pageStart, pageEnd, tokenCount, status]
+      required: [chunkId, pageStart, pageEnd, status]
       properties:
         chunkId:
           type: string
@@ -790,6 +670,7 @@ components:
           type: integer
         tokenCount:
           type: integer
+          description: Text chunk token count; omitted for image chunks
         status:
           type: string
 
@@ -916,49 +797,6 @@ components:
         deleted:
           type: boolean
           enum: [true]
-
-    Plan:
-      type: object
-      required: [planId, label, priceMonthlyCents, monthlyAllowanceCents]
-      properties:
-        planId:
-          type: string
-        label:
-          type: string
-        priceMonthlyCents:
-          type: integer
-          minimum: 0
-        monthlyAllowanceCents:
-          type: integer
-          minimum: 0
-
-    PlanUpdateRequest:
-      type: object
-      required: [label, priceMonthlyCents, monthlyAllowanceCents]
-      properties:
-        label:
-          type: string
-        priceMonthlyCents:
-          type: integer
-          minimum: 0
-        monthlyAllowanceCents:
-          type: integer
-          minimum: 0
-
-    PlanListResponse:
-      type: object
-      required: [plans]
-      properties:
-        plans:
-          type: array
-          items: { $ref: "#/components/schemas/Plan" }
-
-    PlanAssignRequest:
-      type: object
-      required: [planId]
-      properties:
-        planId:
-          type: string
 
     AccountResponse:
       type: object

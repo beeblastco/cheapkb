@@ -3,9 +3,7 @@ import type React from "react";
 import {
   DEFAULT_TAG_COLOR,
   TAG_COLORS,
-  type Account,
   type Document,
-  type Plan,
   type QueryResult,
   type ResultGroup,
   type ShooIdentity,
@@ -24,6 +22,7 @@ const PENDING_DOCUMENT_MAX_AGE_MS = 30 * 60 * 1000;
 const FAILED_DOCUMENT_MAX_AGE_MS = 5 * 60 * 1000;
 const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
+const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
@@ -257,24 +256,6 @@ export async function getUsageSummary(token: string): Promise<UsageSummary> {
   return data as unknown as UsageSummary;
 }
 
-export async function listPlans(token: string): Promise<Plan[]> {
-  const data = await apiCall(token, "GET", "/account/plans");
-  return Array.isArray(data.plans) ? (data.plans as Plan[]) : [];
-}
-
-export async function getAccount(token: string): Promise<Account> {
-  const data = await apiCall(token, "GET", "/account");
-  return data as unknown as Account;
-}
-
-export async function updatePlan(
-  token: string,
-  planId: string,
-): Promise<Account> {
-  const data = await apiCall(token, "PATCH", "/account/plan", { planId });
-  return data as unknown as Account;
-}
-
 export async function updateDocumentTags(
   token: string,
   documentId: string,
@@ -419,12 +400,27 @@ export function writePendingDocuments(
 }
 
 export function getFileMimeType(file: File): string {
-  if (["application/pdf", "text/plain", "text/markdown"].includes(file.type)) {
+  if (
+    [
+      "application/pdf",
+      "image/gif",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "text/plain",
+      "text/markdown",
+    ].includes(file.type)
+  ) {
     return file.type;
   }
-  if (file.name.toLowerCase().endsWith(".pdf")) return "application/pdf";
-  if (file.name.toLowerCase().endsWith(".txt")) return "text/plain";
-  if (file.name.toLowerCase().endsWith(".md")) return "text/markdown";
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".gif")) return "image/gif";
+  if (name.endsWith(".jpeg") || name.endsWith(".jpg")) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".pdf")) return "application/pdf";
+  if (name.endsWith(".txt")) return "text/plain";
+  if (name.endsWith(".md")) return "text/markdown";
   return file.type;
 }
 
@@ -434,6 +430,8 @@ export async function uploadDocument(
   values: { title: string; tags?: string[]; year?: number; authors?: string[] },
   onProgress: (status: string) => void,
 ): Promise<string> {
+  const fileError = validateUploadFile(file);
+  if (fileError) throw new Error(fileError);
   const metadata: UploadMetadata = (await apiCall(token, "POST", "/upload", {
     filename: file.name,
     mimeType: getFileMimeType(file),
@@ -473,6 +471,16 @@ export async function uploadDocument(
   }
 }
 
+export function validateUploadFile(file: File): string | undefined {
+  if (
+    getFileMimeType(file).startsWith("image/") &&
+    file.size > MAX_IMAGE_UPLOAD_BYTES
+  ) {
+    return "Image exceeds the 5 MB limit";
+  }
+  return undefined;
+}
+
 export async function extractMetadata(
   file: File,
 ): Promise<{ title: string; year: number | null; authors: string[] }> {
@@ -482,9 +490,11 @@ export async function extractMetadata(
     authors: [] as string[],
   };
   try {
-    if (getFileMimeType(file) === "application/pdf") {
+    const mimeType = getFileMimeType(file);
+    if (mimeType === "application/pdf") {
       return await extractPdfMetadata(file, fallback);
     }
+    if (mimeType.startsWith("image/")) return fallback;
     return parseMetadata(await file.text(), fallback);
   } catch {
     return fallback;

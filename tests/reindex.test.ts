@@ -1,5 +1,9 @@
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
+import {
+  SendMessageBatchCommand,
+  SendMessageCommand,
+  SQSClient,
+} from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -58,5 +62,36 @@ describe("reindex migration", () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body).restartFrom).toBe("EMBEDDING");
     expect(sqsMock.commandCalls(SendMessageBatchCommand)).toHaveLength(1);
+  });
+
+  it("restarts failed image chunking from the image manifest", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        documentId: "doc-1",
+        userId: "owner",
+        status: "FAILED",
+        failedStep: "CHUNKING",
+        mimeType: "image/png",
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const message = JSON.parse(
+      String(
+        sqsMock.commandCalls(SendMessageCommand)[0].args[0].input.MessageBody,
+      ),
+    );
+    expect(message).toEqual(
+      expect.objectContaining({
+        stage: "chunk",
+        parsedKey: "parsed/doc-1/v1/image.json",
+      }),
+    );
   });
 });

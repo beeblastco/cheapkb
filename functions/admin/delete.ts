@@ -114,7 +114,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  const decrement =
+    typeof doc.countedBytes === "number" ? doc.countedBytes : sourceSize;
   try {
+    await updateStorageBytes(
+      doc.userId,
+      AccountsTableName,
+      -decrement,
+      `delete:${documentId}`,
+    );
     await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
     await dynamo.send(
       new DeleteCommand({
@@ -141,16 +149,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
         warnings: [`dynamo: ${(err as Error).message}`],
       }),
     };
-  }
-
-  // Best-effort: the document is already gone, so a failed decrement must not fail
-  // the request. Prefer countedBytes so it mirrors the increment charged at ingest.
-  const decrement =
-    typeof doc.countedBytes === "number" ? doc.countedBytes : sourceSize;
-  try {
-    await updateStorageBytes(doc.userId, AccountsTableName, -decrement);
-  } catch (err) {
-    console.error("[delete] storage accounting failed", err);
   }
 
   return {

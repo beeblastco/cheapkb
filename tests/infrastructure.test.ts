@@ -6,6 +6,8 @@ describe("infrastructure hardening", () => {
 
   it("enables partial SQS failures for the pipeline consumer", () => {
     expect(config.match(/partialResponses: true/g)).toHaveLength(1);
+    expect(config).toContain('window: "1 second"');
+    expect(config).toContain("size: 10");
   });
 
   // Every extra Lambda event source idle-polls ~260k SQS requests/month, so the
@@ -59,19 +61,51 @@ describe("infrastructure hardening", () => {
     expect(config).toContain("Refusing to deploy as account");
   });
 
+  it("limits cross-account Bedrock access to the configured assume role", () => {
+    expect(config).toContain("process.env.BEDROCK_ASSUME_ROLE_ARN");
+    expect(config).toContain('actions: ["sts:AssumeRole"]');
+    expect(config).toContain("resources: [bedrockAssumeRoleArn]");
+    expect(config.match(/embeddingInvocationPermission/g)?.length).toBe(3);
+    expect(config).not.toContain("BEDROCK_REGION");
+  });
+
+  it("keeps plans deployment-owned", () => {
+    expect(config).toContain(
+      "new pulumiAws.dynamodb.TableItem(`Plan-${DEFAULT_PLAN.planId}`",
+    );
+    expect(config).not.toContain('api.route("GET /plans"');
+    expect(config).not.toContain('api.route("POST /plans"');
+    expect(config).not.toContain('api.route("PATCH /account/plan"');
+  });
+
   it("expires noncurrent object versions", () => {
     expect(config).toContain("BucketLifecycleConfigurationV2");
     expect(config).toContain("noncurrentDays: 7");
   });
 
-  it("grants replacement cleanup only to the ingest adapter", () => {
+  it("grants transactions to upload and storage-accounting handlers", () => {
     expect(config).toContain('"dynamodb:TransactWriteItems"');
     expect(config).toContain('"s3:GetObject"');
     expect(
       config.match(/"dynamodb:BatchWriteItem"/g)?.length,
     ).toBeGreaterThanOrEqual(3);
-    // The transactional replacement write must be scoped to a single function's
-    // policy, not leaked into any other Lambda's permissions.
-    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(1);
+    expect(config).toContain('new sst.aws.Function("Upload"');
+    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(5);
+  });
+
+  it("keeps Bedrock invocation logs in S3 without a trigger Lambda", () => {
+    expect(config).toContain("if (STAGE === PROD_STAGE)");
+    expect(config).not.toContain("BEDROCK_LOGGING_OWNER_STAGE");
+    expect(config).toContain("InvocationLoggingConfiguration");
+    expect(config).toContain("s3Config:");
+    expect(config).toContain("embeddingDataDeliveryEnabled: true");
+    expect(config).toContain("imageDataDeliveryEnabled: true");
+    expect(config).toContain("textDataDeliveryEnabled: true");
+    expect(config).toContain("expiration: { days: 7 }");
+    expect(config).not.toContain('new sst.aws.Function("BedrockUsage"');
+    expect(config).not.toContain('name: "bedrock-usage"');
+    expect(config).not.toContain("cloudwatchConfig:");
+    expect(config).not.toContain("LogSubscriptionFilter");
+    expect(config).not.toContain("BedrockInvocationLogGroup");
   });
 });

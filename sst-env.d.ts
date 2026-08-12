@@ -42,37 +42,13 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
-    "Chunk": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "ChunkDLQ": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
     "CleanupAdapter": {
       "name": string
       "type": "sst.aws.Function"
     }
-    "Embed": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "EmbedDLQ": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
-    "Ingest": {
-      "type": "sst.aws.Queue"
-      "url": string
-    }
     "IngestAdapter": {
       "name": string
       "type": "sst.aws.Function"
-    }
-    "IngestDLQ": {
-      "type": "sst.aws.Queue"
-      "url": string
     }
     "IngestFn": {
       "name": string
@@ -82,33 +58,17 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "Pipeline": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
+    "PipelineDLQ": {
+      "type": "sst.aws.Queue"
+      "url": string
+    }
     "Plans": {
       "name": string
       "type": "sst.aws.Dynamo"
-    }
-    "PlansAssign": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "PlansCreate": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "PlansDelete": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "PlansGet": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "PlansList": {
-      "name": string
-      "type": "sst.aws.Function"
-    }
-    "PlansUpdate": {
-      "name": string
-      "type": "sst.aws.Function"
     }
     "Query": {
       "name": string

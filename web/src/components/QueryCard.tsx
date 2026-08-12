@@ -32,14 +32,21 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { groupResults } from "@/lib/client";
 import type { QueryResult } from "@/lib/types";
-import { ArrowUp } from "lucide-react";
-import { useState } from "react";
+import { ArrowUp, ImagePlus, X } from "lucide-react";
+import { useRef, useState } from "react";
 
 const TOP_K_OPTIONS = [
   { label: "3 results", value: "3" },
   { label: "5 results", value: "5" },
   { label: "10 results", value: "10" },
 ];
+const QUERY_IMAGE_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+const MAX_QUERY_IMAGE_BYTES = 5 * 1024 * 1024;
 
 interface ChatTurn {
   error: string;
@@ -63,19 +70,28 @@ export function QueryCard({
 }) {
   const [query, setQuery] = useState("");
   const [currentQuestion, setCurrentQuestion] = useState("");
+  const [image, setImage] = useState<{ dataUri: string; name: string } | null>(
+    null,
+  );
+  const [imageError, setImageError] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [topK, setTopK] = useState("5");
   const [loading, setLoading] = useState(false);
+  const imageInput = useRef<HTMLInputElement>(null);
 
   async function submit() {
     const question = query.trim();
-    if (!question || loading) return;
-    setCurrentQuestion(question);
+    if ((!question && !image) || loading) return;
+    const displayQuestion = [image ? `Image: ${image.name}` : "", question]
+      .filter(Boolean)
+      .join("\n");
+    setCurrentQuestion(displayQuestion);
     setQuery("");
     setLoading(true);
     try {
       const data = await request("POST", "/query", {
-        query: question,
+        ...(question ? { query: question } : {}),
+        ...(image ? { image: image.dataUri } : {}),
         topK: Number(topK),
       });
       setTurns((current) => [
@@ -83,7 +99,7 @@ export function QueryCard({
         {
           error: "",
           id: crypto.randomUUID(),
-          question,
+          question: displayQuestion,
           results: (data.results as QueryResult[]) || [],
         },
       ]);
@@ -102,7 +118,26 @@ export function QueryCard({
       ]);
     } finally {
       setCurrentQuestion("");
+      setImage(null);
       setLoading(false);
+    }
+  }
+
+  async function selectImage(file: File | undefined) {
+    setImageError("");
+    if (!file) return;
+    if (!QUERY_IMAGE_TYPES.has(file.type)) {
+      setImageError("Choose a JPEG, PNG, WebP, or GIF image.");
+      return;
+    }
+    if (file.size > MAX_QUERY_IMAGE_BYTES) {
+      setImageError("Query images must be 5 MB or smaller.");
+      return;
+    }
+    try {
+      setImage({ dataUri: await readDataUri(file), name: file.name });
+    } catch {
+      setImageError("Could not read the query image.");
     }
   }
 
@@ -117,7 +152,7 @@ export function QueryCard({
                   <Empty>
                     <EmptyHeader>
                       <EmptyDescription>
-                        Ask questions about your documents
+                        Search your documents and images
                       </EmptyDescription>
                     </EmptyHeader>
                   </Empty>
@@ -159,6 +194,36 @@ export function QueryCard({
       </CardContent>
 
       <CardFooter className="flex-col items-stretch gap-3">
+        {image || imageError ? (
+          <div
+            className={
+              imageError ? "text-destructive" : "text-muted-foreground"
+            }
+          >
+            {imageError || image?.name}
+            {image ? (
+              <Button
+                aria-label="Remove query image"
+                onClick={() => setImage(null)}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <X />
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        <input
+          accept="image/gif,image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={(event) => {
+            void selectImage(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+          ref={imageInput}
+          type="file"
+        />
         <InputGroup>
           <InputGroupTextarea
             aria-label="Ask a question"
@@ -170,10 +235,20 @@ export function QueryCard({
                 void submit();
               }
             }}
-            placeholder="Ask about your documents…"
+            placeholder="Search with text, an image, or both…"
             value={query}
           />
           <InputGroupAddon align="block-end">
+            <InputGroupButton
+              aria-label="Add query image"
+              disabled={loading}
+              onClick={() => imageInput.current?.click()}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <ImagePlus />
+            </InputGroupButton>
             <Select
               items={TOP_K_OPTIONS}
               onValueChange={(value) => value && setTopK(value)}
@@ -195,7 +270,7 @@ export function QueryCard({
             <InputGroupButton
               aria-label="Send question"
               className="ml-auto"
-              disabled={!query.trim() || loading}
+              disabled={(!query.trim() && !image) || loading}
               onClick={() => void submit()}
               size="icon-sm"
               type="button"
@@ -208,6 +283,15 @@ export function QueryCard({
       </CardFooter>
     </Card>
   );
+}
+
+function readDataUri(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read query image"));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
 }
 
 function MessageGroup({
@@ -235,13 +319,18 @@ function MessageGroup({
                 {turn.error
                   ? turn.error
                   : turn.results.length
-                    ? `Found ${turn.results.length} relevant passage${turn.results.length === 1 ? "" : "s"}.`
-                    : "No relevant passages found."}
+                    ? `Found ${turn.results.length} relevant result${turn.results.length === 1 ? "" : "s"}.`
+                    : "No relevant results found."}
               </BubbleContent>
             </Bubble>
             {turn.results.slice(0, 3).map((result, index) => (
               <Bubble key={`${result.documentId}-${index}`} variant="ghost">
-                <BubbleContent>{result.text}</BubbleContent>
+                <BubbleContent>
+                  {result.text ||
+                    (result.modality === "image"
+                      ? result.title || "Image result"
+                      : "")}
+                </BubbleContent>
               </Bubble>
             ))}
           </BubbleGroup>
