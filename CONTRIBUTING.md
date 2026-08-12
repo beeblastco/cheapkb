@@ -1,57 +1,42 @@
 # Contributing to cheapkb
 
-Thanks for your interest in contributing! This document provides guidelines for contributing to this project.
+Thanks for helping improve CheapKB.
 
 ## Getting Started
 
-1. Fork the repository
-2. Clone your fork locally
-3. Create a new branch for your changes
-4. Make your changes and test them
-5. Submit a pull request
+1. Fork and clone the repository.
+2. Create a focused branch.
+3. Make and test your changes.
+4. Submit a pull request.
 
 ## Development Setup
 
-1. Clone the repo:
+1. Install dependencies:
 
    ```bash
-   git clone https://github.com/your-username/cheapkb.git
-   cd cheapkb
+   npm ci --legacy-peer-deps
+   npm --prefix web ci --legacy-peer-deps
    ```
 
-2. Install dependencies:
+2. Copy `.env.example` to `.env` and configure it.
 
-   ```bash
-   npm install
-   ```
-
-3. Copy `.env.example` to `.env` and configure your environment variables.
-
-4. Start the dev server:
+3. Start the development environment:
 
    ```bash
    npx sst dev
    ```
 
-## Code Style
-
-- Use TypeScript
-- Follow the existing code conventions in the project
-- Keep code simple and readable
-- Avoid unnecessary abstractions
-
 ## Pull Request Process
 
-1. Update the README.md if your changes affect usage or architecture
-2. Ensure your code compiles without errors
-3. Keep pull requests focused on a single change
-4. Write clear commit messages
+1. Update user-facing documentation when product behavior or usage changes.
+2. Run the checks documented in the README.
+3. Keep the pull request focused and use clear commit messages.
 
 ## Reporting Issues
 
 - Use the GitHub issue tracker
 - Include steps to reproduce the issue
-- Include relevant logs or error messages
+- Include relevant errors without secrets or personal data
 
 ## License
 

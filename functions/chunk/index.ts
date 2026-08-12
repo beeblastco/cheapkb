@@ -69,6 +69,8 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   const tags = doc.tags ?? null;
   const authors = doc.authors ?? null;
   const year = doc.year ?? null;
+  const sourceKey = doc.sourceKey;
+  const mimeType = doc.mimeType;
   const userId = doc.userId;
   if (!userId) throw new Error("Document owner is missing");
 
@@ -76,6 +78,49 @@ async function chunkDocument(documentId: string, parsedKey: string) {
     new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
   );
   const parsed = JSON.parse(await resp.Body!.transformToString());
+  if (parsed.modality === "image") {
+    const chunkId = `image_${documentId}_0`;
+    const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: StorageBucketName,
+        Key: s3ChunkKey,
+        Body: JSON.stringify({
+          documentId,
+          userId,
+          chunkId,
+          modality: "image",
+          sourceKey: parsed.sourceKey ?? sourceKey,
+          mimeType: parsed.mimeType ?? mimeType,
+          title,
+          tags,
+          authors,
+          year,
+          pageStart: 1,
+          pageEnd: 1,
+        }),
+        ContentType: "application/json",
+      }),
+    );
+    await dynamo.send(
+      new PutCommand({
+        TableName,
+        Item: {
+          pk: `DOC#${documentId}`,
+          sk: `CHUNK#${chunkId}`,
+          chunkId,
+          s3ChunkKey,
+          pageStart: 1,
+          pageEnd: 1,
+          status: "QUEUED",
+          createdAt: now,
+        },
+      }),
+    );
+    await finishChunking(documentId, [s3ChunkKey], now);
+    console.log(`[chunk] OK: ${documentId} - image -> ${s3ChunkKey}`);
+    return;
+  }
   const pages: Array<{ pageNumber: number; text: string }> = parsed.pages;
 
   const maxTokens = parseInt(process.env.CHUNK_MAX_TOKENS ?? "700");
@@ -102,6 +147,9 @@ async function chunkDocument(documentId: string, parsedKey: string) {
           documentId,
           userId,
           chunkId,
+          modality: "text",
+          sourceKey,
+          mimeType,
           text: chunk.text,
           tokenCount,
           title,
@@ -133,6 +181,34 @@ async function chunkDocument(documentId: string, parsedKey: string) {
     chunkKeys.push(s3ChunkKey);
   }
 
+  await finishChunking(documentId, chunkKeys, now);
+
+  console.log(
+    `[chunk] OK: ${documentId} - ${chunks.length} chunks -> ${chunkKeys[0]}`,
+  );
+}
+
+async function clearError(documentId: string, now: string) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
+      ExpressionAttributeValues: {
+        ":null": null,
+        ":zero": 0,
+        ":t": now,
+      },
+    }),
+  );
+}
+
+async function finishChunking(
+  documentId: string,
+  chunkKeys: string[],
+  now: string,
+) {
   await dynamo.send(
     new UpdateCommand({
       TableName,
@@ -142,7 +218,7 @@ async function chunkDocument(documentId: string, parsedKey: string) {
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
         ":s": "CHUNKED",
-        ":c": chunks.length,
+        ":c": chunkKeys.length,
         ":t": now,
         ":gsi1pk": "STATUS#CHUNKED",
         ":gsi1sk": now,
@@ -169,10 +245,6 @@ async function chunkDocument(documentId: string, parsedKey: string) {
     );
     if (response.Failed?.length) throw new Error("Failed to queue some chunks");
   }
-
-  console.log(
-    `[chunk] OK: ${documentId} - ${chunks.length} chunks -> ${chunkKeys[0]}`,
-  );
 }
 
 async function handleError(documentId: string, err: unknown, attempt: number) {
@@ -235,22 +307,6 @@ async function updateStatus(documentId: string, status: string, now: string) {
         ":t": now,
         ":gsi1pk": `STATUS#${status}`,
         ":gsi1sk": now,
-      },
-    }),
-  );
-}
-
-async function clearError(documentId: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
-      ExpressionAttributeValues: {
-        ":null": null,
-        ":zero": 0,
-        ":t": now,
       },
     }),
   );

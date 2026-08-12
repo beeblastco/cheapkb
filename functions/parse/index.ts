@@ -15,6 +15,12 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const IMAGE_MIME_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -62,6 +68,32 @@ async function parseDocument(
   );
   const bytes = new Uint8Array(await resp.Body!.transformToByteArray());
 
+  if (IMAGE_MIME_TYPES.has(mimeType)) {
+    if (!matchesImageSignature(bytes, mimeType)) {
+      throw new Error("Image content does not match its declared MIME type");
+    }
+    const parsedKey = `parsed/${documentId}/v1/image.json`;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: StorageBucketName,
+        Key: parsedKey,
+        Body: JSON.stringify({
+          documentId,
+          parserVersion: "multimodal-v1",
+          extractedAt: now,
+          modality: "image",
+          sourceKey,
+          mimeType,
+          pageCount: 1,
+        }),
+        ContentType: "application/json",
+      }),
+    );
+    await finishParsing(documentId, parsedKey, now);
+    console.log(`[parse] OK: ${documentId} - image -> ${parsedKey}`);
+    return;
+  }
+
   let pages: Array<{ pageNumber: number; text: string }>;
   if (mimeType === "application/pdf") {
     pages = await extractPdfText(bytes);
@@ -100,18 +132,26 @@ async function parseDocument(
     }),
   );
 
-  await updateStatus(documentId, "PARSED", now);
-  await clearError(documentId, now);
-
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: PipelineQueueUrl,
-      MessageBody: JSON.stringify({ stage: "chunk", documentId, parsedKey }),
-    }),
-  );
+  await finishParsing(documentId, parsedKey, now);
 
   console.log(
     `[parse] OK: ${documentId} - ${pages.length} pages -> ${parsedKey}`,
+  );
+}
+
+async function clearError(documentId: string, now: string) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
+      ExpressionAttributeValues: {
+        ":null": null,
+        ":zero": 0,
+        ":t": now,
+      },
+    }),
   );
 }
 
@@ -123,6 +163,21 @@ async function extractPdfText(bytes: Uint8Array) {
       text: pageText.trim(),
     }))
     .filter((p) => p.text.length > 0);
+}
+
+async function finishParsing(
+  documentId: string,
+  parsedKey: string,
+  now: string,
+) {
+  await updateStatus(documentId, "PARSED", now);
+  await clearError(documentId, now);
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: PipelineQueueUrl,
+      MessageBody: JSON.stringify({ stage: "chunk", documentId, parsedKey }),
+    }),
+  );
 }
 
 async function handleError(documentId: string, err: unknown, attempt: number) {
@@ -185,18 +240,31 @@ async function updateStatus(documentId: string, status: string, now: string) {
   );
 }
 
-async function clearError(documentId: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
-      ExpressionAttributeValues: {
-        ":null": null,
-        ":zero": 0,
-        ":t": now,
-      },
-    }),
-  );
+function matchesImageSignature(bytes: Uint8Array, mimeType: string) {
+  if (mimeType === "image/jpeg") {
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (mimeType === "image/png") {
+    return (
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
+  }
+  if (mimeType === "image/gif") {
+    const signature = new TextDecoder().decode(bytes.slice(0, 6));
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  if (mimeType === "image/webp") {
+    return (
+      new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" &&
+      new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP"
+    );
+  }
+  return false;
 }

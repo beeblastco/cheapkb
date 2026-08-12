@@ -26,12 +26,21 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const DISPATCH_LEASE_MS = 60 * 1000;
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "10485760",
   10,
 );
+const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
   "text/markdown",
   "text/plain",
 ]);
@@ -66,14 +75,17 @@ export async function handler(event: S3Event) {
     }
 
     const objectSize = Number(record.s3.object.size ?? 0);
+    const maxUploadBytes = doc.mimeType?.startsWith("image/")
+      ? MAX_IMAGE_UPLOAD_BYTES
+      : MAX_UPLOAD_BYTES;
     if (
       objectSize < 1 ||
-      objectSize > MAX_UPLOAD_BYTES ||
+      objectSize > maxUploadBytes ||
       !ALLOWED_MIME_TYPES.has(doc.mimeType ?? "")
     ) {
       await updateFailure(
         documentId,
-        objectSize > MAX_UPLOAD_BYTES
+        objectSize > maxUploadBytes
           ? "File exceeds upload size limit"
           : "Unsupported or empty file",
         now,
@@ -99,7 +111,8 @@ export async function handler(event: S3Event) {
       continue;
     }
 
-    const queued = await queueDocument(documentId, now, objectSize);
+    const eventId = `${documentId}:${record.s3.object.sequencer}`;
+    const queued = await claimDispatch(documentId, doc, now, eventId);
     if (!queued) {
       console.log(
         `[ingest-adapter] Document ${documentId} already started, skipping`,
@@ -107,17 +120,17 @@ export async function handler(event: S3Event) {
       continue;
     }
 
-    await recordUsage(doc.userId, AccountsTableName, "ingest", 1);
-    // Charge only the change in source size so a re-ingest or replacement upload
-    // does not double-count storage already attributed to this document.
-    const previousCounted = doc.countedBytes ?? 0;
-    await updateStorageBytes(
-      doc.userId,
-      AccountsTableName,
-      objectSize - previousCounted,
-    );
-
     try {
+      await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
+      // Charge only the change in source size so a re-ingest or replacement
+      // does not double-count bytes already attributed to this document.
+      await updateStorageBytes(
+        doc.userId,
+        AccountsTableName,
+        objectSize - (doc.countedBytes ?? 0),
+        `ingest:${eventId}`,
+      );
+      await setCountedBytes(documentId, objectSize);
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: PipelineQueueUrl,
@@ -130,11 +143,61 @@ export async function handler(event: S3Event) {
         }),
       );
     } catch (error) {
-      await rollbackQueueStatus(documentId);
+      await rollbackQueueStatus(documentId, eventId);
       throw error;
     }
+    await markDispatchSent(documentId, eventId);
 
     console.log(`[ingest-adapter] Triggered ingest for ${documentId}`);
+  }
+}
+
+async function claimDispatch(
+  documentId: string,
+  doc: DocumentRow,
+  now: string,
+  eventId: string,
+) {
+  if (doc.status !== "UPLOADED" && doc.status !== "QUEUED") return false;
+  if (doc.status === "QUEUED") {
+    if (doc.dispatchState === "SENT") return false;
+    const leaseUntil = Date.parse(doc.dispatchLeaseUntil ?? "");
+    if (Number.isFinite(leaseUntil) && leaseUntil > Date.parse(now)) {
+      throw new Error("Document dispatch is already in progress");
+    }
+  }
+
+  const wasUploaded = doc.status === "UPLOADED";
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :queued, dispatchState = :claimed, dispatchEventId = :eventId, dispatchLeaseUntil = :leaseUntil, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now",
+        ConditionExpression: wasUploaded
+          ? "#s = :uploaded"
+          : "#s = :queued AND (attribute_not_exists(dispatchLeaseUntil) OR dispatchLeaseUntil <= :now) AND (attribute_not_exists(dispatchState) OR dispatchState = :claimed)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":claimed": "CLAIMED",
+          ":eventId": eventId,
+          ":gsi1pk": "STATUS#QUEUED",
+          ":leaseUntil": new Date(
+            Date.parse(now) + DISPATCH_LEASE_MS,
+          ).toISOString(),
+          ":now": now,
+          ":queued": "QUEUED",
+          ...(wasUploaded ? { ":uploaded": "UPLOADED" } : {}),
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException && wasUploaded) {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -187,53 +250,58 @@ async function finalizeReplacement(
   }
 }
 
-async function queueDocument(
-  documentId: string,
-  now: string,
-  countedBytes: number,
-) {
-  try {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :queued, updatedAt = :t, countedBytes = :counted, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ExpressionAttributeNames: { "#s": "status" },
-        ConditionExpression: "#s = :uploaded",
-        ExpressionAttributeValues: {
-          ":queued": "QUEUED",
-          ":uploaded": "UPLOADED",
-          ":t": now,
-          ":counted": countedBytes,
-          ":gsi1pk": "STATUS#QUEUED",
-          ":gsi1sk": now,
-        },
-      }),
-    );
-    return true;
-  } catch (error) {
-    if (error instanceof ConditionalCheckFailedException) return false;
-    throw error;
-  }
+async function markDispatchSent(documentId: string, eventId: string) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET dispatchState = :sent REMOVE dispatchLeaseUntil",
+      ConditionExpression:
+        "dispatchState = :claimed AND dispatchEventId = :eventId",
+      ExpressionAttributeValues: {
+        ":claimed": "CLAIMED",
+        ":eventId": eventId,
+        ":sent": "SENT",
+      },
+    }),
+  );
 }
 
-async function rollbackQueueStatus(documentId: string) {
+async function rollbackQueueStatus(documentId: string, eventId: string) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
       TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk REMOVE dispatchState, dispatchEventId, dispatchLeaseUntil",
       ExpressionAttributeNames: { "#s": "status" },
-      ConditionExpression: "#s = :queued",
+      ConditionExpression:
+        "#s = :queued AND dispatchState = :claimed AND dispatchEventId = :eventId",
       ExpressionAttributeValues: {
+        ":claimed": "CLAIMED",
+        ":eventId": eventId,
         ":queued": "QUEUED",
         ":uploaded": "UPLOADED",
         ":t": now,
         ":gsi1pk": "STATUS#UPLOADED",
         ":gsi1sk": now,
+      },
+    }),
+  );
+}
+
+async function setCountedBytes(documentId: string, countedBytes: number) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET countedBytes = :counted",
+      ConditionExpression: "#s = :queued",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":counted": countedBytes,
+        ":queued": "QUEUED",
       },
     }),
   );

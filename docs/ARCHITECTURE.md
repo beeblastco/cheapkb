@@ -1,75 +1,53 @@
-# Architecture
+# How CheapKB works
 
-![Architecture Diagram](architecture.png)
+![Architecture Diagram](architecture-multimodal.png)
 
-The architecture diagram above illustrates the data flow and AWS service interactions for the CheapKB system.
+## Main components
 
-## Pipeline Stages
+| Component                   | Purpose                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web app                     | Lets users sign in, upload content, manage documents and metadata, review usage, and run searches.                                                       |
+| API                         | Authenticates requests and routes each action to the appropriate handler.                                                                                |
+| Upload and ingest handlers  | Create the document record, provide a temporary direct-upload form, and start processing after S3 accepts the file.                                      |
+| Content bucket              | Keeps the original uploads and the intermediate content needed while documents are processed.                                                            |
+| Ingest and cleanup adapters | React to S3 changes. New objects enter the processing pipeline; deleted objects have their related search data removed.                                  |
+| Pipeline queue              | Buffers processing work so uploads do not wait for parsing and embedding. Failed work is retried, then moved to the dead-letter queue for investigation. |
+| Pipeline                    | Validates the file, extracts document content, divides text into searchable sections, and prepares text or images for embedding.                         |
+| Amazon Bedrock              | Runs Cohere Embed v4 to create compatible vectors for document text, images, and search queries.                                                         |
+| S3 Vectors                  | Stores embeddings and performs similarity search.                                                                                                        |
+| Metadata store              | Tracks ownership, document metadata, processing status, errors, and the relationship between documents and vectors.                                      |
+| Document and tag handlers   | List, retrieve, edit, retry, replace, and delete documents and their tags.                                                                               |
+| Plan and usage handlers     | Apply the deployment-owned default plan and return the signed-in account's allowance, storage, and processing usage.                                     |
 
-All three stages run in the single `Pipeline` Lambda (1024 MB, 300 s), which routes each message by its `stage` field.
+## Upload flow
 
-| Stage | Message fields                        | Output                      |
-| ----- | ------------------------------------- | --------------------------- |
-| parse | `documentId`, `sourceKey`, `mimeType` | `parsed/{id}/v1/pages.json` |
-| chunk | `documentId`, `parsedKey`             | `chunks/{id}/*.json`        |
-| embed | `documentId`, `s3ChunkKey`            | S3 Vectors                  |
+1. The web app asks the API to create an upload. CheapKB checks authentication, the account allowance, file type, size, and duplicates.
+2. The upload handler returns a short-lived form that lets the browser send the file directly to the content bucket.
+3. After S3 accepts the object, the ingest adapter confirms the upload, records its size, and places it on the pipeline queue.
+4. The pipeline parses documents or validates images, prepares searchable items, and asks Cohere Embed v4 for embeddings.
+5. The vectors are written to S3 Vectors and the document status changes to completed. The web app can show progress or a retryable failure throughout the flow.
 
-Each stage writes to DynamoDB before queueing the next stage. Consumers return failed message identifiers to SQS, which retries only those records and sends them to the pipeline DLQ after 3 receives. After the third failure the document is marked `FAILED` with `failedStep` set to the failing stage.
+CheapKB accepts PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Image files can be up to 5 MB; the configured upload limit applies to documents. Duplicate active uploads are rejected for the same user, while completed or failed content can be replaced.
 
-The stages share one queue because each Lambda SQS event source idle-polls roughly 260k requests per month against the 1M free tier regardless of traffic. Records whose `stage` is missing, unknown, or unparseable are returned to SQS and land in the DLQ.
+## Search flow
 
-## DynamoDB Schema
+1. The user submits text, one supported image up to 5 MB, or both, with optional metadata filters.
+2. The query handler asks Cohere Embed v4 to create one search embedding. A combined query uses its text and image together.
+3. S3 Vectors finds the closest vectors while CheapKB applies the signed-in user's ownership and selected metadata filters.
+4. CheapKB loads the matching source information and returns ranked results to the web app.
 
-Single table `Meta`. Primary key: `pk` (string) / `sk` (string). GSI1 on `gsi1pk` / `gsi1sk` for status-based queries.
+Documents and images use the same search experience. Content indexed with different embedding models is kept separate because vectors from different models are not compatible.
 
-| Key      | Type   | Purpose            |
-| -------- | ------ | ------------------ |
-| `pk`     | string | `DOC#{documentId}` |
-| `sk`     | string | `META`             |
-| `gsi1pk` | string | `STATUS#{status}`  |
-| `gsi1sk` | string | ISO timestamp      |
+## Updates, replacement, and deletion
 
-Document attributes: `documentId`, `userId`, `filename`, `dedupeKey`, `title`, `status`, `sourceKey`, `mimeType`, `lastError`, `retryCount`, `failedStep`, `chunkCount`, `embeddedCount`, `tags`, `authors`, `year`, `createdAt`, `updatedAt`.
+Editing a processed document updates its searchable tags without uploading the file again. Names, authors, and other metadata are set during upload.
 
-Each document has a uniqueness mapping at `pk = USER#{userId}`, `sk = DOCUMENT#{dedupeKey}`. The SHA-256 dedupe key covers the user, sanitized filename, and MIME type. A conditional DynamoDB transaction creates the mapping and document together, preventing concurrent uploads from allocating duplicate IDs.
+Replacing a completed or failed document keeps the existing version searchable until S3 accepts the replacement. CheapKB then removes the old derived content and vectors before processing the new version.
 
-Chunk records store ownership, page range, token count, S3 key, and processing status. Vector metadata includes the owner, and every vector query adds a server-controlled `userId` equality filter.
+Deleting a document removes its uploaded content, intermediate content, metadata, and vectors. An S3 deletion event uses the same cleanup behavior so search results do not point to removed content.
 
-## S3 Layout
+## Reliability and cost controls
 
-```text
-raw/{documentId}/{filename}        # Original upload
-parsed/{documentId}/v1/pages.json  # Extracted text
-chunks/{documentId}/chunk_*.json   # One JSON per chunk
-```
+Processing happens asynchronously so upload requests remain short. Failed records are retried without replaying successful records; a failed embedding batch is split to isolate its failing input. Repeated failures move to the dead-letter queue and appear as failed documents that users can retry.
 
-## Batch + Parallelism
-
-- `Chunk` writes chunk JSON and DynamoDB records, then sends `stage: embed` messages back to the pipeline queue in groups of 10.
-- Documents are capped at `MAX_CHUNKS_PER_DOCUMENT` (default 200) to bound embedding and vector-storage cost.
-- `Embed` reads chunks in batches of `EMBED_BATCH` (default 25), embeds them in one request, and writes vectors in batches of `VECTOR_BATCH` (default 500).
-- `Query` fetches all matched chunk JSONs in parallel.
-
-## Error Handling
-
-- Auto-retry: partial batch responses return failed records to SQS without replaying successful records.
-- After 3 failures: `status = FAILED`, `failedStep` set, `lastError` populated.
-- `POST /documents/:id/reindex` resumes from the appropriate stage and resets `lastError`/`retryCount`/`failedStep`.
-
-## Auto Cleanup
-
-Triggered by `DELETE /documents/:id` (API) or by S3 `ObjectRemoved:Delete` / `ObjectRemoved:DeleteMarkerCreated` events for keys under `raw/`. The cleanup function:
-
-1. Lists and deletes all S3 Vectors for the document.
-2. Deletes all versions and delete markers under `chunks/{id}/`, `parsed/{id}/`, and `raw/{id}/`.
-3. Deletes chunk and document DynamoDB records only after external cleanup succeeds.
-
-The bucket lifecycle expires any remaining noncurrent versions after 7 days and aborts incomplete multipart uploads after 1 day.
-
-## Replacement Uploads
-
-Only `EMBEDDED` and `FAILED` documents can be replaced. The upload API conditionally reserves the existing document and signs the same raw S3 key with a replacement token. Existing derived data remains available while the browser uploads. The S3 ingest adapter verifies the token, deletes vectors, chunk records, chunk objects, and parsed objects, applies pending metadata, resets the document to `UPLOADED`, and queues ingestion. Replacement reservations expire with the presigned form after 15 minutes.
-
-## Resource Naming
-
-`<project>-<stage>-<service>-<account-id>-<region>`. Production omits the stage prefix.
+CheapKB shares pipeline resources and batches available embedding work to avoid unnecessary idle infrastructure and requests. File, image, chunk, and account allowance limits bound unexpected processing cost.

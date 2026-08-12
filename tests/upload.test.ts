@@ -81,6 +81,22 @@ describe("upload validation", () => {
     );
   });
 
+  it("accepts images within the configured five MB limit", async () => {
+    const response = await handler(
+      jsonApiEvent({ filename: "photo.png", mimeType: "image/png" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(createPresignedPost).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        Conditions: expect.arrayContaining([
+          ["content-length-range", 1, 5242880],
+        ]),
+      }),
+    );
+  });
+
   it("reuses a completed document with the same filename and mime type", async () => {
     dynamoMock
       .on(GetCommand)

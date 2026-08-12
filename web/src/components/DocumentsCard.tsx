@@ -78,6 +78,7 @@ import {
   isActiveStatus,
   updateDocumentTags,
   uploadDocument,
+  validateUploadFile,
   writePendingDocuments,
 } from "@/lib/client";
 import type { Document, Tag, TagColor, UploadQueueItem } from "@/lib/types";
@@ -107,7 +108,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 50;
 const STALLED_AFTER_MS = 5 * 60 * 1000;
-const SUPPORTED_EXTENSIONS = [".pdf", ".txt", ".md"];
+const UPLOAD_CONCURRENCY = 3;
+const SUPPORTED_EXTENSIONS = [
+  ".gif",
+  ".jpeg",
+  ".jpg",
+  ".md",
+  ".pdf",
+  ".png",
+  ".txt",
+  ".webp",
+];
 // Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
 // have its tags overwritten by the run in progress.
 const EDITABLE_TAG_STATUSES = new Set([
@@ -233,13 +244,26 @@ export function DocumentsCard({
   const addFiles = useCallback(
     async (files: File[]) => {
       if (syncingRef.current) return;
-      const validFiles = files.filter((file) =>
+      const supportedFiles = files.filter((file) =>
         SUPPORTED_EXTENSIONS.some((extension) =>
           file.name.toLowerCase().endsWith(extension),
         ),
       );
-      if (validFiles.length !== files.length) {
-        notify("Only PDF, Markdown, and text files were added.", "error");
+      if (supportedFiles.length !== files.length) {
+        notify(
+          "Only PDF, Markdown, text, JPEG, PNG, WebP, and GIF files were added.",
+          "error",
+        );
+      }
+      const validFiles = supportedFiles.filter(
+        (file) => !validateUploadFile(file),
+      );
+      const oversizedImages = supportedFiles.length - validFiles.length;
+      if (oversizedImages > 0) {
+        notify(
+          `${oversizedImages} image${oversizedImages === 1 ? "" : "s"} exceeded 5 MB and ${oversizedImages === 1 ? "was" : "were"} not added.`,
+          "error",
+        );
       }
 
       const existing = new Set(
@@ -411,54 +435,62 @@ export function DocumentsCard({
     let succeeded = 0;
     let failed = 0;
 
-    for (const item of pending) {
-      updateItem(item.id, {
-        error: "",
-        progress: "Requesting upload URL",
-        state: "SYNCING",
-      });
-      try {
-        const documentId = await uploadDocument(
-          token,
-          item.file,
-          {
-            authors: splitList(item.authors),
-            tags: item.tags.length ? item.tags : undefined,
-            title: item.title.trim() || item.file.name,
-            year: Number(item.year) || undefined,
-          },
-          (progress) => updateItem(item.id, { progress }),
-        );
-        const now = new Date().toISOString();
-        setDocuments((current) => {
-          const byId = new Map(
-            current.map((document) => [document.documentId, document]),
-          );
-          byId.set(documentId, {
-            createdAt: now,
-            documentId,
-            mimeType: getFileMimeType(item.file),
-            status: "QUEUED",
-            title: item.title.trim() || item.file.name,
-            updatedAt: now,
+    let nextIndex = 0;
+    const workers = Array.from(
+      { length: Math.min(UPLOAD_CONCURRENCY, pending.length) },
+      async () => {
+        while (nextIndex < pending.length) {
+          const item = pending[nextIndex++];
+          updateItem(item.id, {
+            error: "",
+            progress: "Requesting upload URL",
+            state: "SYNCING",
           });
-          const next = Array.from(byId.values());
-          writePendingDocuments(next);
-          return next;
-        });
-        setItems((current) =>
-          current.filter((currentItem) => currentItem.id !== item.id),
-        );
-        succeeded += 1;
-      } catch (error) {
-        updateItem(item.id, {
-          error: (error as Error).message,
-          progress: "Sync failed",
-          state: "FAILED",
-        });
-        failed += 1;
-      }
-    }
+          try {
+            const documentId = await uploadDocument(
+              token,
+              item.file,
+              {
+                authors: splitList(item.authors),
+                tags: item.tags.length ? item.tags : undefined,
+                title: item.title.trim() || item.file.name,
+                year: Number(item.year) || undefined,
+              },
+              (progress) => updateItem(item.id, { progress }),
+            );
+            const now = new Date().toISOString();
+            setDocuments((current) => {
+              const byId = new Map(
+                current.map((document) => [document.documentId, document]),
+              );
+              byId.set(documentId, {
+                createdAt: now,
+                documentId,
+                mimeType: getFileMimeType(item.file),
+                status: "QUEUED",
+                title: item.title.trim() || item.file.name,
+                updatedAt: now,
+              });
+              const next = Array.from(byId.values());
+              writePendingDocuments(next);
+              return next;
+            });
+            setItems((current) =>
+              current.filter((currentItem) => currentItem.id !== item.id),
+            );
+            succeeded += 1;
+          } catch (error) {
+            updateItem(item.id, {
+              error: (error as Error).message,
+              progress: "Sync failed",
+              state: "FAILED",
+            });
+            failed += 1;
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
 
     syncingRef.current = false;
     setSyncing(false);
@@ -599,7 +631,7 @@ export function DocumentsCard({
           </CardAction>
           <input
             ref={fileInput}
-            accept=".pdf,.txt,.md"
+            accept=".pdf,.txt,.md,.gif,.jpeg,.jpg,.png,.webp"
             className="hidden"
             multiple
             onChange={(event) => {
@@ -706,7 +738,7 @@ export function DocumentsCard({
                           <EmptyDescription>
                             {query
                               ? "Try a different search."
-                              : "Drop PDF, Markdown, or text files anywhere on this page."}
+                              : "Drop documents or images anywhere on this page."}
                           </EmptyDescription>
                         </EmptyHeader>
                       </Empty>

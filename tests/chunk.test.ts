@@ -75,4 +75,56 @@ describe("chunk records", () => {
     );
     expect(chunkBody.userId).toBe("owner");
   });
+
+  it("creates one image chunk without text tokenization", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        userId: "owner",
+        title: "Product photo",
+        sourceKey: "raw/doc-1/photo.png",
+        mimeType: "image/png",
+      },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            modality: "image",
+            sourceKey: "raw/doc-1/photo.png",
+            mimeType: "image/png",
+          }),
+      } as any,
+    });
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-image",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/image.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([]);
+    const chunkBody = JSON.parse(
+      String(
+        s3Mock.calls().find((call) => "Body" in call.args[0].input)?.args[0]
+          .input.Body,
+      ),
+    );
+    expect(chunkBody).toEqual(
+      expect.objectContaining({
+        modality: "image",
+        mimeType: "image/png",
+        sourceKey: "raw/doc-1/photo.png",
+      }),
+    );
+    expect(chunkBody).not.toHaveProperty("tokenCount");
+  });
 });

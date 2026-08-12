@@ -12,6 +12,7 @@ import {
   readPendingDocuments,
   updateDocumentTags,
   uploadDocument,
+  validateUploadFile,
 } from "../web/src/lib/client";
 
 const API_URL = "https://api.cheapkb.test/v1";
@@ -153,6 +154,22 @@ describe("frontend", () => {
   });
 
   describe("upload flow", () => {
+    it("rejects an oversized image before requesting a presigned form", async () => {
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const file = {
+        name: "large.png",
+        size: 5 * 1024 * 1024 + 1,
+        type: "image/png",
+      } as File;
+
+      expect(validateUploadFile(file)).toBe("Image exceeds the 5 MB limit");
+      await expect(
+        uploadDocument("token", file, { title: "Large" }, vi.fn()),
+      ).rejects.toThrow("Image exceeds the 5 MB limit");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
     it("uploads through the constrained POST form and starts ingestion", async () => {
       const fetchMock = vi
         .fn()
@@ -327,6 +344,12 @@ describe("frontend", () => {
       );
       expect(getFileMimeType({ name: "report.pdf", type: "" } as File)).toBe(
         "application/pdf",
+      );
+      expect(getFileMimeType({ name: "photo.JPG", type: "" } as File)).toBe(
+        "image/jpeg",
+      );
+      expect(getFileMimeType({ name: "diagram.webp", type: "" } as File)).toBe(
+        "image/webp",
       );
     });
 

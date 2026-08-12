@@ -1,23 +1,24 @@
 # Deploy
 
-## Credentials and account pinning
-
-Configure AWS credentials the usual way (a named profile via `AWS_PROFILE`, or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). Set `AWS_ACCOUNT_ID` in `.env` to pin deploys: when it is set, `sst.config.ts` verifies the caller identity and refuses to deploy to any other account, because resource names embed the account id and a wrong caller would silently build a parallel stack. Leave `AWS_ACCOUNT_ID` unset to deploy to whatever account your credentials resolve to.
-
-## Manual deploy
+Copy `.env.example` to `.env`, set `AWS_ACCOUNT_ID` to the deployment account, and review the optional model, pricing, and cross-account values.
 
 ```bash
+aws sts get-caller-identity --query Account --output text
 npx sst deploy --stage production
 ```
 
-After deployment, SST prints both the API endpoint (`apiEndpoint`) and the web endpoint (`webEndpoint`). The API URL is baked into the frontend build, and the frontend URL is used as `APP_ORIGIN` for JWT verification.
+The caller account must match `AWS_ACCOUNT_ID`. The deployment output includes the API and web addresses.
 
-## Continuous deployment
+The deployer owns plan configuration. Update the seeded default plan in `sst.config.ts` and deploy; existing accounts use its current price and allowance, and accounts on a removed plan fall back to it. Users cannot create or assign plans through the API.
 
-Production deploys through `.github/workflows/deploy.yml` after changes merge to `main`. The check job formats, typechecks, tests, builds the frontend, and audits production dependencies before the deploy job runs `sst deploy --stage production`. GitHub Actions configures AWS credentials from repository secrets and verifies the caller matches the `AWS_ACCOUNT_ID` secret immediately before deployment.
+## Bedrock
 
-Required repository secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ACCOUNT_ID`, `EMBEDDING_PROVIDER_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`.
+`BEDROCK_EMBEDDING_MODEL` defaults to `us.cohere.embed-v4:0`. Enable access to Cohere Embed v4 in Amazon Bedrock before deploying.
 
-## First deploy notes
+For Bedrock in another AWS account, set `BEDROCK_ASSUME_ROLE_ARN` and `BEDROCK_ASSUME_ROLE_EXTERNAL_ID`. The target role must trust the deployment account and permit Cohere Embed v4 invocation in the deployment region.
 
-After the first deployment of tenant-scoped vector metadata, reindex existing embedded documents once from the UI. Old vectors without `userId` metadata are intentionally excluded from search until they are overwritten.
+Production keeps short-lived Bedrock diagnostic logs in S3. Enable logging in the Bedrock account when using cross-account inference.
+
+## CI
+
+Merges to `main` deploy through GitHub Actions. Configure `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_ACCOUNT_ID` as repository secrets.

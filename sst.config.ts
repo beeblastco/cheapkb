@@ -42,6 +42,32 @@ export default $config({
     const storageOrigin = `https://${storageBucketName}.s3.${REGION}.amazonaws.com`;
     const vectorIndexName = STAGE === PROD_STAGE ? "default" : STAGE;
     const vectorIndexArn = `arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${vectorBucketName}/index/${vectorIndexName}`;
+    const embeddingModelId =
+      process.env.BEDROCK_EMBEDDING_MODEL ?? "us.cohere.embed-v4:0";
+    const bedrockAssumeRoleArn = process.env.BEDROCK_ASSUME_ROLE_ARN;
+    const bedrockAssumeRoleExternalId =
+      process.env.BEDROCK_ASSUME_ROLE_EXTERNAL_ID;
+    const embeddingBaseModelId = embeddingModelId.replace(
+      /^(?:apac|eu|global|us)\./,
+      "",
+    );
+    const embeddingModelResources = /^(?:apac|eu|global|us)\./.test(
+      embeddingModelId,
+    )
+      ? [
+          `arn:aws:bedrock:${REGION}:${ACCOUNT_ID}:inference-profile/${embeddingModelId}`,
+          `arn:aws:bedrock:*::foundation-model/${embeddingBaseModelId}`,
+        ]
+      : [`arn:aws:bedrock:${REGION}::foundation-model/${embeddingBaseModelId}`];
+    const embeddingInvocationPermission = bedrockAssumeRoleArn
+      ? {
+          actions: ["sts:AssumeRole"],
+          resources: [bedrockAssumeRoleArn],
+        }
+      : {
+          actions: ["bedrock:InvokeModel"],
+          resources: embeddingModelResources,
+        };
 
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
@@ -183,38 +209,29 @@ export default $config({
       },
     });
 
-    const DEFAULT_PLAN_ID = "basic";
+    const DEFAULT_PLAN = {
+      planId: "basic",
+      label: "Basic",
+      priceMonthlyCents: 0,
+      monthlyAllowanceCents: 100,
+    };
+    const DEFAULT_PLAN_ID = DEFAULT_PLAN.planId;
 
-    const SEED_PLANS = [
-      {
-        planId: "basic",
-        label: "Basic",
-        priceMonthlyCents: 0,
-        monthlyAllowanceCents: 100,
-      },
-      {
-        planId: "pro",
-        label: "Pro",
-        priceMonthlyCents: 500,
-        monthlyAllowanceCents: 400,
-      },
-    ];
-
-    for (const plan of SEED_PLANS) {
-      new pulumiAws.dynamodb.TableItem(`Plan-${plan.planId}`, {
-        tableName: plansTable.name,
-        hashKey: "pk",
-        rangeKey: "sk",
-        item: JSON.stringify({
-          pk: { S: `PLAN#${plan.planId}` },
-          sk: { S: "PLAN" },
-          planId: { S: plan.planId },
-          label: { S: plan.label },
-          priceMonthlyCents: { N: String(plan.priceMonthlyCents) },
-          monthlyAllowanceCents: { N: String(plan.monthlyAllowanceCents) },
-        }),
-      });
-    }
+    new pulumiAws.dynamodb.TableItem(`Plan-${DEFAULT_PLAN.planId}`, {
+      tableName: plansTable.name,
+      hashKey: "pk",
+      rangeKey: "sk",
+      item: JSON.stringify({
+        pk: { S: `PLAN#${DEFAULT_PLAN.planId}` },
+        sk: { S: "PLAN" },
+        planId: { S: DEFAULT_PLAN.planId },
+        label: { S: DEFAULT_PLAN.label },
+        priceMonthlyCents: { N: String(DEFAULT_PLAN.priceMonthlyCents) },
+        monthlyAllowanceCents: {
+          N: String(DEFAULT_PLAN.monthlyAllowanceCents),
+        },
+      }),
+    });
 
     const pipelineDlq = new sst.aws.Queue("PipelineDLQ", {
       transform: {
@@ -250,18 +267,87 @@ export default $config({
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
       MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "10485760",
+      MAX_IMAGE_UPLOAD_BYTES: process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880",
       MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200",
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
-        process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.01",
+        process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12",
+      DEPLOYMENT_STAGE: STAGE,
       APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
     };
 
     const embedEnv = {
       ...baseEnv,
-      EMBEDDING_PROVIDER_URL: process.env.EMBEDDING_PROVIDER_URL!,
-      EMBEDDING_MODEL: process.env.EMBEDDING_MODEL!,
-      EMBEDDING_API_KEY: process.env.EMBEDDING_API_KEY!,
+      BEDROCK_EMBEDDING_MODEL: embeddingModelId,
+      BEDROCK_ASSUME_ROLE_ARN: bedrockAssumeRoleArn ?? "",
+      BEDROCK_ASSUME_ROLE_EXTERNAL_ID: bedrockAssumeRoleExternalId ?? "",
+      EMBEDDING_DIMENSION: "1024",
     };
+
+    if (STAGE === PROD_STAGE) {
+      const invocationLogPrefix = "model-invocations";
+      const invocationLogs = new sst.aws.Bucket("BedrockInvocationLogs", {
+        policy: [
+          {
+            actions: ["s3:PutObject"],
+            principals: [
+              { type: "service", identifiers: ["bedrock.amazonaws.com"] },
+            ],
+            paths: [
+              `${invocationLogPrefix}/AWSLogs/${ACCOUNT_ID}/BedrockModelInvocationLogs/*`,
+            ],
+            conditions: [
+              {
+                test: "StringEquals",
+                variable: "aws:SourceAccount",
+                values: [ACCOUNT_ID],
+              },
+              {
+                test: "ArnLike",
+                variable: "aws:SourceArn",
+                values: [`arn:aws:bedrock:${REGION}:${ACCOUNT_ID}:*`],
+              },
+            ],
+          },
+        ],
+        transform: {
+          bucket: (a) => {
+            a.bucket = name("bedrock-logs");
+          },
+        },
+      });
+
+      new pulumiAws.s3.BucketLifecycleConfigurationV2(
+        "BedrockInvocationLogsLifecycle",
+        {
+          bucket: invocationLogs.name,
+          rules: [
+            {
+              id: "expire-model-invocation-logs",
+              status: "Enabled",
+              filter: { prefix: "" },
+              expiration: { days: 7 },
+              abortIncompleteMultipartUpload: { daysAfterInitiation: 1 },
+            },
+          ],
+        },
+      );
+
+      new pulumiAws.bedrockmodel.InvocationLoggingConfiguration(
+        "BedrockInvocationLogging",
+        {
+          loggingConfig: {
+            embeddingDataDeliveryEnabled: true,
+            imageDataDeliveryEnabled: true,
+            s3Config: {
+              bucketName: invocationLogs.name,
+              keyPrefix: invocationLogPrefix,
+            },
+            textDataDeliveryEnabled: true,
+            videoDataDeliveryEnabled: false,
+          },
+        },
+      );
+    }
 
     new pulumiAws.cloudformation.Stack("Vectors", {
       name: name("vectors"),
@@ -383,6 +469,7 @@ export default $config({
             actions: [
               "dynamodb:GetItem",
               "dynamodb:PutItem",
+              "dynamodb:TransactWriteItems",
               "dynamodb:UpdateItem",
             ],
             resources: [table.arn, accountsTable.arn],
@@ -391,7 +478,11 @@ export default $config({
             actions: ["s3vectors:PutVectors"],
             resources: [vectorIndexArn],
           },
-          { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
+          embeddingInvocationPermission,
+          {
+            actions: ["sqs:SendMessage"],
+            resources: [pipelineQueue.arn],
+          },
         ],
         transform: {
           function: (a) => {
@@ -399,7 +490,13 @@ export default $config({
           },
         },
       },
-      { batch: { partialResponses: true } },
+      {
+        batch: {
+          size: 10,
+          window: "1 second",
+          partialResponses: true,
+        },
+      },
     );
     const queryFn = new sst.aws.Function("Query", {
       handler: "./functions/query/index.handler",
@@ -430,6 +527,7 @@ export default $config({
           actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
           resources: [vectorIndexArn],
         },
+        embeddingInvocationPermission,
       ],
       transform: {
         function: (a) => {
@@ -524,12 +622,14 @@ export default $config({
         {
           actions: [
             "dynamodb:GetItem",
+            "dynamodb:PutItem",
             "dynamodb:Query",
+            "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
             "dynamodb:DeleteItem",
             "dynamodb:BatchWriteItem",
           ],
-          resources: [table.arn],
+          resources: [table.arn, accountsTable.arn],
         },
         {
           actions: ["s3vectors:DeleteVectors"],
@@ -681,130 +781,6 @@ export default $config({
       },
     });
 
-    const plansListFn = new sst.aws.Function("PlansList", {
-      handler: "./functions/plans/list.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "List all billing plans",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:Scan"],
-          resources: [plansTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-list");
-        },
-      },
-    });
-
-    const plansGetFn = new sst.aws.Function("PlansGet", {
-      handler: "./functions/plans/get.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Get a single billing plan",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:GetItem"],
-          resources: [plansTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-get");
-        },
-      },
-    });
-
-    const plansCreateFn = new sst.aws.Function("PlansCreate", {
-      handler: "./functions/plans/create.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Create a billing plan",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
-          resources: [plansTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-create");
-        },
-      },
-    });
-
-    const plansUpdateFn = new sst.aws.Function("PlansUpdate", {
-      handler: "./functions/plans/update.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Update a billing plan",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-          resources: [plansTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-update");
-        },
-      },
-    });
-
-    const plansDeleteFn = new sst.aws.Function("PlansDelete", {
-      handler: "./functions/plans/delete.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Delete a billing plan",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:GetItem", "dynamodb:DeleteItem"],
-          resources: [plansTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-delete");
-        },
-      },
-    });
-
-    const plansAssignFn = new sst.aws.Function("PlansAssign", {
-      handler: "./functions/plans/assign.handler",
-      runtime: "nodejs22.x",
-      timeout: "10 seconds",
-      memory: "128 MB",
-      description: "Assign a billing plan to the current account",
-      environment: baseEnv,
-      permissions: [
-        {
-          actions: [
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-          ],
-          resources: [plansTable.arn, accountsTable.arn],
-        },
-      ],
-      transform: {
-        function: (a) => {
-          a.name = name("plans-assign");
-        },
-      },
-    });
-
     const billingAccountFn = new sst.aws.Function("BillingAccount", {
       handler: "./functions/admin/account.handler",
       runtime: "nodejs22.x",
@@ -816,6 +792,10 @@ export default $config({
         {
           actions: ["dynamodb:GetItem"],
           resources: [accountsTable.arn],
+        },
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
         },
       ],
       transform: {
@@ -840,6 +820,7 @@ export default $config({
             "dynamodb:PutItem",
             "dynamodb:UpdateItem",
             "dynamodb:Query",
+            "dynamodb:TransactWriteItems",
             "dynamodb:DeleteItem",
             "dynamodb:BatchWriteItem",
           ],
@@ -887,11 +868,14 @@ export default $config({
         {
           actions: [
             "dynamodb:GetItem",
+            "dynamodb:PutItem",
             "dynamodb:DeleteItem",
             "dynamodb:Query",
+            "dynamodb:TransactWriteItems",
+            "dynamodb:UpdateItem",
             "dynamodb:BatchWriteItem",
           ],
-          resources: [table.arn],
+          resources: [table.arn, accountsTable.arn],
         },
         {
           actions: ["s3vectors:DeleteVectors"],
@@ -938,14 +922,7 @@ export default $config({
     api.route("PATCH /tags/{name}", tagsUpdateFn.arn);
     api.route("DELETE /tags/{name}", tagsDeleteFn.arn);
     api.route("GET /account/usage", billingFn.arn);
-    api.route("GET /plans", plansListFn.arn);
-    api.route("POST /plans", plansCreateFn.arn);
-    api.route("GET /plans/{id}", plansGetFn.arn);
-    api.route("PATCH /plans/{id}", plansUpdateFn.arn);
-    api.route("DELETE /plans/{id}", plansDeleteFn.arn);
-    api.route("GET /account/plans", plansListFn.arn);
     api.route("GET /account", billingAccountFn.arn);
-    api.route("PATCH /account/plan", plansAssignFn.arn);
 
     return {
       apiEndpoint: api.url,

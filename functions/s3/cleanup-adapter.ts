@@ -10,12 +10,14 @@ import {
   deleteDocumentVectors,
   deleteS3Prefix,
   getDocument,
+  updateStorageBytes,
 } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
+const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
@@ -75,6 +77,14 @@ export async function handler(event: S3Event) {
     }
 
     try {
+      if (document?.countedBytes) {
+        await updateStorageBytes(
+          document.userId,
+          AccountsTableName,
+          -document.countedBytes,
+          `delete:${documentId}`,
+        );
+      }
       await deleteDynamoRecords(documentId, chunkItems, document);
     } catch (err) {
       console.error(`[cleanup-adapter] dynamo delete failed:`, err);

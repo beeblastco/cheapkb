@@ -1,9 +1,10 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import type { AccountRow } from "../types";
-import { accountId, dynamo, extractUserId } from "../utils";
+import { accountId, dynamo, extractUserId, getDefaultPlan } from "../utils";
 
 const tableName = process.env.ACCOUNTS_TABLE_NAME!;
+const plansTableName = process.env.PLANS_TABLE_NAME!;
 
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
@@ -24,15 +25,16 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({ error: "Account not found" }),
     };
   }
+  const plan = await getDefaultPlan(plansTableName);
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       userId: accountId(account.pk),
-      planId: account.planId,
-      priceMonthlyCents: account.priceMonthlyCents,
-      monthlyAllowanceCents: account.monthlyAllowanceCents,
+      planId: plan?.planId ?? process.env.DEFAULT_PLAN_ID ?? "basic",
+      priceMonthlyCents: plan?.priceMonthlyCents ?? 0,
+      monthlyAllowanceCents: plan?.monthlyAllowanceCents ?? 0,
       storageBytes: account.storageBytes,
       createdAt: account.createdAt,
       updatedAt: account.updatedAt,
