@@ -4,6 +4,8 @@
 
 Cost-effective multimodal knowledge base on AWS. Upload documents and images, then search them with text, an image, or both.
 
+Live web app: https://ds8aejb7efd81.cloudfront.net
+
 ## Features
 
 - Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files
