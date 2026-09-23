@@ -138,7 +138,9 @@ async function chunkDocument(documentId: string, parsedKey: string) {
   for (const { chunk, i } of chunks) {
     const chunkId = `chunk_${documentId}_${i}`;
     const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
-    const tokenCount = encode(chunk.text).length;
+    const tokenCount = encode(chunk.text, {
+      disallowedSpecial: new Set(),
+    }).length;
     await s3.send(
       new PutObjectCommand({
         Bucket: StorageBucketName,
@@ -348,7 +350,7 @@ function splitIntoChunks(
     if (buffer.length > 0) flush();
     pageStart = page.pageNumber;
     pageEnd = page.pageNumber;
-    const tokens = encode(page.text);
+    const tokens = encode(page.text, { disallowedSpecial: new Set() });
     for (const tok of tokens) {
       buffer.push(tok);
       if (buffer.length >= maxTokens) flush();

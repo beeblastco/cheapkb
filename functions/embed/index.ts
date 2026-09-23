@@ -204,7 +204,7 @@ async function batchProcess(
         modality === "text"
           ? typeof chunkData.tokenCount === "number" && chunkData.tokenCount > 0
             ? chunkData.tokenCount
-            : encode(text).length
+            : encode(text, { disallowedSpecial: new Set() }).length
           : undefined;
       const metadata: ChunkMetadata = {
         documentId: chunk.documentId,
