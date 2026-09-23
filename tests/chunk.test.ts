@@ -76,6 +76,44 @@ describe("chunk records", () => {
     expect(chunkBody.userId).toBe("owner");
   });
 
+  it("chunks text that contains tokenizer special tokens", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            pages: [{ pageNumber: 1, text: "Before <|endoftext|> after" }],
+          }),
+      } as any,
+    });
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-special",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([]);
+    const chunkBody = JSON.parse(
+      String(
+        s3Mock.calls().find((call) => "Body" in call.args[0].input)?.args[0]
+          .input.Body,
+      ),
+    );
+    expect(chunkBody.text).toBe("Before <|endoftext|> after");
+  });
+
   it("creates one image chunk without text tokenization", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {

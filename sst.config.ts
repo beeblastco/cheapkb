@@ -89,7 +89,7 @@ export default $config({
     const web = new sst.aws.StaticSite("Web", {
       path: "web",
       build: {
-        command: "npm install && npm run build",
+        command: "npm ci --legacy-peer-deps --ignore-scripts && npm run build",
         output: "dist",
       },
       environment: {
