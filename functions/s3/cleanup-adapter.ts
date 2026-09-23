@@ -1,8 +1,15 @@
 import type { S3Event } from "aws-lambda";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
-import { DeleteCommand, DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
   deleteDocumentChunkRecords,
@@ -33,6 +40,9 @@ export async function handler(event: S3Event) {
     const documentId = parts[1];
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
     const document = await getDocument(documentId, dynamo, TableName);
+    if (document && document.status !== "DELETING") {
+      await markDeleting(documentId);
+    }
 
     const errors: string[] = [];
     let chunkItems: ChunkItem[] = [];
@@ -118,4 +128,29 @@ async function deleteDynamoRecords(
     }),
   );
   console.log(`[cleanup-adapter] Deleted DynamoDB record for ${documentId}`);
+}
+
+// Pipeline stages refuse to write to a DELETING document, so a vector written
+// during this cleanup cannot stay searchable.
+async function markDeleting(documentId: string) {
+  const now = new Date().toISOString();
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+        ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":gsi1pk": "STATUS#DELETING",
+          ":s": "DELETING",
+          ":t": now,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
 }

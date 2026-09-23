@@ -1,5 +1,8 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
@@ -65,7 +68,16 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   // Pipeline stages refuse to write to a DELETING document, so nothing they
   // write after this point outlives the cleanup below.
-  await setStatus(documentId, "DELETING", null);
+  try {
+    await markDeleting(documentId, null);
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    return {
+      statusCode: 404,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document not found" }),
+    };
+  }
 
   let sourceSize = 0;
   try {
@@ -108,7 +120,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 
   if (errors.length > 0) {
-    await setStatus(documentId, "FAILED", "Delete did not finish, try again");
+    await markDeleting(documentId, "Delete did not finish, try again");
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
@@ -146,7 +158,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }),
     );
   } catch (err) {
-    await setStatus(documentId, "FAILED", "Delete did not finish, try again");
+    await markDeleting(documentId, "Delete did not finish, try again");
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
@@ -165,11 +177,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
-async function setStatus(
-  documentId: string,
-  status: "DELETING" | "FAILED",
-  lastError: string | null,
-) {
+// A failed delete stays DELETING so in-flight pipeline work still cannot write
+// to it; lastError tells the user to delete again.
+async function markDeleting(documentId: string, lastError: string | null) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
@@ -181,9 +191,9 @@ async function setStatus(
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
         ":e": lastError,
-        ":f": status === "FAILED" ? "DELETE" : null,
-        ":gsi1pk": `STATUS#${status}`,
-        ":s": status,
+        ":f": lastError ? "DELETE" : null,
+        ":gsi1pk": "STATUS#DELETING",
+        ":s": "DELETING",
         ":t": now,
       },
     }),

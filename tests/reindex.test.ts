@@ -151,6 +151,8 @@ describe("reindex migration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body).restartFrom).toBe("PARSING");
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
   it("refuses when the rate limit or usage allowance is used up", async () => {
@@ -173,27 +175,41 @@ describe("reindex migration", () => {
   });
 
   it("lets only one of two concurrent reindexes start", async () => {
-    dynamoMock.on(GetCommand).resolves({
-      Item: {
-        documentId: "doc-1",
-        userId: "owner",
-        status: "FAILED",
-        failedStep: "PARSING",
-        sourceKey: "raw/doc-1/file.pdf",
-        updatedAt: new Date().toISOString(),
-      },
+    const stored = {
+      documentId: "doc-1",
+      userId: "owner",
+      status: "FAILED",
+      failedStep: "PARSING",
+      sourceKey: "raw/doc-1/file.pdf",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const snapshot = { ...stored };
+    dynamoMock.on(GetCommand).resolves({ Item: snapshot });
+    dynamoMock.on(UpdateCommand).callsFake((input) => {
+      const values = input.ExpressionAttributeValues;
+      if (
+        stored.status !== values[":current"] ||
+        stored.updatedAt !== values[":updatedAt"]
+      ) {
+        throw new ConditionalCheckFailedException({
+          $metadata: {},
+          message: "The conditional request failed",
+        });
+      }
+      stored.status = values[":s"];
+      stored.updatedAt = values[":t"];
+      return {};
     });
-    dynamoMock
-      .on(UpdateCommand)
-      .rejects(
-        new ConditionalCheckFailedException({ $metadata: {}, message: "race" }),
-      );
+    sqsMock.on(SendMessageCommand).resolves({});
 
-    const response = await handler(
-      apiEvent({ pathParameters: { id: "doc-1" } }),
-    );
+    const responses = await Promise.all([
+      handler(apiEvent({ pathParameters: { id: "doc-1" } })),
+      handler(apiEvent({ pathParameters: { id: "doc-1" } })),
+    ]);
 
-    expect(response.statusCode).toBe(409);
-    expect(sqsMock.calls()).toHaveLength(0);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([
+      200, 409,
+    ]);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 });
