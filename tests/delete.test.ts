@@ -13,6 +13,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,7 +53,7 @@ describe("document deletion", () => {
     });
   });
 
-  it("preserves DynamoDB cleanup keys when vector deletion fails", async () => {
+  it("marks the document DELETING first and FAILED when cleanup fails", async () => {
     dynamoMock.on(QueryCommand).resolves({
       Items: [{ pk: "DOC#doc-1", sk: "CHUNK#1", chunkId: "chunk-1" }],
     });
@@ -65,6 +66,10 @@ describe("document deletion", () => {
 
     expect(response.statusCode).toBe(500);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
+    const statuses = dynamoMock
+      .commandCalls(UpdateCommand)
+      .map((call) => call.args[0].input.ExpressionAttributeValues?.[":s"]);
+    expect(statuses).toEqual(["DELETING", "FAILED"]);
   });
 
   it("deletes every S3 object version before metadata", async () => {

@@ -1,5 +1,8 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
   SendMessageBatchCommand,
@@ -12,7 +15,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DocumentRow } from "../types";
-import { extractUserId } from "../utils";
+import { checkRateLimit, checkUsageLimit, extractUserId } from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
@@ -20,6 +23,19 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
+const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
+// SQS gives a message 3 receives at 900s visibility, so a document still in a
+// processing status after an hour is stuck and safe to restart.
+const STALE_PROCESSING_MS = 60 * 60 * 1000;
+const PROCESSING_STATUSES = new Set([
+  "QUEUED",
+  "PARSING",
+  "PARSED",
+  "CHUNKING",
+  "CHUNKED",
+  "EMBEDDING",
+]);
 
 interface ReindexMessage {
   documentId: string;
@@ -32,6 +48,40 @@ interface ReindexMessage {
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
+
+  const { allowed, remaining } = await checkRateLimit(
+    userId,
+    RateLimitsTableName,
+    "REINDEX",
+    10,
+    10,
+  );
+  if (!allowed) {
+    return {
+      statusCode: 429,
+      headers: {
+        "Content-Type": "application/json",
+        "X-RateLimit-Remaining": String(remaining),
+      },
+      body: JSON.stringify({
+        error: "Rate limit exceeded. Try again later.",
+      }),
+    };
+  }
+
+  const { allowed: usageAllowed } = await checkUsageLimit(
+    userId,
+    AccountsTableName,
+  );
+  if (!usageAllowed) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Monthly usage allowance reached. Upgrade to continue.",
+      }),
+    };
+  }
 
   const documentId = event.pathParameters?.id;
   if (!documentId) {
@@ -68,6 +118,31 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const status = doc.status;
   const failedStep = doc.failedStep;
 
+  const updatedAtMs = Date.parse(doc.updatedAt ?? "");
+  const stale =
+    PROCESSING_STATUSES.has(status) &&
+    Number.isFinite(updatedAtMs) &&
+    Date.now() - updatedAtMs > STALE_PROCESSING_MS;
+  const restartable =
+    status === "EMBEDDED" ||
+    (status === "FAILED" &&
+      failedStep !== "UPLOAD" &&
+      failedStep !== "DELETE") ||
+    stale;
+  if (!restartable) {
+    return {
+      statusCode: 409,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error:
+          status === "FAILED"
+            ? "Upload the file again instead of reindexing"
+            : "Document is still processing",
+        status,
+      }),
+    };
+  }
+
   let targetStage: string;
   let targetStep: string;
   let messageBody: ReindexMessage;
@@ -90,7 +165,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
     targetStage = "embed";
     targetStep = "EMBEDDING";
     messageBody = { documentId, chunkKeys };
-    await resetChunkStatuses(documentId, chunkKeys);
   } else if (
     status === "PARSED" ||
     (status === "FAILED" && failedStep === "CHUNKING")
@@ -111,26 +185,42 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":s": "QUEUED",
-        ":null": null,
-        ":zero": 0,
-        ":t": now,
-        ":gsi1pk": "STATUS#QUEUED",
-        ":gsi1sk": now,
-      },
-    }),
-  );
+  // The status and updatedAt match makes a second concurrent reindex lose.
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ConditionExpression: doc.updatedAt
+          ? "#s = :current AND updatedAt = :updatedAt"
+          : "#s = :current AND attribute_not_exists(updatedAt)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "QUEUED",
+          ":current": status,
+          ...(doc.updatedAt ? { ":updatedAt": doc.updatedAt } : {}),
+          ":null": null,
+          ":zero": 0,
+          ":t": now,
+          ":gsi1pk": "STATUS#QUEUED",
+          ":gsi1sk": now,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    return {
+      statusCode: 409,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document changed, try again" }),
+    };
+  }
 
   if (targetStep === "EMBEDDING") {
     const reindexChunkKeys = messageBody.chunkKeys ?? [];
+    await resetChunkStatuses(documentId, reindexChunkKeys);
     for (let i = 0; i < reindexChunkKeys.length; i += 10) {
       const chunkKeys = reindexChunkKeys.slice(i, i + 10);
       try {

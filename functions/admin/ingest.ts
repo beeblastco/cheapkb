@@ -1,26 +1,18 @@
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { DocumentRow } from "../types";
 import { extractUserId } from "../utils";
 
-const sqs = new SQSClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
-const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 
 interface IngestBody {
   documentId?: unknown;
 }
 
+// The S3 upload event is the only path that queues and charges a document, so
+// this endpoint reports status and never starts processing itself.
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -76,93 +68,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({ error: "Document not found" }),
     };
   }
-  const now = new Date().toISOString();
-
-  try {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :queued, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ExpressionAttributeNames: { "#s": "status" },
-        ConditionExpression: "userId = :userId AND #s = :uploaded",
-        ExpressionAttributeValues: {
-          ":queued": "QUEUED",
-          ":uploaded": "UPLOADED",
-          ":t": now,
-          ":gsi1pk": "STATUS#QUEUED",
-          ":gsi1sk": now,
-          ":userId": userId,
-        },
-      }),
-    );
-  } catch (error) {
-    if (error instanceof ConditionalCheckFailedException) {
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentId,
-          status: doc.status,
-          alreadyStarted: true,
-        }),
-      };
-    }
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Failed to update document status" }),
-    };
-  }
-
-  try {
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: PipelineQueueUrl,
-        MessageBody: JSON.stringify({
-          stage: "parse",
-          documentId,
-          sourceKey: doc.sourceKey,
-          mimeType: doc.mimeType,
-        }),
-      }),
-    );
-  } catch (error) {
-    await rollbackQueueStatus(documentId);
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "Failed to queue document for processing",
-      }),
-    };
-  }
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentId, status: "QUEUED" }),
+    body: JSON.stringify({ documentId, status: doc.status }),
   };
-}
-
-async function rollbackQueueStatus(documentId: string) {
-  const now = new Date().toISOString();
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ConditionExpression: "#s = :queued",
-      ExpressionAttributeValues: {
-        ":queued": "QUEUED",
-        ":uploaded": "UPLOADED",
-        ":t": now,
-        ":gsi1pk": "STATUS#UPLOADED",
-        ":gsi1sk": now,
-      },
-    }),
-  );
 }

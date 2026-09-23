@@ -1,3 +1,4 @@
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import {
@@ -164,5 +165,30 @@ describe("chunk records", () => {
       }),
     );
     expect(chunkBody).not.toHaveProperty("tokenCount");
+  });
+
+  it("drops the message when the document was deleted", async () => {
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "gone" }),
+      );
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-deleted",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+    expect(sqsMock.calls()).toHaveLength(0);
   });
 });

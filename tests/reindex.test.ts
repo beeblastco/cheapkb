@@ -1,3 +1,4 @@
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
   SendMessageBatchCommand,
@@ -27,6 +28,15 @@ vi.mock("jose", () => ({
     payload: { pairwise_sub: "owner" },
   }),
 }));
+const limits = vi.hoisted(() => ({
+  checkRateLimit: vi.fn(),
+  checkUsageLimit: vi.fn(),
+}));
+vi.mock("../functions/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../functions/utils")>()),
+  checkRateLimit: limits.checkRateLimit,
+  checkUsageLimit: limits.checkUsageLimit,
+}));
 
 import { handler } from "../functions/admin/reindex";
 import { apiEvent } from "./helpers/events";
@@ -40,13 +50,20 @@ describe("reindex migration", () => {
     s3Mock.reset();
     sqsMock.reset();
     dynamoMock.reset();
+    limits.checkRateLimit.mockResolvedValue({ allowed: true, remaining: 9 });
+    limits.checkUsageLimit.mockResolvedValue({ allowed: true });
   });
 
   it("re-embeds completed documents so tenant metadata can be migrated", async () => {
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk?.startsWith("RATE#")) return {};
       return {
-        Item: { documentId: "doc-1", userId: "owner", status: "EMBEDDED" },
+        Item: {
+          documentId: "doc-1",
+          userId: "owner",
+          status: "EMBEDDED",
+          updatedAt: new Date().toISOString(),
+        },
       };
     });
     dynamoMock.on(UpdateCommand).resolves({});
@@ -72,6 +89,7 @@ describe("reindex migration", () => {
         status: "FAILED",
         failedStep: "CHUNKING",
         mimeType: "image/png",
+        updatedAt: new Date().toISOString(),
       },
     });
     dynamoMock.on(UpdateCommand).resolves({});
@@ -93,5 +111,89 @@ describe("reindex migration", () => {
         parsedKey: "parsed/doc-1/v1/image.json",
       }),
     );
+  });
+
+  it("refuses a document that is still processing", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        documentId: "doc-1",
+        userId: "owner",
+        status: "EMBEDDING",
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(sqsMock.calls()).toHaveLength(0);
+  });
+
+  it("restarts a document stuck in processing for over an hour", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        documentId: "doc-1",
+        userId: "owner",
+        status: "PARSING",
+        sourceKey: "raw/doc-1/file.pdf",
+        updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).restartFrom).toBe("PARSING");
+  });
+
+  it("refuses when the rate limit or usage allowance is used up", async () => {
+    limits.checkRateLimit.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+    });
+    const rateLimited = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+    limits.checkUsageLimit.mockResolvedValueOnce({ allowed: false });
+    const overAllowance = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(rateLimited.statusCode).toBe(429);
+    expect(overAllowance.statusCode).toBe(429);
+    expect(dynamoMock.calls()).toHaveLength(0);
+    expect(sqsMock.calls()).toHaveLength(0);
+  });
+
+  it("lets only one of two concurrent reindexes start", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        documentId: "doc-1",
+        userId: "owner",
+        status: "FAILED",
+        failedStep: "PARSING",
+        sourceKey: "raw/doc-1/file.pdf",
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "race" }),
+      );
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(sqsMock.calls()).toHaveLength(0);
   });
 });

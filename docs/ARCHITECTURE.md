@@ -44,10 +44,10 @@ Editing a processed document updates its searchable tags without uploading the f
 
 Replacing a completed or failed document keeps the existing version searchable until S3 accepts the replacement. CheapKB then removes the old derived content and vectors before processing the new version.
 
-Deleting a document removes its uploaded content, intermediate content, metadata, and vectors. An S3 deletion event uses the same cleanup behavior so search results do not point to removed content.
+Deleting a document removes its uploaded content, intermediate content, metadata, and vectors. An S3 deletion event uses the same cleanup behavior so search results do not point to removed content. Deletion first marks the document as deleting. Pipeline work still in flight then stops, and embedding removes any vector it wrote after that point, so deleted content cannot reappear in search.
 
 ## Reliability and cost controls
 
 Processing happens asynchronously so upload requests remain short. Failed records are retried without replaying successful records; a failed embedding batch is split to isolate its failing input. Repeated failures move to the dead-letter queue and appear as failed documents that users can retry.
 
-CheapKB shares pipeline resources and batches available embedding work to avoid unnecessary idle infrastructure and requests. File, image, chunk, and account allowance limits bound unexpected processing cost.
+CheapKB shares pipeline resources and batches available embedding work to avoid unnecessary idle infrastructure and requests. File, image, chunk, and account allowance limits bound unexpected processing cost. Only the S3 upload event queues and charges a new document. Reindex is rate limited, checks the allowance, and refuses documents that are still processing.

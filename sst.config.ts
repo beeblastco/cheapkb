@@ -419,16 +419,9 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "10 seconds",
       memory: "128 MB",
-      description:
-        "Manually trigger the ingest pipeline for an existing document",
+      description: "Report a document's ingest status",
       environment: baseEnv,
-      permissions: [
-        {
-          actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
-          resources: [table.arn],
-        },
-        { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
-      ],
+      permissions: [{ actions: ["dynamodb:GetItem"], resources: [table.arn] }],
       transform: {
         function: (a) => {
           a.name = name("ingest");
@@ -475,7 +468,7 @@ export default $config({
             resources: [table.arn, accountsTable.arn],
           },
           {
-            actions: ["s3vectors:PutVectors"],
+            actions: ["s3vectors:DeleteVectors", "s3vectors:PutVectors"],
             resources: [vectorIndexArn],
           },
           embeddingInvocationPermission,
@@ -588,6 +581,16 @@ export default $config({
           actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
           resources: [table.arn],
         },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:Query",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [accountsTable.arn, rateLimitsTable.arn],
+        },
+        { actions: ["dynamodb:GetItem"], resources: [plansTable.arn] },
         { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: ["sqs:SendMessage"],
