@@ -1,4 +1,7 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommand,
@@ -42,6 +45,10 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     try {
       await chunkDocument(documentId, parsedKey);
     } catch (err) {
+      if (err instanceof ConditionalCheckFailedException) {
+        console.log(`[chunk] Document ${documentId} was deleted, dropping`);
+        continue;
+      }
       console.error(`[chunk] Failed for ${documentId}:`, err);
       const attempt = parseInt(
         record.attributes.ApproximateReceiveCount ?? "1",
@@ -197,7 +204,10 @@ async function clearError(documentId: string, now: string) {
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
+        ":deleting": "DELETING",
         ":null": null,
         ":zero": 0,
         ":t": now,
@@ -217,8 +227,10 @@ async function finishChunking(
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, chunkCount = :c, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
+        ":deleting": "DELETING",
         ":s": "CHUNKED",
         ":c": chunkKeys.length,
         ":t": now,
@@ -249,7 +261,36 @@ async function finishChunking(
   }
 }
 
+// A deleted document has nothing left to record the error on.
 async function handleError(documentId: string, err: unknown, attempt: number) {
+  try {
+    await writeError(documentId, err, attempt);
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+}
+
+async function updateStatus(documentId: string, status: string, now: string) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":deleting": "DELETING",
+        ":s": status,
+        ":t": now,
+        ":gsi1pk": `STATUS#${status}`,
+        ":gsi1sk": now,
+      },
+    }),
+  );
+}
+
+async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
   const lastError = (err as Error).message ?? String(err);
 
@@ -260,8 +301,10 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
+          ":deleting": "DELETING",
           ":s": "FAILED",
           ":e": lastError,
           ":r": attempt,
@@ -284,7 +327,10 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
+        ":deleting": "DELETING",
         ":e": lastError,
         ":r": attempt,
         ":f": "CHUNKING",
@@ -294,24 +340,6 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
   );
 
   console.log(`[chunk] Retry ${attempt}/3 for ${documentId}`);
-}
-
-async function updateStatus(documentId: string, status: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":s": status,
-        ":t": now,
-        ":gsi1pk": `STATUS#${status}`,
-        ":gsi1sk": now,
-      },
-    }),
-  );
 }
 
 function splitIntoChunks(

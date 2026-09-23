@@ -1,11 +1,18 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  ConditionalCheckFailedException,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { PutVectorsCommand, S3VectorsClient } from "@aws-sdk/client-s3vectors";
+import {
+  DeleteVectorsCommand,
+  PutVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -375,7 +382,10 @@ async function clearError(documentId: string, now: string) {
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
+        ":deleting": "DELETING",
         ":null": null,
         ":zero": 0,
         ":t": now,
@@ -423,46 +433,13 @@ async function embedItems(
   }
 }
 
+// A deleted document has nothing left to record the error on.
 async function handleError(documentId: string, err: unknown, attempt: number) {
-  const now = new Date().toISOString();
-  const lastError = (err as Error).message ?? String(err);
-
-  if (attempt >= 3) {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":s": "FAILED",
-          ":e": lastError,
-          ":r": attempt,
-          ":f": "EMBEDDING",
-          ":t": now,
-          ":gsi1pk": "STATUS#FAILED",
-          ":gsi1sk": now,
-        },
-      }),
-    );
-    return;
+  try {
+    await writeError(documentId, err, attempt);
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
-
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
-      ExpressionAttributeValues: {
-        ":e": lastError,
-        ":r": attempt,
-        ":f": "EMBEDDING",
-        ":t": now,
-      },
-    }),
-  );
 }
 
 async function invokeBedrock(
@@ -554,7 +531,7 @@ async function markChunkEmbedded(
               Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
               UpdateExpression: "SET #s = :embedded",
               ConditionExpression:
-                "attribute_not_exists(#s) OR #s <> :embedded",
+                "attribute_exists(pk) AND (attribute_not_exists(#s) OR #s <> :embedded)",
               ExpressionAttributeNames: { "#s": "status" },
               ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
             },
@@ -565,8 +542,10 @@ async function markChunkEmbedded(
               Key: { pk: `DOC#${documentId}`, sk: "META" },
               UpdateExpression:
                 "SET #s = :embedding, embeddedCount = if_not_exists(embeddedCount, :zero) + :one",
+              ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
               ExpressionAttributeNames: { "#s": "status" },
               ExpressionAttributeValues: {
+                ":deleting": "DELETING",
                 ":embedding": "EMBEDDING",
                 ":one": 1,
                 ":zero": 0,
@@ -579,6 +558,25 @@ async function markChunkEmbedded(
     return true;
   } catch (err) {
     if ((err as Error).name !== "TransactionCanceledException") throw err;
+    // Delete marks META as DELETING before it removes vectors, so a vector
+    // written after that point is removed here instead of staying searchable.
+    const doc = await dynamo.send(
+      new GetCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ConsistentRead: true,
+      }),
+    );
+    if (!doc.Item || doc.Item.status === "DELETING") {
+      await vectors.send(
+        new DeleteVectorsCommand({
+          vectorBucketName: VectorBucketName,
+          indexName: VectorIndexName,
+          keys: [chunkId],
+        }),
+      );
+      return false;
+    }
     const existing = await dynamo.send(
       new GetCommand({
         TableName,
@@ -611,9 +609,10 @@ async function markEmbedded(documentId: string) {
           UpdateExpression:
             "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
           ConditionExpression:
-            "attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s",
+            "attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting",
           ExpressionAttributeNames: { "#s": "status" },
           ExpressionAttributeValues: {
+            ":deleting": "DELETING",
             ":s": "EMBEDDED",
             ":t": now,
             ":expected": expected,
@@ -622,13 +621,60 @@ async function markEmbedded(documentId: string) {
           },
         }),
       );
+      await clearError(documentId, now);
     } catch (err) {
       if ((err as Error).name !== "ConditionalCheckFailedException") {
         throw err;
       }
     }
-    await clearError(documentId, now);
   }
+}
+
+async function writeError(documentId: string, err: unknown, attempt: number) {
+  const now = new Date().toISOString();
+  const lastError = (err as Error).message ?? String(err);
+
+  if (attempt >= 3) {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":deleting": "DELETING",
+          ":s": "FAILED",
+          ":e": lastError,
+          ":r": attempt,
+          ":f": "EMBEDDING",
+          ":t": now,
+          ":gsi1pk": "STATUS#FAILED",
+          ":gsi1sk": now,
+        },
+      }),
+    );
+    return;
+  }
+
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":deleting": "DELETING",
+        ":e": lastError,
+        ":r": attempt,
+        ":f": "EMBEDDING",
+        ":t": now,
+      },
+    }),
+  );
 }
 
 function buildEmbeddingRequest(

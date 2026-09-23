@@ -6,6 +6,7 @@ import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
@@ -62,6 +63,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  // Pipeline stages refuse to write to a DELETING document, so nothing they
+  // write after this point outlives the cleanup below.
+  await setStatus(documentId, "DELETING", null);
+
   let sourceSize = 0;
   try {
     const head = await s3.send(
@@ -103,6 +108,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 
   if (errors.length > 0) {
+    await setStatus(documentId, "FAILED", "Delete did not finish, try again");
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
@@ -140,6 +146,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }),
     );
   } catch (err) {
+    await setStatus(documentId, "FAILED", "Delete did not finish, try again");
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
@@ -156,4 +163,29 @@ export async function handler(event: APIGatewayProxyEventV2) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId, deleted: true }),
   };
+}
+
+async function setStatus(
+  documentId: string,
+  status: "DELETING" | "FAILED",
+  lastError: string | null,
+) {
+  const now = new Date().toISOString();
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression:
+        "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+      ConditionExpression: "attribute_exists(pk)",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":e": lastError,
+        ":f": status === "FAILED" ? "DELETE" : null,
+        ":gsi1pk": `STATUS#${status}`,
+        ":s": status,
+        ":t": now,
+      },
+    }),
+  );
 }

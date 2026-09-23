@@ -48,19 +48,15 @@ paths:
   /ingest:
     post:
       operationId: ingestDocument
-      summary: Manually trigger the ingest pipeline
+      summary: Report a document's ingest status
+      description: Processing starts when S3 accepts the upload. This call only reports the current status.
       tags: [documents]
       responses:
         "200":
-          description: Pipeline triggered or already running
+          description: Current document status
           content:
             application/json:
-              schema:
-                oneOf:
-                  - { $ref: "#/components/schemas/IngestResponse" }
-                  - {
-                      $ref: "#/components/schemas/IngestAlreadyStartedResponse",
-                    }
+              schema: { $ref: "#/components/schemas/IngestResponse" }
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -194,6 +190,7 @@ paths:
     post:
       operationId: reindexDocument
       summary: Restart a failed document from its failed step
+      description: Allowed for completed documents, failed documents, and documents stuck in processing for over an hour. Limited to 10 per hour per user.
       tags: [documents]
       parameters:
         - { $ref: "#/components/parameters/DocumentId" }
@@ -209,6 +206,13 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: Document is still processing, failed at upload, or changed during the request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -456,19 +460,6 @@ components:
           type: string
         status:
           type: string
-          enum: [QUEUED]
-
-    IngestAlreadyStartedResponse:
-      type: object
-      required: [documentId, status, alreadyStarted]
-      properties:
-        documentId:
-          type: string
-        status:
-          type: string
-        alreadyStarted:
-          type: boolean
-          enum: [true]
 
     QueryRequest:
       type: object

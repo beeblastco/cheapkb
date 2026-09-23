@@ -7,7 +7,11 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { PutVectorsCommand, S3VectorsClient } from "@aws-sdk/client-s3vectors";
+import {
+  DeleteVectorsCommand,
+  PutVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
@@ -313,5 +317,55 @@ describe("multimodal pipeline", () => {
     expect(second.batchItemFailures).toEqual([]);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
     expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
+  });
+
+  it("removes a vector written after its document was deleted", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            documentId: "doc-1",
+            userId: "user-1",
+            chunkId: "chunk_doc-1_0",
+            modality: "text",
+            text: "Deleted text",
+            tokenCount: 2,
+            pageStart: 1,
+            pageEnd: 1,
+          }),
+      } as any,
+    });
+    bedrockMock.on(InvokeModelCommand).resolves({
+      $metadata: { bedrockInputTokenCount: 2 } as any,
+      body: new TextEncoder().encode(
+        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
+      ),
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).callsFake((input) => {
+      if (input.TransactItems?.[0]?.Update?.Key?.sk?.startsWith("CHUNK#")) {
+        const error = new Error("cancelled");
+        error.name = "TransactionCanceledException";
+        throw error;
+      }
+      return {};
+    });
+    dynamoMock.on(GetCommand).resolves({});
+
+    const result = await embed(
+      sqsEvent(
+        "embed-deleted",
+        JSON.stringify({
+          documentId: "doc-1",
+          s3ChunkKey: "chunks/doc-1/chunk_doc-1_0.json",
+        }),
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(
+      vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
+    ).toEqual(["chunk_doc-1_0"]);
   });
 });
