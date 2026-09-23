@@ -163,7 +163,8 @@ function App() {
   useEffect(() => {
     const hasInflight = documents.some(
       (document) =>
-        isActiveStatus(document.status) || document.status === "DELETING",
+        isActiveStatus(document.status) ||
+        (document.status === "DELETING" && !document.lastError),
     );
     if (!hasInflight) return;
     const timer = window.setInterval(() => loadDocuments(false), 3000);

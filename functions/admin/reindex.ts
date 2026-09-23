@@ -125,9 +125,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     Date.now() - updatedAtMs > STALE_PROCESSING_MS;
   const restartable =
     status === "EMBEDDED" ||
-    (status === "FAILED" &&
-      failedStep !== "UPLOAD" &&
-      failedStep !== "DELETE") ||
+    (status === "FAILED" && failedStep !== "UPLOAD") ||
     stale;
   if (!restartable) {
     return {
@@ -150,6 +148,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   if (
     status === "EMBEDDED" ||
     status === "CHUNKED" ||
+    status === "EMBEDDING" ||
     (status === "FAILED" && failedStep === "EMBEDDING")
   ) {
     const chunkKeys = await listChunkKeys(documentId);
@@ -167,6 +166,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     messageBody = { documentId, chunkKeys };
   } else if (
     status === "PARSED" ||
+    status === "CHUNKING" ||
     (status === "FAILED" && failedStep === "CHUNKING")
   ) {
     targetStage = "chunk";

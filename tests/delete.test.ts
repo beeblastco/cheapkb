@@ -53,7 +53,7 @@ describe("document deletion", () => {
     });
   });
 
-  it("marks the document DELETING first and FAILED when cleanup fails", async () => {
+  it("keeps a failed delete DELETING so the pipeline still cannot write to it", async () => {
     dynamoMock.on(QueryCommand).resolves({
       Items: [{ pk: "DOC#doc-1", sk: "CHUNK#1", chunkId: "chunk-1" }],
     });
@@ -66,10 +66,14 @@ describe("document deletion", () => {
 
     expect(response.statusCode).toBe(500);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
-    const statuses = dynamoMock
+    const updates = dynamoMock
       .commandCalls(UpdateCommand)
-      .map((call) => call.args[0].input.ExpressionAttributeValues?.[":s"]);
-    expect(statuses).toEqual(["DELETING", "FAILED"]);
+      .map((call) => call.args[0].input.ExpressionAttributeValues);
+    expect(updates.map((values) => values?.[":s"])).toEqual([
+      "DELETING",
+      "DELETING",
+    ]);
+    expect(updates[1]?.[":e"]).toBe("Delete did not finish, try again");
   });
 
   it("deletes every S3 object version before metadata", async () => {
