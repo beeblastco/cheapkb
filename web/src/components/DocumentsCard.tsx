@@ -280,7 +280,7 @@ export function DocumentsCard({
         queued.push({
           authors: "",
           error: "",
-          file,
+          file: file,
           id: crypto.randomUUID(),
           progress: "Reading metadata",
           state: "EXTRACTING",

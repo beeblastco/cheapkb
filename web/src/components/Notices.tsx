@@ -9,12 +9,13 @@ import { CircleAlert, X } from "lucide-react";
 
 export interface Notice {
   id: string;
-  title: string;
   message: string;
+  retry?: () => void;
+  title: string;
 }
 
 // Error notices drop down from the top center of the screen. App owns the list
-// and removes each notice after a few seconds or when it is closed.
+// and removes each one on a timer, on close, or when Retry is pressed.
 export function Notices({
   notices,
   onDismiss,
@@ -34,7 +35,22 @@ export function Notices({
         >
           <CircleAlert />
           <AlertTitle>{notice.title}</AlertTitle>
-          <AlertDescription>{notice.message}</AlertDescription>
+          <AlertDescription>
+            <p>{notice.message}</p>
+            {notice.retry ? (
+              <Button
+                className="cursor-pointer"
+                onClick={() => {
+                  onDismiss(notice.id);
+                  notice.retry?.();
+                }}
+                size="sm"
+                variant="outline"
+              >
+                Retry
+              </Button>
+            ) : null}
+          </AlertDescription>
           <AlertAction>
             <Button
               aria-label="Dismiss"

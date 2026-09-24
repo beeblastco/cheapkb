@@ -83,20 +83,22 @@ function App() {
     setNotices((current) => current.filter((notice) => notice.id !== id));
   }, []);
 
-  // Shows an error at the top of the screen. A repeat of the same error, such
-  // as a failing background refresh, replaces the one already shown.
+  // Shows an error at the top of the screen, ignoring repeats of one already
+  // shown. A notice with a retry stays until the user retries or closes it.
   const notify = useCallback(
-    (title: string, message: string) => {
+    (title: string, message: string, retry?: () => void) => {
       const id = crypto.randomUUID();
-      setNotices((current) => [
-        ...current
-          .filter(
-            (notice) => notice.title !== title || notice.message !== message,
-          )
-          .slice(-2),
-        { id: id, title: title, message: message },
-      ]);
-      window.setTimeout(() => dismissNotice(id), NOTICE_MS);
+      setNotices((current) =>
+        current.some(
+          (notice) => notice.title === title && notice.message === message,
+        )
+          ? current
+          : [
+              ...current.slice(-2),
+              { id: id, message: message, retry: retry, title: title },
+            ],
+      );
+      if (!retry) window.setTimeout(() => dismissNotice(id), NOTICE_MS);
     },
     [dismissNotice],
   );
@@ -110,6 +112,8 @@ function App() {
     [identity?.token],
   );
 
+  // Loads usage on sign-in and after uploads, queries and deletes. A backend
+  // push (WebSocket or SSE) could replace these refreshes later.
   const refreshUsage = useCallback(async () => {
     if (!identity?.token) return;
     const requestId = usageRequest.current + 1;
@@ -120,13 +124,9 @@ function App() {
       setUsage(data);
     } catch (error) {
       if (requestId !== usageRequest.current) return;
-      notify("Couldn't load usage", (error as Error).message);
+      notify("Couldn't load usage", (error as Error).message, refreshUsage);
     }
   }, [identity?.token, notify]);
-
-  // Called by child components after actions that affect usage (upload,
-  // query, delete). Future backend can push real-time usage
-  // updates here (e.g. WebSocket or SSE) instead of polling.
 
   const loadDocuments = useCallback(
     async (showLoading = false) => {
@@ -138,7 +138,9 @@ function App() {
           mergeDocuments(current, (data.documents as Document[]) || []),
         );
       } catch (error) {
-        notify("Couldn't load documents", (error as Error).message);
+        notify("Couldn't load documents", (error as Error).message, () =>
+          loadDocuments(true),
+        );
       } finally {
         setLoadingDocuments(false);
       }
@@ -172,21 +174,8 @@ function App() {
   }, [identity?.token, loadDocuments]);
 
   useEffect(() => {
-    async function loadUsage() {
-      if (!identity?.token) return;
-      const requestId = usageRequest.current + 1;
-      usageRequest.current = requestId;
-      try {
-        const data = await getUsageSummary(identity.token);
-        if (requestId === usageRequest.current) setUsage(data);
-      } catch (error) {
-        if (requestId === usageRequest.current) {
-          notify("Couldn't load usage", (error as Error).message);
-        }
-      }
-    }
-    loadUsage();
-  }, [identity?.token, notify]);
+    refreshUsage();
+  }, [refreshUsage]);
 
   useEffect(() => {
     const hasInflight = documents.some(
@@ -214,7 +203,7 @@ function App() {
       (current) => current.documentId === documentId,
     );
     setSelectedDocument(
-      document || { documentId, status: "", title: documentId },
+      document || { documentId: documentId, status: "", title: documentId },
     );
     setSelectedDocumentData(null);
     setLoadingDocument(true);
@@ -228,6 +217,7 @@ function App() {
       }
     } catch (error) {
       if (requestId === documentRequest.current) {
+        closeDocument();
         notify("Couldn't load document details", (error as Error).message);
       }
     } finally {
