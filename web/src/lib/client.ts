@@ -1,4 +1,5 @@
 import type { Badge } from "@/components/ui/badge";
+import { createShooAuth, type ShooAuthClient } from "@shoojs/auth";
 import type React from "react";
 import {
   DEFAULT_TAG_COLOR,
@@ -23,6 +24,7 @@ const FAILED_DOCUMENT_MAX_AGE_MS = 5 * 60 * 1000;
 const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
@@ -33,12 +35,9 @@ const ACTIVE_STATUSES = [
   "EMBEDDING",
 ] as const;
 
-interface PkceBundle {
+interface PkceBackup {
   state: string;
   verifier: string;
-}
-
-interface PkceBackup extends PkceBundle {
   createdAt: number;
 }
 
@@ -51,21 +50,21 @@ interface UploadMetadata {
   reused: boolean;
 }
 
-declare global {
-  interface Window {
-    Shoo?: {
-      getIdentity(): ShooIdentity | null;
-      createPkceBundle(): Promise<PkceBundle>;
-      startSignIn(opts: { bundle: PkceBundle }): Promise<void>;
-      handleCallback(): Promise<void>;
-      clearIdentity(): void;
-    };
-  }
-}
+let shooClient: ShooAuthClient | undefined;
+let signingOut = false;
 
+// An expired token counts as signed out, so the app never sends a burst of
+// requests that each come back 401.
 export function getIdentity(): ShooIdentity | null {
   try {
-    return window.Shoo?.getIdentity() ?? null;
+    const { token, userId } = shoo().getIdentity();
+    if (!token) return null;
+    const claims = shoo().decodeIdentityClaims(token);
+    if (!claims || claims.exp * 1000 <= Date.now()) {
+      shoo().clearIdentity();
+      return null;
+    }
+    return { token: token, userId: userId ?? undefined };
   } catch {
     return null;
   }
@@ -111,30 +110,38 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
   }
 }
 
+// The verifier is also kept in localStorage, since some browsers drop
+// sessionStorage on the way back from the sign-in page.
 export async function startSignIn(): Promise<void> {
-  if (!window.Shoo) throw new Error("Shoo SDK not loaded");
-  const bundle = await window.Shoo.createPkceBundle();
-  localStorage.setItem(
-    SHOO_PKCE_BACKUP_KEY,
-    JSON.stringify({
+  const bundle = await shoo().createPkceBundle();
+  const pkce = JSON.stringify({
+    state: bundle.state,
+    verifier: bundle.verifier,
+    createdAt: Date.now(),
+  });
+  localStorage.setItem(SHOO_PKCE_BACKUP_KEY, pkce);
+  sessionStorage.setItem(SHOO_PKCE_KEY, pkce);
+  window.location.assign(
+    shoo().createSignInUrl({
       state: bundle.state,
-      verifier: bundle.verifier,
-      createdAt: Date.now(),
+      codeChallenge: bundle.challenge,
     }),
   );
-  try {
-    await window.Shoo.startSignIn({ bundle });
-  } catch (error) {
-    localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
-    throw error;
-  }
 }
 
+// Several requests can fail with 401 at once; only the first one reloads.
 export function signOut(): void {
-  window.Shoo?.clearIdentity();
-  localStorage.removeItem("shoo_id_token");
+  if (signingOut) return;
+  signingOut = true;
+  shoo().clearIdentity();
   localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
   window.location.reload();
+}
+
+// Signs out as soon as Shoo reports that the session was revoked.
+export function watchSession(): void {
+  if (!getIdentity()) return;
+  shoo().startSessionMonitor({ onLoginRequired: () => signOut() });
 }
 
 export async function handleSignInCallback(): Promise<boolean> {
@@ -144,7 +151,7 @@ export async function handleSignInCallback(): Promise<boolean> {
 
   restorePkceVerifier(params.get("state"));
   try {
-    await window.Shoo!.handleCallback();
+    await shoo().handleCallback();
     localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
     window.location.replace("/");
     return true;
@@ -154,6 +161,15 @@ export async function handleSignInCallback(): Promise<boolean> {
     window.history.replaceState(null, "", "/");
     throw new Error("Sign-in expired. Please sign in again.");
   }
+}
+
+// Created on first use, because the client reads window.location.
+function shoo(): ShooAuthClient {
+  shooClient ??= createShooAuth({
+    callbackPath: SHOO_CALLBACK_PATH,
+    requestPii: true,
+  });
+  return shooClient;
 }
 
 function restorePkceVerifier(callbackState: string | null): void {
@@ -463,7 +479,11 @@ export async function uploadDocument(
   } catch (error) {
     if (!metadata.reused) {
       try {
-        await apiCall(token, "DELETE", `/documents/${metadata.documentId}`);
+        await apiCall(
+          token,
+          "DELETE",
+          `/documents/${encodeURIComponent(metadata.documentId)}`,
+        );
       } catch {}
     }
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
@@ -478,6 +498,7 @@ export function validateUploadFile(file: File): string | undefined {
   ) {
     return "Image exceeds the 5 MB limit";
   }
+  if (file.size > MAX_UPLOAD_BYTES) return "File exceeds the 10 MB limit";
   return undefined;
 }
 

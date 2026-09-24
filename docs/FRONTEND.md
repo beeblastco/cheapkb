@@ -2,13 +2,13 @@
 
 ## Sign in
 
-Sign in with Google through [shoo.dev](https://shoo.dev). Each account can only access its own documents, images, and search results.
+Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pinned `@shoojs/auth` client instead of loading a script from shoo.dev, and signs you out when your token expires or the session is revoked. Each account can only access its own documents, images, and search results.
 
 ## Documents
 
 The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
 
-Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
+Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MB and other files over 10 MB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
 
 Completed or failed documents can be replaced. Existing content remains searchable until the replacement upload is accepted.
 

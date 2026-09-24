@@ -7,7 +7,7 @@
 | Component                   | Purpose                                                                                                                                                  |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Web app                     | Lets users sign in, upload content, manage documents and metadata, review usage, and run searches.                                                       |
-| API                         | Authenticates requests and routes each action to the appropriate handler.                                                                                |
+| API                         | Authenticates requests and routes each action to the appropriate handler. The stage is throttled to 50 requests per second with bursts of 100.           |
 | Upload and ingest handlers  | Create the document record, provide a temporary direct-upload form, and start processing after S3 accepts the file.                                      |
 | Content bucket              | Keeps the original uploads and the intermediate content needed while documents are processed.                                                            |
 | Ingest and cleanup adapters | React to S3 changes. New objects enter the processing pipeline; deleted objects have their related search data removed.                                  |

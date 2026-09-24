@@ -84,9 +84,12 @@ export function docId(pk: string) {
 }
 
 export async function verifyShooToken(idToken: string, appOrigin: string) {
+  // Tokens minted for the local dev server are only accepted outside production.
   const audiences = [
     `origin:${new URL(appOrigin).origin}`,
-    "origin:http://localhost:5173",
+    ...(process.env.DEPLOYMENT_STAGE === "production"
+      ? []
+      : ["origin:http://localhost:5173"]),
   ];
   const { payload } = await jwtVerify(idToken, jwks, {
     issuer: SHOO_ISSUER,
