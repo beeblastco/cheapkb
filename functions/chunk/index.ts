@@ -264,29 +264,22 @@ async function finishChunking(
   if (chunkKeys.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
 
   const sendSize = 10;
-  const groups: string[][] = [];
   for (let i = 0; i < chunkKeys.length; i += sendSize) {
-    groups.push(chunkKeys.slice(i, i + sendSize));
-  }
-  const responses = await Promise.all(
-    groups.map((group) =>
-      sqs.send(
-        new SendMessageBatchCommand({
-          QueueUrl: PipelineQueueUrl,
-          Entries: group.map((s3ChunkKey, index) => ({
-            Id: String(index),
-            MessageBody: JSON.stringify({
-              stage: "embed",
-              documentId: documentId,
-              s3ChunkKey: s3ChunkKey,
-            }),
-          })),
-        }),
-      ),
-    ),
-  );
-  if (responses.some((response) => response.Failed?.length)) {
-    throw new Error("Failed to queue some chunks");
+    const group = chunkKeys.slice(i, i + sendSize);
+    const response = await sqs.send(
+      new SendMessageBatchCommand({
+        QueueUrl: PipelineQueueUrl,
+        Entries: group.map((s3ChunkKey, index) => ({
+          Id: String(index),
+          MessageBody: JSON.stringify({
+            stage: "embed",
+            documentId: documentId,
+            s3ChunkKey: s3ChunkKey,
+          }),
+        })),
+      }),
+    );
+    if (response.Failed?.length) throw new Error("Failed to queue some chunks");
   }
 }
 
