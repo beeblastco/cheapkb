@@ -32,24 +32,22 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     }
   }
 
-  await Promise.all(
-    Array.from(byStage, async ([stage, records]) => {
-      try {
-        const result = await STAGE_HANDLERS[stage]({
-          ...event,
-          Records: records,
-        });
-        batchItemFailures.push(...result.batchItemFailures);
-      } catch (err) {
-        // A stage handler should never throw, but if it does only its own
-        // records are failed so the other stages in this batch still commit.
-        console.error(`[pipeline] Stage ${stage} threw:`, err);
-        for (const record of records) {
-          batchItemFailures.push({ itemIdentifier: record.messageId });
-        }
+  for (const [stage, records] of byStage) {
+    try {
+      const result = await STAGE_HANDLERS[stage]({
+        ...event,
+        Records: records,
+      });
+      batchItemFailures.push(...result.batchItemFailures);
+    } catch (err) {
+      // A stage handler should never throw, but if it does only its own
+      // records are failed so the other stages in this batch still commit.
+      console.error(`[pipeline] Stage ${stage} threw:`, err);
+      for (const record of records) {
+        batchItemFailures.push({ itemIdentifier: record.messageId });
       }
-    }),
-  );
+    }
+  }
 
   return { batchItemFailures: batchItemFailures };
 }
