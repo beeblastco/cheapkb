@@ -59,8 +59,10 @@ const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
 const EMBEDDING_INPUT_PRICE_PER_TOKEN =
   EMBEDDING_INPUT_PRICE_PER_1M_TOKENS / 1_000_000;
 
+// A query result costs one S3 GET ($0.0004 per 1k) to load its chunk text.
 const PRICING = {
   queryPerRequest: 5_000,
+  queryPerResult: 400,
   uploadPerRequest: 2_000,
   ingestPerDocument: 5_000,
   embedPerToken: EMBEDDING_INPUT_PRICE_PER_TOKEN * NANO_PER_USD,
@@ -704,6 +706,7 @@ export async function recordUsage(
 
   let costNano = 0;
   if (category === "query") costNano = units * PRICING.queryPerRequest;
+  if (category === "queryResult") costNano = units * PRICING.queryPerResult;
   if (category === "upload") costNano = units * PRICING.uploadPerRequest;
   if (category === "ingest") costNano = units * PRICING.ingestPerDocument;
   if (category === "embed")
@@ -781,6 +784,7 @@ function applyTags(
 // the configured embedding model price per 1M input tokens.
 function categoryField(category: UsageCategory): string {
   if (category === "query") return "queryOps";
+  if (category === "queryResult") return "queryResults";
   if (category === "upload") return "uploadOps";
   if (category === "ingest") return "ingestOps";
   return "embedTokens";
@@ -790,27 +794,20 @@ function centsToNanoUsd(cents: number): number {
   return cents * NANO_PER_CENT;
 }
 
-// Billing cycles anchor on account creation day-of-month and advance by full
-// months. Days 29-31 clamp to shorter month ends so boundaries stay valid.
+// Billing cycles start at midnight UTC on the account's creation day-of-month,
+// so each daily usage row falls in exactly one cycle. Days 29-31 clamp to month end.
 function currentCycle(account: Account, nowMs: number) {
   const created = new Date(account.createdAt);
   const anchorDay = created.getUTCDate();
   const year = created.getUTCFullYear();
   const month = created.getUTCMonth();
-  const time: [number, number, number, number] = [
-    created.getUTCHours(),
-    created.getUTCMinutes(),
-    created.getUTCSeconds(),
-    created.getUTCMilliseconds(),
-  ];
 
   let index = 0;
-  while (monthAnchor(year, month + index + 1, anchorDay, time) <= nowMs)
-    index++;
+  while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index++;
 
   return {
-    startMs: monthAnchor(year, month + index, anchorDay, time),
-    endMs: monthAnchor(year, month + index + 1, anchorDay, time),
+    startMs: monthAnchor(year, month + index, anchorDay),
+    endMs: monthAnchor(year, month + index + 1, anchorDay),
   };
 }
 
@@ -826,14 +823,9 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function monthAnchor(
-  year: number,
-  monthIndex: number,
-  day: number,
-  time: [number, number, number, number],
-): number {
+function monthAnchor(year: number, monthIndex: number, day: number): number {
   const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
-  return Date.UTC(year, monthIndex, Math.min(day, lastDay), ...time);
+  return Date.UTC(year, monthIndex, Math.min(day, lastDay));
 }
 
 function nanoUsdToUsd(nano: number): number {

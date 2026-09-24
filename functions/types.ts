@@ -27,7 +27,8 @@ export type DocumentStatus =
 
 export type TagColor = (typeof TAG_COLORS)[number];
 
-export type UsageCategory = "query" | "upload" | "ingest" | "embed";
+export type UsageCategory =
+  "query" | "queryResult" | "upload" | "ingest" | "embed";
 
 export interface Account {
   planId: string;

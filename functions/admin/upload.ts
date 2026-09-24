@@ -32,6 +32,10 @@ const MAX_IMAGE_UPLOAD_BYTES = Math.min(
   parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
   5 * 1024 * 1024,
 );
+const MAX_STORAGE_BYTES = parseInt(
+  process.env.MAX_STORAGE_BYTES ?? "1073741824",
+  10,
+);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
@@ -68,7 +72,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const { allowed: usageAllowed } = await checkUsageLimit(
+  const { allowed: usageAllowed, summary } = await checkUsageLimit(
     userId,
     AccountsTableName,
   );
@@ -112,9 +116,22 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  const mimeType = body.mimeType as string;
+  const maxUploadBytes = mimeType.startsWith("image/")
+    ? MAX_IMAGE_UPLOAD_BYTES
+    : MAX_UPLOAD_BYTES;
+  if (summary.storageBytes + maxUploadBytes > MAX_STORAGE_BYTES) {
+    return {
+      statusCode: 429,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "Storage limit reached. Delete documents to upload more.",
+      }),
+    };
+  }
+
   try {
     const filename = sanitizeFilename(body.filename as string);
-    const mimeType = body.mimeType as string;
     const dedupeKey = createDedupeKey(userId, filename, mimeType);
     const mappingKey = {
       pk: `USER#${userId}`,
@@ -172,9 +189,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
     }
 
     const fields: Record<string, string> = { "Content-Type": mimeType };
-    const maxUploadBytes = mimeType.startsWith("image/")
-      ? MAX_IMAGE_UPLOAD_BYTES
-      : MAX_UPLOAD_BYTES;
     const conditions: Conditions[] = [
       ["content-length-range", 1, maxUploadBytes],
       ["eq", "$Content-Type", mimeType],

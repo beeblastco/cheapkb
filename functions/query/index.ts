@@ -253,6 +253,12 @@ export async function handler(event: APIGatewayProxyEventV2) {
     });
 
     await recordUsage(userId, env("ACCOUNTS_TABLE_NAME"), "query", 1);
+    await recordUsage(
+      userId,
+      env("ACCOUNTS_TABLE_NAME"),
+      "queryResult",
+      matches.length,
+    );
 
     return {
       statusCode: 200,
