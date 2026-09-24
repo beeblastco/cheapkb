@@ -1,5 +1,4 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -43,12 +42,10 @@ const MENU_CONTENT = {
 export function Header({
   identity,
   usage,
-  onUsageChange,
   onSignOut,
 }: {
   identity?: ShooIdentity | null;
   usage?: UsageSummary | null;
-  onUsageChange?: () => void;
   onSignOut?: () => void;
 }) {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
@@ -57,73 +54,69 @@ export function Header({
 
   return (
     <>
-      <header className="sticky top-0 z-40 bg-background">
-        <div className="flex h-16 w-full items-center justify-between px-3">
-          <p className="font-semibold">cheapkb</p>
+      <header className="sticky top-0 z-40 bg-background px-3 pt-3">
+        <Card size="sm">
+          <CardContent className="flex items-center justify-between">
+            <p className="font-semibold">cheapkb</p>
 
-          {profile ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                className="cursor-pointer!"
-                render={
-                  <Button
-                    className="bg-transparent! text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
-                    variant="ghost"
-                  />
-                }
-              >
-                <span className="hidden max-w-48 truncate sm:block">
-                  {profile.email || profile.name}
-                </span>
-                <Avatar size="sm">
-                  {profile.picture ? (
-                    <AvatarImage alt={profile.name} src={profile.picture} />
-                  ) : null}
-                  <AvatarFallback>{profile.initials}</AvatarFallback>
-                </Avatar>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>
-                    <div className="flex flex-col gap-1">
-                      <span className="truncate">{profile.name}</span>
-                      <span className="truncate font-normal text-muted-foreground">
-                        {profile.email || "Google account"}
-                      </span>
-                    </div>
-                  </DropdownMenuLabel>
-                  <DropdownMenuItem onClick={() => setDialog("settings")}>
-                    <Settings /> Settings
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onClick={() => setDialog("terms")}>
-                    <Scale /> Terms and conditions
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setDialog("privacy")}>
-                    <Shield /> Privacy policy
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    render={
-                      <a
-                        href="https://github.com/beeblastco/cheapkb/issues"
-                        rel="noreferrer"
-                        target="_blank"
-                      />
-                    }
-                  >
-                    <HelpCircle /> Help
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuGroup>
-                  <DropdownMenuItem onClick={onSignOut} variant="destructive">
-                    <LogOut /> Log out
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
+            {profile ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger className="cursor-pointer">
+                  <span className="flex items-center gap-2">
+                    <span className="hidden max-w-48 truncate sm:block">
+                      {profile.email || profile.name}
+                    </span>
+                    <Avatar size="sm">
+                      {profile.picture ? (
+                        <AvatarImage alt={profile.name} src={profile.picture} />
+                      ) : null}
+                      <AvatarFallback>{profile.initials}</AvatarFallback>
+                    </Avatar>
+                  </span>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-auto min-w-56">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>
+                      <div className="flex flex-col gap-1">
+                        <span className="truncate">{profile.name}</span>
+                        <span className="truncate font-normal text-muted-foreground">
+                          {profile.email || "Google account"}
+                        </span>
+                      </div>
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem onClick={() => setDialog("settings")}>
+                      <Settings /> Settings
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem onClick={() => setDialog("terms")}>
+                      <Scale /> Terms and conditions
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDialog("privacy")}>
+                      <Shield /> Privacy policy
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      render={
+                        <a
+                          href="https://github.com/beeblastco/cheapkb/issues"
+                          rel="noreferrer"
+                          target="_blank"
+                        />
+                      }
+                    >
+                      <HelpCircle /> Help
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem onClick={onSignOut} variant="destructive">
+                      <LogOut /> Log out
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </CardContent>
+        </Card>
       </header>
 
       <Dialog onOpenChange={(open) => !open && setDialog(null)} open={!!dialog}>
@@ -140,25 +133,25 @@ export function Header({
             <div className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm font-medium">
-                    Current usage
-                  </CardTitle>
+                  <CardTitle>Current usage</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
-                  <p className="text-2xl font-semibold tracking-tight tabular-nums">
-                    {usagePct.toFixed(0)}%
-                    <span className="ml-2 text-base font-normal text-muted-foreground">
-                      used
-                    </span>
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {usage ? `${usage.planLabel} plan` : "—"}
-                  </p>
-                  {usage ? (
-                    <p className="text-sm text-muted-foreground">
-                      Storage: {formatBytes(usage.storageBytes)}
+                <CardContent>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-2xl font-semibold tracking-tight tabular-nums">
+                      {usagePct.toFixed(0)}%
+                      <span className="ml-2 text-base font-normal text-muted-foreground">
+                        used
+                      </span>
                     </p>
-                  ) : null}
+                    <p className="text-sm text-muted-foreground">
+                      {usage ? `${usage.planLabel} plan` : "—"}
+                    </p>
+                    {usage ? (
+                      <p className="text-sm text-muted-foreground">
+                        Storage: {formatBytes(usage.storageBytes)}
+                      </p>
+                    ) : null}
+                  </div>
                 </CardContent>
               </Card>
             </div>
