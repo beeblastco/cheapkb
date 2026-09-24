@@ -12,7 +12,9 @@ import {
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -98,6 +100,33 @@ describe("S3 cleanup adapter", () => {
 
     expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
     expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
+  });
+
+  it("skips a removal while a replacement upload is reserved", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        pk: "DOC#doc-1",
+        sk: "META",
+        replacementToken: "token-1",
+        sourceKey: "raw/doc-1/file.pdf",
+        status: "EMBEDDED",
+        userId: "owner",
+      },
+    });
+    dynamoMock.on(UpdateCommand).rejects(
+      new ConditionalCheckFailedException({
+        $metadata: {},
+        message: "reserved",
+      }),
+    );
+    s3Mock
+      .on(HeadObjectCommand)
+      .rejects(new NotFound({ $metadata: {}, message: "not found" }));
+
+    await handler(s3Event("raw/doc-1/file.pdf", 0));
+
+    expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 });

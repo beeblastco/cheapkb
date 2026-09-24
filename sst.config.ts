@@ -686,6 +686,8 @@ export default $config({
           ],
           resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
+        // HeadObject on a missing key returns 404 only with ListBucket; 403 otherwise.
+        { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: [
             "dynamodb:GetItem",
@@ -948,6 +950,8 @@ export default $config({
           ],
           resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
+        // HeadObject on a missing key returns 404 only with ListBucket; 403 otherwise.
+        { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: ["s3vectors:DeleteVectors"],
           resources: [vectorIndexArn],
@@ -979,12 +983,15 @@ export default $config({
       permissions: [
         {
           actions: [
+            "s3:GetObject",
             "s3:ListBucketVersions",
             "s3:DeleteObject",
             "s3:DeleteObjectVersion",
           ],
           resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
+        // HeadObject on a missing key returns 404 only with ListBucket; 403 otherwise.
+        { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: [
             "dynamodb:GetItem",
