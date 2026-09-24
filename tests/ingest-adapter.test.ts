@@ -35,6 +35,7 @@ describe("S3 ingest adapter", () => {
     s3Mock.reset();
     vectorsMock.reset();
     sqsMock.reset();
+    s3Mock.on(HeadObjectCommand).resolves({});
   });
 
   it("queues a valid uploaded object", async () => {
@@ -247,7 +248,7 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
-  it("charges a source overwritten after the document was embedded", async () => {
+  it("charges the current size of a source overwritten after dispatch", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk === "ACCOUNT#user-1" && input.Key?.sk === "PROFILE") {
@@ -274,20 +275,41 @@ describe("S3 ingest adapter", () => {
         },
       };
     });
-    dynamoMock.on(UpdateCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
+    // The event is stale; S3 already holds a newer, larger object.
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 1000 });
 
-    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+    await handler(s3Event("raw/doc-1/sample.txt", 1));
 
-    const storageUpdate =
+    const items =
       dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
-        .TransactItems?.[0].Update;
-    expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(1000);
-    expect(
-      dynamoMock.commandCalls(UpdateCommand)[0].args[0].input
-        .ExpressionAttributeValues?.[":counted"],
-    ).toBe(1000);
+        .TransactItems;
+    expect(items?.[0].Update?.ExpressionAttributeValues?.[":nextBytes"]).toBe(
+      1000,
+    );
+    expect(items?.[1].Update?.ConditionExpression).toContain(
+      "countedBytes = :previous",
+    );
+    expect(items?.[1].Update?.ExpressionAttributeValues?.[":counted"]).toBe(
+      1000,
+    );
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("does not recount a source whose size is already counted", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        userId: "user-1",
+        countedBytes: 1000,
+      },
+    });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 1000 });
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1));
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
   });
 
   it("does not resend a completed queued dispatch", async () => {

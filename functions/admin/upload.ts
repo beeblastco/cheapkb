@@ -120,7 +120,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const maxUploadBytes = mimeType.startsWith("image/")
     ? MAX_IMAGE_UPLOAD_BYTES
     : MAX_UPLOAD_BYTES;
-  if (summary.storageBytes + maxUploadBytes > MAX_STORAGE_BYTES) {
+  // Bytes are counted when S3 accepts a file, so an account can pass the cap
+  // by the uploads already in flight.
+  if (summary.storageBytes >= MAX_STORAGE_BYTES) {
     return {
       statusCode: 429,
       headers: { "Content-Type": "application/json" },

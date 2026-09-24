@@ -100,6 +100,37 @@ describe("billing", () => {
       expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(0);
     });
 
+    it("keeps cost accrued under the old mid-day cycle start", async () => {
+      const oldStart = "2024-02-15T18:30:00.000Z";
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(Date.UTC(2024, 1, 16, 18, 30));
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 0,
+          storageCostCycleStart: oldStart,
+          storageCostNano: 1234,
+          storageCostUpdatedAt: oldStart,
+          createdAt: "2024-01-15T18:30:00.000Z",
+          updatedAt: oldStart,
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      try {
+        await updateStorageBytes("user-1", "table", 1024);
+      } finally {
+        clock.mockRestore();
+      }
+
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(1234);
+    });
+
     it("accrues the old storage size before a deletion", async () => {
       const cycleStart = "2024-01-01T00:00:00.000Z";
       const now = Date.UTC(2024, 0, 16);
