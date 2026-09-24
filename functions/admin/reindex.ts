@@ -324,7 +324,9 @@ async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
           new UpdateCommand({
             TableName: TableName,
             Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
-            UpdateExpression: "SET #s = :queued",
+            // A failed delivery's embed claim would make the embed stage drop
+            // the reindex message, so the claim is cleared with the status.
+            UpdateExpression: "SET #s = :queued REMOVE embedClaimedAt",
             ExpressionAttributeNames: { "#s": "status" },
             ExpressionAttributeValues: { ":queued": "QUEUED" },
           }),
