@@ -112,14 +112,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
     const updatedAt = await finalizeLease(document, lease, tags);
     return json(200, {
-      documentId,
-      tags,
-      updatedVectors,
-      updatedAt,
+      documentId: documentId,
+      tags: tags,
+      updatedVectors: updatedVectors,
+      updatedAt: updatedAt,
     });
   } catch (error) {
     // The META row still holds the old tags, so releasing the lease reports the
     // edit as not applied. Retrying re-propagates and converges.
+    console.error("[update]", error);
     await releaseLease(document, lease);
     return json(500, { error: "Failed to update document tags" });
   }
@@ -127,7 +128,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
 function json(statusCode: number, body: unknown) {
   return {
-    statusCode,
+    statusCode: statusCode,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
@@ -166,7 +167,7 @@ async function acquireLease(
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: document.pk, sk: document.sk },
         // gsi1pk mirrors status everywhere else in the pipeline; leaving it
         // behind would hand a stale status to the first query that uses it.
@@ -185,7 +186,7 @@ async function acquireLease(
         },
       }),
     );
-    return { restoreTo, heldSince };
+    return { restoreTo: restoreTo, heldSince: heldSince };
   } catch (error) {
     if (error instanceof ConditionalCheckFailedException) return null;
     throw error;
@@ -233,7 +234,7 @@ async function releaseWith(
 ) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: document.pk, sk: document.sk },
       UpdateExpression: updateExpression,
       ConditionExpression: "#s = :updating AND updatedAt = :heldSince",
@@ -270,7 +271,7 @@ async function updateChunkObjects(
         new PutObjectCommand({
           Bucket: StorageBucketName,
           Key: item.s3ChunkKey,
-          Body: JSON.stringify({ ...chunkData, tags }),
+          Body: JSON.stringify({ ...chunkData, tags: tags }),
           ContentType: "application/json",
         }),
       );

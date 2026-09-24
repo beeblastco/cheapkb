@@ -5,7 +5,7 @@ const PROD_STAGE = "production";
 const EXPECTED_ACCOUNT_ID = process.env.AWS_ACCOUNT_ID;
 
 export default $config({
-  app(input) {
+  app: function (input) {
     return {
       name: PROJECT,
       providers: {
@@ -21,7 +21,7 @@ export default $config({
       home: "aws",
     };
   },
-  async run() {
+  run: async function () {
     const pulumi = await import("@pulumi/pulumi");
     const pulumiAws = await import("@pulumi/aws");
     const ACCOUNT_ID = (await pulumiAws.getCallerIdentity({})).accountId;
@@ -315,7 +315,7 @@ export default $config({
       ACCOUNTS_TABLE_NAME: accountsTable.name,
       TAGS_TABLE_NAME: tagsTable.name,
       RATE_LIMITS_TABLE_NAME: rateLimitsTable.name,
-      DEFAULT_PLAN_ID,
+      DEFAULT_PLAN_ID: DEFAULT_PLAN_ID,
       STORAGE_BUCKET_NAME: storage.name,
       PIPELINE_QUEUE_URL: pipelineQueue.url,
       VECTOR_BUCKET_NAME: vectorBucketName,

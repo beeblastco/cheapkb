@@ -161,7 +161,7 @@ describe("upload validation", () => {
         Item: {
           documentId: "doc-existing",
           userId: "user-a",
-          status,
+          status: status,
         },
       });
 

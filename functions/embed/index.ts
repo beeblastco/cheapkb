@@ -110,8 +110,8 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       continue;
     }
     chunks.push({
-      documentId,
-      s3ChunkKey,
+      documentId: documentId,
+      s3ChunkKey: s3ChunkKey,
       messageId: record.messageId,
       attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
     });
@@ -120,7 +120,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   if (chunks.length === 0) {
     return {
       batchItemFailures: Array.from(failedMessageIds).map((itemIdentifier) => ({
-        itemIdentifier,
+        itemIdentifier: itemIdentifier,
       })),
     };
   }
@@ -161,7 +161,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   }
   return {
     batchItemFailures: Array.from(failedMessageIds).map((itemIdentifier) => ({
-      itemIdentifier,
+      itemIdentifier: itemIdentifier,
     })),
   };
 }
@@ -196,7 +196,7 @@ async function batchProcess(
       if (!userId) {
         const result = await dynamo.send(
           new GetCommand({
-            TableName,
+            TableName: TableName,
             Key: { pk: `DOC#${chunk.documentId}`, sk: "META" },
           }),
         );
@@ -215,10 +215,10 @@ async function batchProcess(
           : undefined;
       const metadata: ChunkMetadata = {
         documentId: chunk.documentId,
-        userId,
+        userId: userId,
         chunkId: chunkData.chunkId,
-        modality,
-        ...(tokenCount ? { tokenCount } : {}),
+        modality: modality,
+        ...(tokenCount ? { tokenCount: tokenCount } : {}),
         ...(chunkData.title ? { title: chunkData.title } : {}),
         ...(chunkData.tags ? { tags: chunkData.tags } : {}),
         ...(chunkData.authors ? { authors: chunkData.authors } : {}),
@@ -234,7 +234,7 @@ async function batchProcess(
       // billed again, whichever delivery it is.
       const existing = await dynamo.send(
         new GetCommand({
-          TableName,
+          TableName: TableName,
           Key: {
             pk: `DOC#${chunk.documentId}`,
             sk: `CHUNK#${metadata.chunkId}`,
@@ -272,7 +272,7 @@ async function batchProcess(
           imageBase64: Buffer.from(imageBytes).toString("base64"),
           imageFormat: imageFormat(metadata.mimeType),
           messageId: chunk.messageId,
-          metadata,
+          metadata: metadata,
           text: buildImageDescription(metadata),
         });
         continue;
@@ -281,14 +281,14 @@ async function batchProcess(
       workItems.push({
         attempt: chunk.attempt,
         messageId: chunk.messageId,
-        metadata,
-        text,
+        metadata: metadata,
+        text: text,
       });
     } catch (error) {
       failures.set(chunk.messageId, {
         attempt: chunk.attempt,
         documentId: chunk.documentId,
-        error,
+        error: error,
       });
     }
   }
@@ -356,7 +356,7 @@ async function batchProcess(
         failures.set(item.messageId, {
           attempt: item.attempt,
           documentId: item.metadata.documentId,
-          error,
+          error: error,
         });
       }
     }
@@ -378,7 +378,7 @@ async function batchProcess(
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
@@ -428,7 +428,7 @@ async function embedItems(
     failures.set(item.messageId, {
       attempt: item.attempt,
       documentId: item.metadata.documentId,
-      error,
+      error: error,
     });
   }
 }
@@ -527,7 +527,7 @@ async function markChunkEmbedded(
         TransactItems: [
           {
             Update: {
-              TableName,
+              TableName: TableName,
               Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
               UpdateExpression: "SET #s = :embedded",
               ConditionExpression:
@@ -538,7 +538,7 @@ async function markChunkEmbedded(
           },
           {
             Update: {
-              TableName,
+              TableName: TableName,
               Key: { pk: `DOC#${documentId}`, sk: "META" },
               UpdateExpression:
                 "SET #s = :embedding, embeddedCount = if_not_exists(embeddedCount, :zero) + :one",
@@ -562,7 +562,7 @@ async function markChunkEmbedded(
     // written after that point is removed here instead of staying searchable.
     const doc = await dynamo.send(
       new GetCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         ConsistentRead: true,
       }),
@@ -579,7 +579,7 @@ async function markChunkEmbedded(
     }
     const existing = await dynamo.send(
       new GetCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
         ConsistentRead: true,
       }),
@@ -593,7 +593,7 @@ async function markEmbedded(documentId: string) {
   const now = new Date().toISOString();
   const result = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -604,7 +604,7 @@ async function markEmbedded(documentId: string) {
     try {
       await dynamo.send(
         new UpdateCommand({
-          TableName,
+          TableName: TableName,
           Key: { pk: `DOC#${documentId}`, sk: "META" },
           UpdateExpression:
             "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -638,7 +638,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -661,7 +661,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
 
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
@@ -696,7 +696,7 @@ function buildEmbeddingRequest(
           url: `data:image/${item.imageFormat};base64,${item.imageBase64}`,
         },
       });
-      return { content };
+      return { content: content };
     }),
     embedding_types: ["float"],
     output_dimension: embeddingDimension(),

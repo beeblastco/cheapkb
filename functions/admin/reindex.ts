@@ -94,7 +94,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const result = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -136,7 +136,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
           status === "FAILED"
             ? "Upload the file again instead of reindexing"
             : "Document is still processing",
-        status,
+        status: status,
       }),
     };
   }
@@ -163,7 +163,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     }
     targetStage = "embed";
     targetStep = "EMBEDDING";
-    messageBody = { documentId, chunkKeys };
+    messageBody = { documentId: documentId, chunkKeys: chunkKeys };
   } else if (
     status === "PARSED" ||
     status === "CHUNKING" ||
@@ -172,14 +172,14 @@ export async function handler(event: APIGatewayProxyEventV2) {
     targetStage = "chunk";
     targetStep = "CHUNKING";
     messageBody = {
-      documentId,
+      documentId: documentId,
       parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
     };
   } else {
     targetStage = "parse";
     targetStep = "PARSING";
     messageBody = {
-      documentId,
+      documentId: documentId,
       sourceKey: doc.sourceKey,
       mimeType: doc.mimeType ?? undefined,
     };
@@ -189,7 +189,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -231,8 +231,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
               Id: String(index),
               MessageBody: JSON.stringify({
                 stage: "embed",
-                documentId,
-                s3ChunkKey,
+                documentId: documentId,
+                s3ChunkKey: s3ChunkKey,
               }),
             })),
           }),
@@ -279,7 +279,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      documentId,
+      documentId: documentId,
       status: "QUEUED",
       restartFrom: targetStep,
       message: `Reindex started from ${targetStep}`,
@@ -321,7 +321,7 @@ async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
       chunkIds.slice(start, start + 25).map((chunkId) =>
         dynamo.send(
           new UpdateCommand({
-            TableName,
+            TableName: TableName,
             Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
             UpdateExpression: "SET #s = :queued",
             ExpressionAttributeNames: { "#s": "status" },

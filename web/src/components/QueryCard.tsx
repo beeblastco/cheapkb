@@ -112,7 +112,7 @@ export function QueryCard({
         {
           error: (requestError as Error).message,
           id: crypto.randomUUID(),
-          question,
+          question: question,
           results: [],
         },
       ]);

@@ -202,7 +202,7 @@ export async function deleteDocumentVectors(
   for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
     await vectorClient.send(
       new DeleteVectorsCommand({
-        vectorBucketName,
+        vectorBucketName: vectorBucketName,
         indexName: vectorIndexName,
         keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
       }),
@@ -228,9 +228,9 @@ export async function retagDocumentVectors(
     const keys = vectorKeys.slice(i, i + VECTOR_GET_BATCH);
     const existing = await vectorClient.send(
       new GetVectorsCommand({
-        vectorBucketName,
+        vectorBucketName: vectorBucketName,
         indexName: vectorIndexName,
-        keys,
+        keys: keys,
         returnData: true,
         returnMetadata: true,
       }),
@@ -248,9 +248,9 @@ export async function retagDocumentVectors(
 
     await vectorClient.send(
       new PutVectorsCommand({
-        vectorBucketName,
+        vectorBucketName: vectorBucketName,
         indexName: vectorIndexName,
-        vectors,
+        vectors: vectors,
       }),
     );
     updated += vectors.length;
@@ -467,7 +467,7 @@ export async function getOrCreateAccount(
   const pk = `ACCOUNT#${userId}`;
   const sk = "PROFILE";
   const existing = await dynamo.send(
-    new GetCommand({ TableName: tableName, Key: { pk, sk } }),
+    new GetCommand({ TableName: tableName, Key: { pk: pk, sk: sk } }),
   );
   if (existing.Item) return existing.Item as AccountRow;
 
@@ -498,7 +498,7 @@ export async function getOrCreateAccount(
   } catch (error) {
     if (error instanceof ConditionalCheckFailedException) {
       const retry = await dynamo.send(
-        new GetCommand({ TableName: tableName, Key: { pk, sk } }),
+        new GetCommand({ TableName: tableName, Key: { pk: pk, sk: sk } }),
       );
       return retry.Item as AccountRow;
     }
@@ -562,7 +562,7 @@ export async function checkUsageLimit(
   tableName: string,
 ): Promise<{ allowed: boolean; summary: UsageSummary }> {
   const summary = await getUsageSummary(userId, tableName);
-  return { allowed: !summary.paused, summary };
+  return { allowed: !summary.paused, summary: summary };
 }
 
 export async function sumUsageNano(
@@ -614,7 +614,7 @@ export async function updateStorageBytes(
       const existing = await dynamo.send(
         new GetCommand({
           TableName: tableName,
-          Key: { pk, sk: operationKey },
+          Key: { pk: pk, sk: operationKey },
           ConsistentRead: true,
         }),
       );
@@ -624,7 +624,7 @@ export async function updateStorageBytes(
     const result = await dynamo.send(
       new GetCommand({
         TableName: tableName,
-        Key: { pk, sk: "PROFILE" },
+        Key: { pk: pk, sk: "PROFILE" },
         ConsistentRead: true,
       }),
     );
@@ -667,7 +667,7 @@ export async function updateStorageBytes(
       {
         Update: {
           TableName: tableName,
-          Key: { pk, sk: "PROFILE" },
+          Key: { pk: pk, sk: "PROFILE" },
           UpdateExpression:
             "SET storageBytes = :nextBytes, storageCostNano = :cost, storageCostUpdatedAt = :now, storageCostCycleStart = :cycleStart, updatedAt = :now",
           ConditionExpression: `storageBytes = :currentBytes AND ${storageUpdatedCondition}`,
@@ -690,7 +690,7 @@ export async function updateStorageBytes(
         Put: {
           TableName: tableName,
           Item: {
-            pk,
+            pk: pk,
             sk: operationKey,
             ttl: Math.floor(nowMs / 1000) + 90 * 24 * 60 * 60,
           },
@@ -737,7 +737,7 @@ export async function recordUsage(
 
   const update = {
     TableName: tableName,
-    Key: { pk, sk },
+    Key: { pk: pk, sk: sk },
     UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
     ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
     ExpressionAttributeValues: {
@@ -762,7 +762,7 @@ export async function recordUsage(
           {
             Put: {
               TableName: tableName,
-              Item: { pk, sk: `USAGEEVENT#${operationId}`, ttl },
+              Item: { pk: pk, sk: `USAGEEVENT#${operationId}`, ttl: ttl },
               ConditionExpression: "attribute_not_exists(pk)",
             },
           },
@@ -774,7 +774,7 @@ export async function recordUsage(
     const existing = await dynamo.send(
       new GetCommand({
         TableName: tableName,
-        Key: { pk, sk: `USAGEEVENT#${operationId}` },
+        Key: { pk: pk, sk: `USAGEEVENT#${operationId}` },
         ConsistentRead: true,
       }),
     );

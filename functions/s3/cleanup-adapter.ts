@@ -113,7 +113,7 @@ async function deleteDynamoRecords(
   if (document) {
     await dynamo.send(
       new DeleteCommand({
-        TableName,
+        TableName: TableName,
         Key: {
           pk: `USER#${document.userId}`,
           sk: `DOCUMENT#${document.dedupeKey}`,
@@ -123,7 +123,7 @@ async function deleteDynamoRecords(
   }
   await dynamo.send(
     new DeleteCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -137,7 +137,7 @@ async function markDeleting(documentId: string) {
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",

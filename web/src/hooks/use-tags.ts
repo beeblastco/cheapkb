@@ -39,7 +39,7 @@ export function useTags(token: string): TagVocabulary {
   const mutationKey = queryKey;
 
   const { data: serverTags = NO_TAGS, error: loadError } = useQuery({
-    queryKey,
+    queryKey: queryKey,
     queryFn: () => listTags(token),
     enabled: Boolean(token),
   });
@@ -47,7 +47,7 @@ export function useTags(token: string): TagVocabulary {
   // A failed mutation leaves this list, so its edit disappears on its own and
   // no rollback can reach a concurrent one.
   const inFlight = useMutationState({
-    filters: { mutationKey, status: "pending" },
+    filters: { mutationKey: mutationKey, status: "pending" },
     select: (mutation) => mutation.state.variables as TagMutation,
   });
 
@@ -64,8 +64,8 @@ export function useTags(token: string): TagVocabulary {
   const settle = useCallback(() => {
     // The last mutation refetches, so server order decides the outcome rather
     // than whichever response happened to arrive last.
-    if (queryClient.isMutating({ mutationKey }) === 1) {
-      return queryClient.invalidateQueries({ queryKey });
+    if (queryClient.isMutating({ mutationKey: mutationKey }) === 1) {
+      return queryClient.invalidateQueries({ queryKey: queryKey });
     }
   }, [queryClient, queryKey, mutationKey]);
 
@@ -81,7 +81,7 @@ export function useTags(token: string): TagVocabulary {
   );
 
   const createMutation = useMutation({
-    mutationKey,
+    mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "create" }) =>
       createTagRequest(token, variables.name, variables.color),
     onMutate: begin,
@@ -98,7 +98,7 @@ export function useTags(token: string): TagVocabulary {
   });
 
   const recolorMutation = useMutation({
-    mutationKey,
+    mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "recolor" }) =>
       updateTagColorRequest(token, variables.name, variables.color),
     onMutate: begin,
@@ -113,7 +113,7 @@ export function useTags(token: string): TagVocabulary {
   });
 
   const deleteMutation = useMutation({
-    mutationKey,
+    mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "delete" }) =>
       deleteTagRequest(token, variables.name),
     onMutate: begin,
@@ -138,32 +138,36 @@ export function useTags(token: string): TagVocabulary {
 
   const createTag = useCallback(
     (name: string, color: TagColor = DEFAULT_TAG_COLOR) =>
-      createMutation.mutateAsync({ type: "create", name, color }),
+      createMutation.mutateAsync({ type: "create", name: name, color: color }),
     [createMutation],
   );
 
   const recolorTag = useCallback(
     async (name: string, color: TagColor) => {
-      await recolorMutation.mutateAsync({ type: "recolor", name, color });
+      await recolorMutation.mutateAsync({
+        type: "recolor",
+        name: name,
+        color: color,
+      });
     },
     [recolorMutation],
   );
 
   const deleteTag = useCallback(
     async (name: string) => {
-      await deleteMutation.mutateAsync({ type: "delete", name });
+      await deleteMutation.mutateAsync({ type: "delete", name: name });
     },
     [deleteMutation],
   );
 
   return {
-    tags,
+    tags: tags,
     // An empty list and a failed load look identical without this.
     error: error ?? (loadError ? (loadError as Error).message : null),
-    colorOf,
-    createTag,
-    recolorTag,
-    deleteTag,
+    colorOf: colorOf,
+    createTag: createTag,
+    recolorTag: recolorTag,
+    deleteTag: deleteTag,
   };
 }
 
@@ -180,12 +184,12 @@ function applyInFlight(serverTags: Tag[], inFlight: TagMutation[]): Tag[] {
     if (variables.type === "create") {
       const { name, color } = variables;
       if (!tags.some((tag) => byName(tag.name) === byName(name))) {
-        tags = [...tags, { name, color }];
+        tags = [...tags, { name: name, color: color }];
       }
     } else if (variables.type === "recolor") {
       const { name, color } = variables;
       tags = tags.map((tag) =>
-        byName(tag.name) === byName(name) ? { ...tag, color } : tag,
+        byName(tag.name) === byName(name) ? { ...tag, color: color } : tag,
       );
     } else {
       tags = tags.filter((tag) => byName(tag.name) !== byName(variables.name));

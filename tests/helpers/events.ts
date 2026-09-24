@@ -69,8 +69,8 @@ function s3Event(key = "raw/doc-1/sample.txt", size = 20): S3Event {
             arn: "arn:aws:s3:::storage",
           },
           object: {
-            key,
-            size,
+            key: key,
+            size: size,
             eTag: "etag",
             sequencer: "sequencer",
           },
@@ -84,9 +84,9 @@ function sqsEvent(messageId: string, body: string, receiveCount = 1): SQSEvent {
   return {
     Records: [
       {
-        messageId,
+        messageId: messageId,
         receiptHandle: "receipt",
-        body,
+        body: body,
         attributes: {
           ApproximateReceiveCount: String(receiveCount),
           SentTimestamp: "0",

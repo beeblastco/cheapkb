@@ -66,7 +66,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
-  return { batchItemFailures };
+  return { batchItemFailures: batchItemFailures };
 }
 
 async function chunkDocument(
@@ -79,7 +79,7 @@ async function chunkDocument(
 
   const docResult = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -105,16 +105,16 @@ async function chunkDocument(
         Bucket: StorageBucketName,
         Key: s3ChunkKey,
         Body: JSON.stringify({
-          documentId,
-          userId,
-          chunkId,
+          documentId: documentId,
+          userId: userId,
+          chunkId: chunkId,
           modality: "image",
           sourceKey: parsed.sourceKey ?? sourceKey,
           mimeType: parsed.mimeType ?? mimeType,
-          title,
-          tags,
-          authors,
-          year,
+          title: title,
+          tags: tags,
+          authors: authors,
+          year: year,
           pageStart: 1,
           pageEnd: 1,
         }),
@@ -125,8 +125,8 @@ async function chunkDocument(
       {
         pk: `DOC#${documentId}`,
         sk: `CHUNK#${chunkId}`,
-        chunkId,
-        s3ChunkKey,
+        chunkId: chunkId,
+        s3ChunkKey: s3ChunkKey,
         pageStart: 1,
         pageEnd: 1,
         status: "QUEUED",
@@ -169,18 +169,18 @@ async function chunkDocument(
               Bucket: StorageBucketName,
               Key: s3ChunkKey,
               Body: JSON.stringify({
-                documentId,
-                userId,
-                chunkId,
+                documentId: documentId,
+                userId: userId,
+                chunkId: chunkId,
                 modality: "text",
-                sourceKey,
-                mimeType,
+                sourceKey: sourceKey,
+                mimeType: mimeType,
                 text: chunk.text,
-                tokenCount,
-                title,
-                tags,
-                authors,
-                year,
+                tokenCount: tokenCount,
+                title: title,
+                tags: tags,
+                authors: authors,
+                year: year,
                 pageStart: chunk.pageStart,
                 pageEnd: chunk.pageEnd,
               }),
@@ -191,11 +191,11 @@ async function chunkDocument(
             {
               pk: `DOC#${documentId}`,
               sk: `CHUNK#${chunkId}`,
-              chunkId,
-              s3ChunkKey,
+              chunkId: chunkId,
+              s3ChunkKey: s3ChunkKey,
               pageStart: chunk.pageStart,
               pageEnd: chunk.pageEnd,
-              tokenCount,
+              tokenCount: tokenCount,
               status: "QUEUED",
               createdAt: now,
             },
@@ -217,7 +217,7 @@ async function chunkDocument(
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
@@ -241,7 +241,7 @@ async function finishChunking(
 ) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, chunkCount = :c, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -270,8 +270,8 @@ async function finishChunking(
           Id: String(index),
           MessageBody: JSON.stringify({
             stage: "embed",
-            documentId,
-            s3ChunkKey,
+            documentId: documentId,
+            s3ChunkKey: s3ChunkKey,
           }),
         })),
       }),
@@ -296,7 +296,7 @@ async function markEmbeddedIfDone(documentId: string, chunkCount: number) {
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
@@ -326,7 +326,7 @@ async function putChunkRecord(
   try {
     await dynamo.send(
       new PutCommand({
-        TableName,
+        TableName: TableName,
         Item: item,
         ...(attempt > 1
           ? {
@@ -348,7 +348,7 @@ async function putChunkRecord(
 async function updateStatus(documentId: string, status: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -376,7 +376,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -402,7 +402,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
 
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
@@ -441,7 +441,7 @@ function splitIntoChunks(
     const text = decode(buffer).trim();
     if (text) {
       out.push({
-        chunk: { text, pageStart, pageEnd },
+        chunk: { text: text, pageStart: pageStart, pageEnd: pageEnd },
         i: i++,
       });
       if (out.length > maxChunks) {

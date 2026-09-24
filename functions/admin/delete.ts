@@ -45,7 +45,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const result = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -125,7 +125,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        documentId,
+        documentId: documentId,
         deleted: false,
         warnings: errors,
       }),
@@ -144,7 +144,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
     await dynamo.send(
       new DeleteCommand({
-        TableName,
+        TableName: TableName,
         Key: {
           pk: `USER#${doc.userId}`,
           sk: `DOCUMENT#${doc.dedupeKey}`,
@@ -153,7 +153,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     );
     await dynamo.send(
       new DeleteCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
       }),
     );
@@ -163,7 +163,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        documentId,
+        documentId: documentId,
         deleted: false,
         warnings: [`dynamo: ${(err as Error).message}`],
       }),
@@ -173,7 +173,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentId, deleted: true }),
+    body: JSON.stringify({ documentId: documentId, deleted: true }),
   };
 }
 
@@ -183,7 +183,7 @@ async function markDeleting(documentId: string, lastError: string | null) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",

@@ -37,14 +37,14 @@ function Badge({
     defaultTagName: "span",
     props: mergeProps<"span">(
       {
-        className: cn(badgeVariants({ variant }), className),
+        className: cn(badgeVariants({ variant: variant }), className),
       },
       props,
     ),
-    render,
+    render: render,
     state: {
       slot: "badge",
-      variant,
+      variant: variant,
     },
   });
 }

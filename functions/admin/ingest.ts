@@ -48,7 +48,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const result = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -72,6 +72,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ documentId, status: doc.status }),
+    body: JSON.stringify({ documentId: documentId, status: doc.status }),
   };
 }

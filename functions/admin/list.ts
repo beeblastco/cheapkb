@@ -17,7 +17,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   do {
     const res = await dynamo.send(
       new QueryCommand({
-        TableName,
+        TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },
@@ -50,6 +50,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ count: documents.length, documents }),
+    body: JSON.stringify({ count: documents.length, documents: documents }),
   };
 }

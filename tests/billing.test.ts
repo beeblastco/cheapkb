@@ -12,7 +12,6 @@ import {
 import {
   centsToNanoUsd,
   currentCycle,
-  dayKey,
   getOrCreateAccount,
   getUsageSummary,
   NANO_PER_CENT,
@@ -198,7 +197,7 @@ describe("billing", () => {
       priceMonthlyCents: 0,
       monthlyAllowanceCents: 100,
       storageBytes: 0,
-      createdAt,
+      createdAt: createdAt,
       updatedAt: createdAt,
     });
 
