@@ -40,6 +40,7 @@ const inputGroupAddonVariants = cva(
   },
 );
 
+/** Renders an input group addon; clicking it focuses the input. */
 function InputGroupAddon({
   className,
   align = "inline-start",
@@ -79,6 +80,7 @@ const inputGroupButtonVariants = cva(
   },
 );
 
+/** Renders a compact button sized to sit inside an input group. */
 function InputGroupButton({
   className,
   type = "button",
@@ -112,6 +114,7 @@ function InputGroupText({ className, ...props }: React.ComponentProps<"span">) {
   );
 }
 
+/** Renders a borderless input that fills an input group. */
 function InputGroupInput({
   className,
   ...props
@@ -128,6 +131,7 @@ function InputGroupInput({
   );
 }
 
+/** Renders a borderless textarea that fills an input group. */
 function InputGroupTextarea({
   className,
   ...props

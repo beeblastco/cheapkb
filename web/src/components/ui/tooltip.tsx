@@ -2,6 +2,7 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 
 import { cn } from "@/lib/utils";
 
+/** Shares tooltip open delays across every tooltip inside it. */
 function TooltipProvider({
   delay = 0,
   ...props
@@ -23,6 +24,7 @@ function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />;
 }
 
+/** Renders the tooltip popup with its arrow, positioned against the trigger. */
 function TooltipContent({
   className,
   side = "top",

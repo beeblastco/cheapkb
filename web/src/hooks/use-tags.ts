@@ -29,8 +29,10 @@ type TagMutation =
 
 const NO_TAGS: Tag[] = [];
 
-// Owns the user's tag vocabulary. The cache holds only what the server returned;
-// in-flight edits are layered on top at render time and never written to it.
+/**
+ * Owns the user's tag vocabulary. The cache holds only what the server returned;
+ * in-flight edits are layered on top at render time and never written to it.
+ */
 export function useTags(token: string): TagVocabulary {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -175,8 +177,10 @@ function byName(name: string) {
   return name.toLowerCase();
 }
 
-// Replays in-flight edits over the server list in the order they started, so
-// the newest edit wins without tracking revisions.
+/**
+ * Replays in-flight edits over the server list in the order they started, so
+ * the newest edit wins without tracking revisions.
+ */
 function applyInFlight(serverTags: Tag[], inFlight: TagMutation[]): Tag[] {
   let tags = serverTags;
   for (const variables of inFlight) {

@@ -12,6 +12,7 @@ function MessageGroup({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders one chat message row, aligned to the start or the end. */
 function Message({
   className,
   align = "start",
@@ -30,6 +31,7 @@ function Message({
   );
 }
 
+/** Renders the avatar slot beside a message. */
 function MessageAvatar({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -43,6 +45,7 @@ function MessageAvatar({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the body of a message. */
 function MessageContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -56,6 +59,7 @@ function MessageContent({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the header above a message body, for the sender and time. */
 function MessageHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -69,6 +73,7 @@ function MessageHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the footer below a message body, for actions or metadata. */
 function MessageFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

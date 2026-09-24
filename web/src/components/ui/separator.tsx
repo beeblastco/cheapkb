@@ -4,6 +4,7 @@ import { Separator as SeparatorPrimitive } from "@base-ui/react/separator";
 
 import { cn } from "@/lib/utils";
 
+/** Renders a horizontal or vertical divider line. */
 function Separator({
   className,
   orientation = "horizontal",

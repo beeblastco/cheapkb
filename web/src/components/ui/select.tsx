@@ -26,6 +26,7 @@ function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   );
 }
 
+/** Renders the button that opens a select and shows its value. */
 function SelectTrigger({
   className,
   size = "default",
@@ -54,6 +55,7 @@ function SelectTrigger({
   );
 }
 
+/** Renders the select popup positioned against its trigger. */
 function SelectContent({
   className,
   children,
@@ -96,6 +98,7 @@ function SelectContent({
   );
 }
 
+/** Renders the label of a group of select options. */
 function SelectLabel({
   className,
   ...props
@@ -109,6 +112,7 @@ function SelectLabel({
   );
 }
 
+/** Renders one selectable option, with a check mark when selected. */
 function SelectItem({
   className,
   children,
@@ -137,6 +141,7 @@ function SelectItem({
   );
 }
 
+/** Renders a divider between select options. */
 function SelectSeparator({
   className,
   ...props
@@ -153,6 +158,7 @@ function SelectSeparator({
   );
 }
 
+/** Renders the arrow that scrolls a long select list up. */
 function SelectScrollUpButton({
   className,
   ...props
@@ -171,6 +177,7 @@ function SelectScrollUpButton({
   );
 }
 
+/** Renders the arrow that scrolls a long select list down. */
 function SelectScrollDownButton({
   className,
   ...props
