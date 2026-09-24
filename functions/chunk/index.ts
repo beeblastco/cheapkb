@@ -26,6 +26,7 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const CHUNK_WRITE_CONCURRENCY = 10;
 
+/** Chunk stage entry, called by the pipeline router with chunk records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
 
@@ -69,6 +70,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures: batchItemFailures };
 }
 
+/** Splits a parsed document into chunks, stores them and queues embedding. */
 async function chunkDocument(
   documentId: string,
   parsedKey: string,
@@ -88,9 +90,7 @@ async function chunkDocument(
   const tags = doc.tags ?? null;
   const authors = doc.authors ?? null;
   const year = doc.year ?? null;
-  const sourceKey = doc.sourceKey;
-  const mimeType = doc.mimeType;
-  const userId = doc.userId;
+  const { mimeType, sourceKey, userId } = doc;
   if (!userId) throw new Error("Document owner is missing");
 
   const resp = await s3.send(
@@ -138,11 +138,12 @@ async function chunkDocument(
     console.log(`[chunk] OK: ${documentId} - image -> ${s3ChunkKey}`);
     return;
   }
-  const pages: Array<{ pageNumber: number; text: string }> = parsed.pages;
+  const { pages }: { pages: Array<{ pageNumber: number; text: string }> } =
+    parsed;
 
-  const maxTokens = parseInt(process.env.CHUNK_MAX_TOKENS ?? "700");
-  const overlapTokens = parseInt(process.env.CHUNK_OVERLAP_TOKENS ?? "100");
-  const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000");
+  const maxTokens = parseInt(process.env.CHUNK_MAX_TOKENS ?? "700", 10);
+  const overlapTokens = parseInt(process.env.CHUNK_OVERLAP_TOKENS ?? "100", 10);
+  const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000", 10);
 
   const chunks = splitIntoChunks(pages, maxTokens, overlapTokens, maxChunks);
   if (chunks.length === 0) {
@@ -214,6 +215,7 @@ async function chunkDocument(
   );
 }
 
+/** Resets the error fields on a document after a stage succeeds. */
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -233,6 +235,7 @@ async function clearError(documentId: string, now: string) {
   );
 }
 
+/** Marks the document CHUNKED and queues one embed message per new chunk. */
 async function finishChunking(
   documentId: string,
   chunkCount: number,
@@ -261,22 +264,29 @@ async function finishChunking(
   if (chunkKeys.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
 
   const sendSize = 10;
+  const groups: string[][] = [];
   for (let i = 0; i < chunkKeys.length; i += sendSize) {
-    const group = chunkKeys.slice(i, i + sendSize);
-    const response = await sqs.send(
-      new SendMessageBatchCommand({
-        QueueUrl: PipelineQueueUrl,
-        Entries: group.map((s3ChunkKey, index) => ({
-          Id: String(index),
-          MessageBody: JSON.stringify({
-            stage: "embed",
-            documentId: documentId,
-            s3ChunkKey: s3ChunkKey,
-          }),
-        })),
-      }),
-    );
-    if (response.Failed?.length) throw new Error("Failed to queue some chunks");
+    groups.push(chunkKeys.slice(i, i + sendSize));
+  }
+  const responses = await Promise.all(
+    groups.map((group) =>
+      sqs.send(
+        new SendMessageBatchCommand({
+          QueueUrl: PipelineQueueUrl,
+          Entries: group.map((s3ChunkKey, index) => ({
+            Id: String(index),
+            MessageBody: JSON.stringify({
+              stage: "embed",
+              documentId: documentId,
+              s3ChunkKey: s3ChunkKey,
+            }),
+          })),
+        }),
+      ),
+    ),
+  );
+  if (responses.some((response) => response.Failed?.length)) {
+    throw new Error("Failed to queue some chunks");
   }
 }
 
@@ -289,8 +299,8 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
   }
 }
 
-// When a redelivered message finds every chunk already embedded, no embed step
-// will run to finish the document, so it is finished here.
+/** Finishes a document whose chunks were all embedded by an earlier delivery,
+ * since no embed step will run for it. */
 async function markEmbeddedIfDone(documentId: string, chunkCount: number) {
   const now = new Date().toISOString();
   try {
@@ -317,8 +327,8 @@ async function markEmbeddedIfDone(documentId: string, chunkCount: number) {
   }
 }
 
-// A redelivered message keeps chunks that were already embedded, so they are not
-// embedded and billed twice. A first delivery starts every chunk over.
+/** Writes a chunk record, returning false when a redelivery finds it already
+ * embedded, so it is not billed twice. A first delivery starts every chunk over. */
 async function putChunkRecord(
   item: Record<string, unknown>,
   attempt: number,
@@ -345,6 +355,7 @@ async function putChunkRecord(
   }
 }
 
+/** Sets the document status and its status index keys. */
 async function updateStatus(documentId: string, status: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -365,6 +376,7 @@ async function updateStatus(documentId: string, status: string, now: string) {
   );
 }
 
+/** Records a chunk failure, marking the document FAILED on the third attempt. */
 async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
   // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
@@ -421,6 +433,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   console.log(`[chunk] Retry ${attempt}/3 for ${documentId}`);
 }
 
+/** Splits page text into overlapping token windows, capped at maxChunks. */
 function splitIntoChunks(
   pages: Array<{ pageNumber: number; text: string }>,
   maxTokens: number,
@@ -436,14 +449,16 @@ function splitIntoChunks(
   let pageEnd = 0;
   let buffer: number[] = [];
 
+  /** Emits the buffered tokens as a chunk and keeps the overlap tail. */
   const flush = () => {
     if (buffer.length === 0) return;
     const text = decode(buffer).trim();
     if (text) {
       out.push({
         chunk: { text: text, pageStart: pageStart, pageEnd: pageEnd },
-        i: i++,
+        i: i,
       });
+      i += 1;
       if (out.length > maxChunks) {
         throw new ContentError(`Document exceeds the ${maxChunks} chunk limit`);
       }

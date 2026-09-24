@@ -85,6 +85,7 @@ interface CohereEmbeddingResponse {
   embeddings: number[][] | { float?: number[][] };
 }
 
+/** Embed stage entry, called by the pipeline router with embed records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const chunks: Array<{
     documentId: string;
@@ -141,9 +142,11 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
           });
         }
       }
-      for (const [documentId, failure] of documents) {
-        await handleError(documentId, failure.error, failure.attempt);
-      }
+      await Promise.all(
+        Array.from(documents, ([documentId, failure]) =>
+          handleError(documentId, failure.error, failure.attempt),
+        ),
+      );
     } catch (err) {
       console.error(`[embed] Batch failed:`, err);
       const attempts = new Map<string, number>();
@@ -154,9 +157,11 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
           Math.max(attempts.get(chunk.documentId) ?? 1, chunk.attempt),
         );
       }
-      for (const [documentId, attempt] of attempts) {
-        await handleError(documentId, err, attempt);
-      }
+      await Promise.all(
+        Array.from(attempts, ([documentId, attempt]) =>
+          handleError(documentId, err, attempt),
+        ),
+      );
     }
   }
   return {
@@ -166,6 +171,8 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   };
 }
 
+/** Embeds one batch of chunks, writes their vectors and marks them embedded.
+ * Returns the per-message failures for the handler to record. */
 async function batchProcess(
   batch: Array<{
     documentId: string;
@@ -174,7 +181,6 @@ async function batchProcess(
     attempt: number;
   }>,
 ) {
-  const workItems: EmbeddingWork[] = [];
   const owners = new Map<string, string>();
   const reconcileDocuments = new Set<string>();
   const failures = new Map<
@@ -182,116 +188,122 @@ async function batchProcess(
     { attempt: number; documentId: string; error: unknown }
   >();
 
-  for (const chunk of batch) {
-    try {
-      const resp = await s3.send(
-        new GetObjectCommand({
-          Bucket: StorageBucketName,
-          Key: chunk.s3ChunkKey,
-        }),
-      );
-      const chunkData = JSON.parse(await resp.Body!.transformToString());
-      let userId: string | undefined =
-        chunkData.userId ?? owners.get(chunk.documentId);
-      if (!userId) {
-        const result = await dynamo.send(
-          new GetCommand({
-            TableName: TableName,
-            Key: { pk: `DOC#${chunk.documentId}`, sk: "META" },
-          }),
-        );
-        userId = result.Item?.userId;
-        if (!userId) throw new Error("Document owner is missing");
-        owners.set(chunk.documentId, userId);
-      }
-      const modality = chunkData.modality === "image" ? "image" : "text";
-      const text = typeof chunkData.text === "string" ? chunkData.text : "";
-      if (modality === "text" && !text.trim()) continue;
-      const tokenCount =
-        modality === "text"
-          ? typeof chunkData.tokenCount === "number" && chunkData.tokenCount > 0
-            ? chunkData.tokenCount
-            : encode(text, { disallowedSpecial: new Set() }).length
-          : undefined;
-      const metadata: ChunkMetadata = {
-        documentId: chunk.documentId,
-        userId: userId,
-        chunkId: chunkData.chunkId,
-        modality: modality,
-        ...(tokenCount ? { tokenCount: tokenCount } : {}),
-        ...(chunkData.title ? { title: chunkData.title } : {}),
-        ...(chunkData.tags ? { tags: chunkData.tags } : {}),
-        ...(chunkData.authors ? { authors: chunkData.authors } : {}),
-        ...(chunkData.year ? { year: chunkData.year } : {}),
-        ...(chunkData.mimeType ? { mimeType: chunkData.mimeType } : {}),
-        ...(chunkData.sourceKey ? { sourceKey: chunkData.sourceKey } : {}),
-        pageStart: chunkData.pageStart,
-        pageEnd: chunkData.pageEnd,
-        s3ChunkKey: chunk.s3ChunkKey,
-      };
-
-      // A duplicate message for an embedded chunk must not be embedded and
-      // billed again, whichever delivery it is.
-      const existing = await dynamo.send(
-        new GetCommand({
-          TableName: TableName,
-          Key: {
-            pk: `DOC#${chunk.documentId}`,
-            sk: `CHUNK#${metadata.chunkId}`,
-          },
-          ConsistentRead: true,
-        }),
-      );
-      if (existing.Item?.status === "EMBEDDED") {
-        reconcileDocuments.add(chunk.documentId);
-        continue;
-      }
-
-      if (modality === "image") {
-        if (!metadata.sourceKey || !metadata.mimeType) {
-          throw new Error("Image chunk is missing its source key or MIME type");
-        }
-        const image = await s3.send(
+  const loaded = await Promise.all(
+    batch.map(async (chunk): Promise<EmbeddingWork | undefined> => {
+      try {
+        const resp = await s3.send(
           new GetObjectCommand({
             Bucket: StorageBucketName,
-            Key: metadata.sourceKey,
+            Key: chunk.s3ChunkKey,
           }),
         );
-        const imageBytes = await image.Body!.transformToByteArray();
-        const maxImageBytes = Math.min(
-          parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-          5 * 1024 * 1024,
-        );
-        if (imageBytes.byteLength > maxImageBytes) {
-          throw new Error(
-            "Image exceeds the configured Cohere embedding limit",
+        const chunkData = JSON.parse(await resp.Body!.transformToString());
+        let userId: string | undefined =
+          chunkData.userId ?? owners.get(chunk.documentId);
+        if (!userId) {
+          const result = await dynamo.send(
+            new GetCommand({
+              TableName: TableName,
+              Key: { pk: `DOC#${chunk.documentId}`, sk: "META" },
+            }),
           );
+          userId = result.Item?.userId;
+          if (!userId) throw new Error("Document owner is missing");
+          owners.set(chunk.documentId, userId);
         }
-        workItems.push({
+        const modality = chunkData.modality === "image" ? "image" : "text";
+        const text = typeof chunkData.text === "string" ? chunkData.text : "";
+        if (modality === "text" && !text.trim()) return undefined;
+        const tokenCount =
+          modality === "text"
+            ? typeof chunkData.tokenCount === "number" &&
+              chunkData.tokenCount > 0
+              ? chunkData.tokenCount
+              : encode(text, { disallowedSpecial: new Set() }).length
+            : undefined;
+        const metadata: ChunkMetadata = {
+          documentId: chunk.documentId,
+          userId: userId,
+          chunkId: chunkData.chunkId,
+          modality: modality,
+          ...(tokenCount ? { tokenCount: tokenCount } : {}),
+          ...(chunkData.title ? { title: chunkData.title } : {}),
+          ...(chunkData.tags ? { tags: chunkData.tags } : {}),
+          ...(chunkData.authors ? { authors: chunkData.authors } : {}),
+          ...(chunkData.year ? { year: chunkData.year } : {}),
+          ...(chunkData.mimeType ? { mimeType: chunkData.mimeType } : {}),
+          ...(chunkData.sourceKey ? { sourceKey: chunkData.sourceKey } : {}),
+          pageStart: chunkData.pageStart,
+          pageEnd: chunkData.pageEnd,
+          s3ChunkKey: chunk.s3ChunkKey,
+        };
+
+        // A duplicate message for an embedded chunk must not be embedded and
+        // billed again, whichever delivery it is.
+        const existing = await dynamo.send(
+          new GetCommand({
+            TableName: TableName,
+            Key: {
+              pk: `DOC#${chunk.documentId}`,
+              sk: `CHUNK#${metadata.chunkId}`,
+            },
+            ConsistentRead: true,
+          }),
+        );
+        if (existing.Item?.status === "EMBEDDED") {
+          reconcileDocuments.add(chunk.documentId);
+          return undefined;
+        }
+
+        if (modality === "image") {
+          if (!metadata.sourceKey || !metadata.mimeType) {
+            throw new Error(
+              "Image chunk is missing its source key or MIME type",
+            );
+          }
+          const image = await s3.send(
+            new GetObjectCommand({
+              Bucket: StorageBucketName,
+              Key: metadata.sourceKey,
+            }),
+          );
+          const imageBytes = await image.Body!.transformToByteArray();
+          const maxImageBytes = Math.min(
+            parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+            5 * 1024 * 1024,
+          );
+          if (imageBytes.byteLength > maxImageBytes) {
+            throw new Error(
+              "Image exceeds the configured Cohere embedding limit",
+            );
+          }
+          return {
+            attempt: chunk.attempt,
+            imageBase64: Buffer.from(imageBytes).toString("base64"),
+            imageFormat: imageFormat(metadata.mimeType),
+            messageId: chunk.messageId,
+            metadata: metadata,
+            text: buildImageDescription(metadata),
+          };
+        }
+
+        return {
           attempt: chunk.attempt,
-          imageBase64: Buffer.from(imageBytes).toString("base64"),
-          imageFormat: imageFormat(metadata.mimeType),
           messageId: chunk.messageId,
           metadata: metadata,
-          text: buildImageDescription(metadata),
+          text: text,
+        };
+      } catch (error) {
+        failures.set(chunk.messageId, {
+          attempt: chunk.attempt,
+          documentId: chunk.documentId,
+          error: error,
         });
-        continue;
+        return undefined;
       }
-
-      workItems.push({
-        attempt: chunk.attempt,
-        messageId: chunk.messageId,
-        metadata: metadata,
-        text: text,
-      });
-    } catch (error) {
-      failures.set(chunk.messageId, {
-        attempt: chunk.attempt,
-        documentId: chunk.documentId,
-        error: error,
-      });
-    }
-  }
+    }),
+  );
+  const workItems = loaded.filter((item) => item !== undefined);
 
   const embeddingsByChunk = new Map<string, number[]>();
   await Promise.all(
@@ -328,13 +340,13 @@ async function batchProcess(
 
   const writtenDocuments = new Set(reconcileDocuments);
   if (vectorBatch.length === 0) {
-    for (const documentId of writtenDocuments) {
-      await markEmbedded(documentId);
-    }
+    await Promise.all(
+      Array.from(writtenDocuments, (documentId) => markEmbedded(documentId)),
+    );
     return failures;
   }
 
-  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "500");
+  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "500", 10);
   const writtenVectors: typeof vectorBatch = [];
   for (let i = 0; i < vectorBatch.length; i += vectorBatchSize) {
     const chunk = vectorBatch.slice(i, i + vectorBatchSize);
@@ -368,13 +380,14 @@ async function batchProcess(
     await markChunkEmbedded(meta.documentId, meta.chunkId);
     writtenDocuments.add(meta.documentId);
   }
-  for (const documentId of writtenDocuments) {
-    await markEmbedded(documentId);
-  }
+  await Promise.all(
+    Array.from(writtenDocuments, (documentId) => markEmbedded(documentId)),
+  );
   console.log(`[embed] OK: ${writtenVectors.length} vectors written`);
   return failures;
 }
 
+/** Resets the error fields on a document after a stage succeeds. */
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -394,6 +407,7 @@ async function clearError(documentId: string, now: string) {
   );
 }
 
+/** Embeds one packed request, halving it on error to isolate the failing item. */
 async function embedItems(
   items: EmbeddingWork[],
   embeddingsByChunk: Map<string, number[]>,
@@ -424,7 +438,7 @@ async function embedItems(
       ]);
       return;
     }
-    const item = items[0];
+    const [item] = items;
     failures.set(item.messageId, {
       attempt: item.attempt,
       documentId: item.metadata.documentId,
@@ -442,6 +456,7 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
   }
 }
 
+/** Calls the Cohere embedding model, records token usage and returns vectors. */
 async function invokeBedrock(
   body: Record<string, unknown>,
   userId: string,
@@ -517,6 +532,8 @@ async function invokeBedrock(
   return embeddings;
 }
 
+/** Marks a chunk EMBEDDED and bumps the document count in one transaction.
+ * Returns false when the chunk was already embedded or the document is gone. */
 async function markChunkEmbedded(
   documentId: string,
   chunkId: string,
@@ -589,6 +606,7 @@ async function markChunkEmbedded(
   }
 }
 
+/** Marks the document EMBEDDED once every chunk has been embedded. */
 async function markEmbedded(documentId: string) {
   const now = new Date().toISOString();
   const result = await dynamo.send(
@@ -630,6 +648,7 @@ async function markEmbedded(documentId: string) {
   }
 }
 
+/** Records an embed failure, marking the document FAILED on the third attempt. */
 async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
   // Raw SDK messages can name buckets and ARNs; the detail is in the logs.
@@ -678,6 +697,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   );
 }
 
+/** Builds the Cohere Embed v4 request body for text and image items. */
 function buildEmbeddingRequest(
   items: EmbeddingWork[],
   inputType: "search_document" | "search_query",
@@ -733,6 +753,7 @@ function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {
   throw new Error(`Unsupported image MIME type: ${mimeType}`);
 }
 
+/** Groups items into Cohere requests by owner, item count and request size. */
 function packEmbeddingBatches(items: EmbeddingWork[]): EmbeddingWork[][] {
   const batches: EmbeddingWork[][] = [];
   let current: EmbeddingWork[] = [];
