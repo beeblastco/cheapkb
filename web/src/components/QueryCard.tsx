@@ -55,6 +55,8 @@ interface ChatTurn {
   results: QueryResult[];
 }
 
+/** Chat-style search panel: asks the knowledge base by text or image and lists
+ * cited results. Rendered in the App sidebar. */
 export function QueryCard({
   request,
   onView,
@@ -79,6 +81,7 @@ export function QueryCard({
   const [loading, setLoading] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
 
+  /** Sends the question and optional image to /query and appends the answer turn. */
   async function submit() {
     const question = query.trim();
     if ((!question && !image) || loading) return;
@@ -123,6 +126,7 @@ export function QueryCard({
     }
   }
 
+  /** Validates a picked image and attaches it to the next query as a data URI. */
   async function selectImage(file: File | undefined) {
     setImageError("");
     if (!file) return;
@@ -296,6 +300,7 @@ function readDataUri(file: File) {
   });
 }
 
+/** One question and its results or error in the chat history. */
 function MessageGroup({
   turn,
   onView,

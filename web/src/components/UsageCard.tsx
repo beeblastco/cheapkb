@@ -4,6 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 
+/** Sidebar card with storage and query usage against the plan limits. */
 export function UsageCard({ summary }: { summary: UsageSummary | null }) {
   if (!summary) {
     return (

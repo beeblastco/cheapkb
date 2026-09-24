@@ -33,6 +33,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const NOTICE_MS = 6000;
 
+/** Signed-out screen with the Google sign-in button, shown until a token exists. */
 function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
     <TooltipProvider>
@@ -145,6 +146,7 @@ function App() {
   );
 
   useEffect(() => {
+    /** Finishes a sign-in redirect if present, then restores the stored session. */
     async function initialize() {
       if (!import.meta.env.VITE_API_URL) {
         notify("App is not configured", "The API URL is missing.");
@@ -192,6 +194,8 @@ function App() {
     }
   }
 
+  /** Opens the detail dialog for a document and loads its full record. Used by row and
+   * citation clicks; a newer call wins over an older one still in flight. */
   async function showDocument(documentId: string) {
     const requestId = documentRequest.current + 1;
     documentRequest.current = requestId;
@@ -231,11 +235,11 @@ function App() {
   async function reindexDocument(documentId: string) {
     const previous = documentsRef.current;
     setDocuments((current) =>
-      current.map((document) =>
-        document.documentId === documentId
+      current.map((document) => {
+        return document.documentId === documentId
           ? { ...document, status: "QUEUED", lastError: null }
-          : document,
-      ),
+          : document;
+      }),
     );
     try {
       await request(
@@ -258,16 +262,16 @@ function App() {
       (document) => document.documentId === documentId,
     );
     setDocuments((current) =>
-      current.map((document) =>
-        document.documentId === documentId
+      current.map((document) => {
+        return document.documentId === documentId
           ? {
               ...document,
               lastError: null,
               status: "DELETING",
               updatedAt: now,
             }
-          : document,
-      ),
+          : document;
+      }),
     );
     try {
       await request("DELETE", `/documents/${encodeURIComponent(documentId)}`);
@@ -277,17 +281,19 @@ function App() {
       }
       return true;
     } catch (error) {
-      const message = (error as Error).message;
-      const current = documentsRef.current;
+      const { message } = error as Error;
+      const { current } = documentsRef;
       let restored: Document[];
       if (!deletedSnapshot) {
         restored = current;
       } else if (
         current.some((document) => document.documentId === documentId)
       ) {
-        restored = current.map((document) =>
-          document.documentId === documentId ? deletedSnapshot : document,
-        );
+        restored = current.map((document) => {
+          return document.documentId === documentId
+            ? deletedSnapshot
+            : document;
+        });
       } else {
         restored = [deletedSnapshot, ...current];
       }

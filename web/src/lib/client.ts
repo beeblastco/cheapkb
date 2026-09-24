@@ -73,7 +73,7 @@ export function getIdentity(): ShooIdentity | null {
 export function getUserProfile(identity: ShooIdentity): UserProfile {
   const fallback = "Account";
   try {
-    const payload = identity.token.split(".")[1];
+    const [, payload] = identity.token.split(".");
     const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
     const decoded = atob(
       normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="),
@@ -487,7 +487,9 @@ export async function uploadDocument(
           "DELETE",
           `/documents/${encodeURIComponent(metadata.documentId)}`,
         );
-      } catch {}
+      } catch {
+        // Best-effort cleanup; the upload error below is the one to report.
+      }
     }
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
     throw error;
@@ -543,17 +545,16 @@ async function extractPdfMetadata(
   let year = info.CreationDate?.match(/D:(\d{4})/)?.[1];
 
   if (!title || !authors) {
-    const pages: string[] = [];
-    for (let index = 1; index <= Math.min(3, pdf.numPages); index += 1) {
-      const page = await pdf.getPage(index);
-      const content = await page.getTextContent();
-      pages.push(
-        content.items
+    const pages = await Promise.all(
+      Array.from({ length: Math.min(3, pdf.numPages) }, async (_, index) => {
+        const page = await pdf.getPage(index + 1);
+        const content = await page.getTextContent();
+        return content.items
           .filter((item) => "str" in item)
           .map((item) => (item as { str: string }).str)
-          .join(" "),
-      );
-    }
+          .join(" ");
+      }),
+    );
     const parsed = parseMetadata(pages.join("\n"), fallback);
     title ||= parsed.title;
     authors ||= parsed.authors.join(", ");

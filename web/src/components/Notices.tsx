@@ -14,8 +14,8 @@ export interface Notice {
   title: string;
 }
 
-// Error notices drop down from the top center of the screen. Keyed by content,
-// so a repeated error updates in place instead of replaying the drop-in.
+/** Error notices dropping down at the top center, fed by notify() in App. Keyed
+ * by content, so a repeated error updates in place instead of replaying. */
 export function Notices({
   notices,
   onDismiss,

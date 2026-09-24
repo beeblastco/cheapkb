@@ -104,6 +104,8 @@ export function TagPicker({
     [value],
   );
 
+  /** Combobox selection handler. Picking the create row adds the tag right away
+   * and creates it on the server, dropping it again if that fails. */
   function handleValueChange(next: string[]) {
     setInputValue("");
 
@@ -121,12 +123,14 @@ export function TagPicker({
         if (saved.name !== name) {
           onChange(replaceTag(valueRef.current, name, saved.name));
         }
+        return saved;
       })
       .catch(() => {
         onChange(withoutTag(valueRef.current, name));
       });
   }
 
+  /** Deletes the tag awaiting confirmation and removes it from the value. */
   async function confirmDelete() {
     const tag = pendingDelete;
     if (!tag) return;
@@ -145,6 +149,8 @@ export function TagPicker({
     onChange(withoutTag(valueRef.current, tag.name));
   }
 
+  /** Keyboard shortcuts on the highlighted tag: Ctrl+K recolors it and
+   * Ctrl+Backspace asks to delete it. */
   function handleShortcut(event: React.KeyboardEvent) {
     if (!event.ctrlKey || recoloring) return;
     const tag = tags.find((candidate) => candidate.name === highlighted);
@@ -267,7 +273,7 @@ export function TagPicker({
           setPendingDelete(null);
           setDeleteError(null);
         }}
-        open={!!pendingDelete}
+        open={Boolean(pendingDelete)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -301,6 +307,7 @@ export function TagPicker({
   );
 }
 
+/** One tag in the picker list, with recolor and delete buttons. */
 function TagRow({
   colorOf,
   disabled,
@@ -352,7 +359,8 @@ function TagRow({
   );
 }
 
-// Padding matches ComboboxList so the panel aligns with the list it replaces.
+/** Color list shown in place of the tags while recoloring one. Padding matches
+ * ComboboxList so the panel aligns with the list it replaces. */
 function ColorPanel({
   current,
   name,
@@ -411,9 +419,9 @@ function dedupe(names: string[]): string[] {
 
 function replaceTag(names: string[], from: string, to: string): string[] {
   return dedupe(
-    names.map((name) =>
-      name.toLowerCase() === from.toLowerCase() ? to : name,
-    ),
+    names.map((name) => {
+      return name.toLowerCase() === from.toLowerCase() ? to : name;
+    }),
   );
 }
 

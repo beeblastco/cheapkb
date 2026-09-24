@@ -65,7 +65,7 @@ export function DocumentDialog({
     : [];
 
   return (
-    <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
+    <Sheet onOpenChange={(open) => !open && onClose()} open={Boolean(document)}>
       <SheetContent className="overflow-y-auto">
         {detailedDocument ? (
           <SheetHeader>

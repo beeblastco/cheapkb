@@ -138,25 +138,29 @@ const DOCUMENT_COLUMNS: ColumnDef<DocumentTableRow>[] = [
   { id: "select", enableSorting: false },
   {
     id: "title",
-    accessorFn: (row) =>
-      row.kind === "document"
+    accessorFn: (row) => {
+      return row.kind === "document"
         ? row.document.title || row.document.documentId
-        : row.item.title,
+        : row.item.title;
+    },
   },
   {
     id: "status",
-    accessorFn: (row) =>
-      row.kind === "document" ? row.document.status : row.item.state,
+    accessorFn: (row) => {
+      return row.kind === "document" ? row.document.status : row.item.state;
+    },
   },
   {
     id: "createdAt",
-    accessorFn: (row) =>
-      row.kind === "document" ? row.document.createdAt || "" : "\uffff",
+    accessorFn: (row) => {
+      return row.kind === "document" ? row.document.createdAt || "" : "\uffff";
+    },
   },
   {
     id: "updatedAt",
-    accessorFn: (row) =>
-      row.kind === "document" ? row.document.updatedAt || "" : "\uffff",
+    accessorFn: (row) => {
+      return row.kind === "document" ? row.document.updatedAt || "" : "\uffff";
+    },
   },
   { id: "actions", enableSorting: false },
 ];
@@ -233,11 +237,11 @@ export function DocumentsCard({
       // button.
       const saved = await updateDocumentTags(token, documentId, nextTags);
       setDocuments((current) =>
-        current.map((document) =>
-          document.documentId === documentId
+        current.map((document) => {
+          return document.documentId === documentId
             ? { ...document, tags: saved }
-            : document,
-        ),
+            : document;
+        }),
       );
     },
     [setDocuments, token],
@@ -297,8 +301,8 @@ export function DocumentsCard({
       for (const item of queued) {
         const metadata = await extractMetadata(item.file);
         setItems((current) =>
-          current.map((currentItem) =>
-            currentItem.id === item.id
+          current.map((currentItem) => {
+            return currentItem.id === item.id
               ? {
                   ...currentItem,
                   authors: metadata.authors.join(", "),
@@ -307,8 +311,8 @@ export function DocumentsCard({
                   title: metadata.title || currentItem.title,
                   year: metadata.year?.toString() || "",
                 }
-              : currentItem,
-          ),
+              : currentItem;
+          }),
         );
       }
     },
@@ -371,17 +375,19 @@ export function DocumentsCard({
   const table = useReactTable({
     columns: DOCUMENT_COLUMNS,
     data: tableData,
-    enableRowSelection: (row) =>
-      row.original.kind === "document"
+    enableRowSelection: (row) => {
+      return row.original.kind === "document"
         ? row.original.document.status !== "DELETING"
-        : row.original.item.state !== "SYNCING",
+        : row.original.item.state !== "SYNCING";
+    },
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    getRowId: (row) =>
-      row.kind === "document"
+    getRowId: (row) => {
+      return row.kind === "document"
         ? `document-${row.document.documentId}`
-        : `upload-${row.item.id}`,
+        : `upload-${row.item.id}`;
+    },
     getSortedRowModel: getSortedRowModel(),
     globalFilterFn: (row, _columnId, value) =>
       getSearchValue(row.original).includes(String(value).trim().toLowerCase()),
@@ -401,16 +407,14 @@ export function DocumentsCard({
   const visible = table.getRowModel().rows;
   const selectedDocumentIds = table
     .getSelectedRowModel()
-    .rows.flatMap((row) =>
-      row.original.kind === "document"
+    .rows.flatMap((row) => {
+      return row.original.kind === "document"
         ? [row.original.document.documentId]
-        : [],
-    );
-  const selectedUploadIds = table
-    .getSelectedRowModel()
-    .rows.flatMap((row) =>
-      row.original.kind === "upload" ? [row.original.item.id] : [],
-    );
+        : [];
+    });
+  const selectedUploadIds = table.getSelectedRowModel().rows.flatMap((row) => {
+    return row.original.kind === "upload" ? [row.original.item.id] : [];
+  });
   const selectedCount = selectedDocumentIds.length + selectedUploadIds.length;
   const hasSelectablePageRows = visible.some((row) => row.getCanSelect());
   const selectedItem = items.find((item) => item.id === selectedItemId) || null;
@@ -430,6 +434,8 @@ export function DocumentsCard({
     table.setPageIndex(Math.max(0, pageCount - 1));
   }, [pageCount, pagination.pageIndex, table]);
 
+  /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
+   * reloads documents and usage. Wired to the Sync button. */
   async function syncAll() {
     if (syncingRef.current) return;
     const pending = itemsRef.current.filter((item) =>
@@ -447,7 +453,8 @@ export function DocumentsCard({
       { length: Math.min(UPLOAD_CONCURRENCY, pending.length) },
       async () => {
         while (nextIndex < pending.length) {
-          const item = pending[nextIndex++];
+          const item = pending[nextIndex];
+          nextIndex += 1;
           updateItem(item.id, {
             error: "",
             progress: "Requesting upload URL",
@@ -524,6 +531,8 @@ export function DocumentsCard({
     if (selectedItemId === id) setSelectedItemId(null);
   }
 
+  /** Deletes the selected documents, drops the selected staged uploads, and keeps
+   * failed documents selected. Wired to the bulk delete confirm. */
   async function deleteSelected() {
     if (!selectedCount || deletingSelected) return;
     setDeletingSelected(true);
@@ -714,7 +723,7 @@ export function DocumentsCard({
                   ))
                 ) : visible.length ? (
                   visible.map((row) => {
-                    const original = row.original;
+                    const { original } = row;
                     return original.kind === "upload" ? (
                       <UploadRow
                         colorOf={colorOf}
@@ -827,6 +836,7 @@ export function DocumentsCard({
   );
 }
 
+/** Table header that toggles sorting for its column on click. */
 function SortableHead({
   className,
   column,
@@ -861,6 +871,7 @@ function SortableHead({
   );
 }
 
+/** Renders a document's tags as colored badges, or a dash when there are none. */
 function TagList({
   colorOf,
   tags,
@@ -879,6 +890,7 @@ function TagList({
   );
 }
 
+/** Table row for a staged upload, with edit and remove actions. */
 function UploadRow({
   colorOf,
   item,
@@ -969,6 +981,7 @@ function UploadRow({
   );
 }
 
+/** Table row for a stored document, with view, tag, reindex and delete actions. */
 function DocumentRow({
   colorOf,
   document,
@@ -1109,6 +1122,7 @@ function DocumentRow({
   );
 }
 
+/** Side sheet that edits a stored document's tags. Opens when `document` is set. */
 function DocumentTagsSheet({
   colorOf,
   document,
@@ -1145,6 +1159,7 @@ function DocumentTagsSheet({
 
   const dirty = JSON.stringify(value) !== JSON.stringify(document.tags ?? []);
 
+  /** Saves the picked tags and closes the sheet, or shows the error inline. */
   async function save() {
     if (!document || saving) return;
     setSaving(true);
@@ -1162,7 +1177,7 @@ function DocumentTagsSheet({
   }
 
   return (
-    <Sheet onOpenChange={(open) => !open && onClose()} open={!!document}>
+    <Sheet onOpenChange={(open) => !open && onClose()} open={Boolean(document)}>
       <SheetContent className="overflow-y-auto">
         <SheetHeader>
           <SheetTitle>{document.title || document.documentId}</SheetTitle>
@@ -1203,6 +1218,7 @@ function DocumentTagsSheet({
   );
 }
 
+/** Side sheet that edits a staged upload's title, authors, year and tags. */
 function UploadMetadataSheet({
   colorOf,
   item,
@@ -1227,7 +1243,7 @@ function UploadMetadataSheet({
   tags: Tag[];
 }) {
   return (
-    <Sheet onOpenChange={(open) => !open && onClose()} open={!!item}>
+    <Sheet onOpenChange={(open) => !open && onClose()} open={Boolean(item)}>
       <SheetContent className="overflow-y-auto">
         {item ? (
           <SheetHeader>
@@ -1297,6 +1313,7 @@ function UploadMetadataSheet({
   );
 }
 
+/** Icon button with a tooltip, used for the per-row actions. */
 function ActionButton({
   children,
   disabled,
@@ -1328,6 +1345,7 @@ function ActionButton({
   );
 }
 
+/** Lowercased text the table's global filter matches a row against. */
 function getSearchValue(row: DocumentTableRow): string {
   if (row.kind === "upload") {
     return [row.item.title, row.item.file.name, row.item.state]
