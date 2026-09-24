@@ -3,6 +3,7 @@ import { Checkbox as CheckboxPrimitive } from "@base-ui/react/checkbox";
 import { cn } from "@/lib/utils";
 import { CheckIcon } from "lucide-react";
 
+/** Renders a styled checkbox with a check indicator. */
 function Checkbox({ className, ...props }: CheckboxPrimitive.Root.Props) {
   return (
     <CheckboxPrimitive.Root

@@ -17,6 +17,7 @@ function ComboboxValue({ ...props }: ComboboxPrimitive.Value.Props) {
   return <ComboboxPrimitive.Value data-slot="combobox-value" {...props} />;
 }
 
+/** Renders the button that opens the combobox popup, with a chevron icon. */
 function ComboboxTrigger({
   className,
   children,
@@ -34,6 +35,7 @@ function ComboboxTrigger({
   );
 }
 
+/** Renders the button that clears the combobox selection. */
 function ComboboxClear({ className, ...props }: ComboboxPrimitive.Clear.Props) {
   return (
     <ComboboxPrimitive.Clear
@@ -47,6 +49,7 @@ function ComboboxClear({ className, ...props }: ComboboxPrimitive.Clear.Props) {
   );
 }
 
+/** Renders the combobox text input inside an InputGroup with optional trigger and clear buttons. */
 function ComboboxInput({
   className,
   children,
@@ -82,6 +85,7 @@ function ComboboxInput({
   );
 }
 
+/** Renders the positioned popup that holds the combobox list. */
 function ComboboxContent({
   className,
   side = "bottom",
@@ -107,7 +111,7 @@ function ComboboxContent({
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"
-          data-chips={!!anchor}
+          data-chips={Boolean(anchor)}
           className={cn(
             "group/combobox-content relative max-h-(--available-height) w-(--anchor-width) max-w-(--available-width) min-w-[calc(var(--anchor-width)+--spacing(7))] origin-(--transform-origin) overflow-hidden rounded-3xl bg-popover text-popover-foreground shadow-lg ring-1 ring-foreground/5 duration-100 data-[chips=true]:min-w-(--anchor-width) data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 *:data-[slot=input-group]:m-1.5 *:data-[slot=input-group]:mb-0 *:data-[slot=input-group]:h-8 *:data-[slot=input-group]:border-input/30 *:data-[slot=input-group]:bg-input/50 *:data-[slot=input-group]:shadow-none dark:ring-foreground/10 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
             className,
@@ -119,6 +123,7 @@ function ComboboxContent({
   );
 }
 
+/** Renders the scrollable list of combobox items. */
 function ComboboxList({ className, ...props }: ComboboxPrimitive.List.Props) {
   return (
     <ComboboxPrimitive.List
@@ -132,6 +137,7 @@ function ComboboxList({ className, ...props }: ComboboxPrimitive.List.Props) {
   );
 }
 
+/** Renders one selectable combobox option with a check indicator. */
 function ComboboxItem({
   className,
   children,
@@ -174,6 +180,7 @@ function ComboboxGroup({ className, ...props }: ComboboxPrimitive.Group.Props) {
   );
 }
 
+/** Renders a label for a group of combobox items. */
 function ComboboxLabel({
   className,
   ...props
@@ -193,6 +200,7 @@ function ComboboxCollection({ ...props }: ComboboxPrimitive.Collection.Props) {
   );
 }
 
+/** Renders the message shown when no combobox items match. */
 function ComboboxEmpty({ className, ...props }: ComboboxPrimitive.Empty.Props) {
   return (
     <ComboboxPrimitive.Empty
@@ -206,6 +214,7 @@ function ComboboxEmpty({ className, ...props }: ComboboxPrimitive.Empty.Props) {
   );
 }
 
+/** Renders a divider between combobox items or groups. */
 function ComboboxSeparator({
   className,
   ...props
@@ -219,6 +228,7 @@ function ComboboxSeparator({
   );
 }
 
+/** Renders the container for selected values shown as chips in a multi-select combobox. */
 function ComboboxChips({
   className,
   ...props
@@ -236,6 +246,7 @@ function ComboboxChips({
   );
 }
 
+/** Renders one selected value chip with an optional remove button. */
 function ComboboxChip({
   className,
   children,
@@ -267,6 +278,7 @@ function ComboboxChip({
   );
 }
 
+/** Renders the text input that sits inline with the chips. */
 function ComboboxChipsInput({
   className,
   ...props

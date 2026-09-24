@@ -12,6 +12,7 @@ function DropdownMenuPortal({ ...props }: MenuPrimitive.Portal.Props) {
   return <MenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />;
 }
 
+/** Renders the element that opens the dropdown menu. */
 function DropdownMenuTrigger({
   className,
   ...props
@@ -25,6 +26,7 @@ function DropdownMenuTrigger({
   );
 }
 
+/** Renders the positioned popup that holds the dropdown menu items. */
 function DropdownMenuContent({
   align = "start",
   alignOffset = 0,
@@ -63,6 +65,7 @@ function DropdownMenuGroup({ ...props }: MenuPrimitive.Group.Props) {
   return <MenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
 }
 
+/** Renders a non-interactive label inside the dropdown menu. */
 function DropdownMenuLabel({
   className,
   inset,
@@ -83,6 +86,7 @@ function DropdownMenuLabel({
   );
 }
 
+/** Renders one dropdown menu action, with default or destructive styling. */
 function DropdownMenuItem({
   className,
   inset,
@@ -110,6 +114,7 @@ function DropdownMenuSub({ ...props }: MenuPrimitive.SubmenuRoot.Props) {
   return <MenuPrimitive.SubmenuRoot data-slot="dropdown-menu-sub" {...props} />;
 }
 
+/** Renders the item that opens a nested submenu. */
 function DropdownMenuSubTrigger({
   className,
   inset,
@@ -134,6 +139,7 @@ function DropdownMenuSubTrigger({
   );
 }
 
+/** Renders the popup of a nested submenu. */
 function DropdownMenuSubContent({
   align = "start",
   alignOffset = -3,
@@ -158,6 +164,7 @@ function DropdownMenuSubContent({
   );
 }
 
+/** Renders a dropdown menu item that toggles a checked state. */
 function DropdownMenuCheckboxItem({
   className,
   children,
@@ -200,6 +207,7 @@ function DropdownMenuRadioGroup({ ...props }: MenuPrimitive.RadioGroup.Props) {
   );
 }
 
+/** Renders a dropdown menu item that selects one value in a radio group. */
 function DropdownMenuRadioItem({
   className,
   children,
@@ -231,6 +239,7 @@ function DropdownMenuRadioItem({
   );
 }
 
+/** Renders a divider between dropdown menu items. */
 function DropdownMenuSeparator({
   className,
   ...props
@@ -244,6 +253,7 @@ function DropdownMenuSeparator({
   );
 }
 
+/** Renders a keyboard shortcut hint aligned to the end of a menu item. */
 function DropdownMenuShortcut({
   className,
   ...props

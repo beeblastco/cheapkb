@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/** Renders a bordered card container, in default or small size. */
 function Card({
   className,
   size = "default",
@@ -20,6 +21,7 @@ function Card({
   );
 }
 
+/** Renders the card's header area for title, description and action. */
 function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -53,6 +55,7 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders an action placed at the top right of the card header. */
 function CardAction({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -76,6 +79,7 @@ function CardContent({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the card's bottom row for actions. */
 function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div

@@ -42,6 +42,7 @@ const bubbleVariants = cva(
   },
 );
 
+/** Renders one chat message bubble, aligned and styled by variant. */
 function Bubble({
   variant = "default",
   align = "start",
@@ -62,6 +63,7 @@ function Bubble({
   );
 }
 
+/** Renders the body of a chat bubble. */
 function BubbleContent({
   className,
   render,
@@ -105,6 +107,7 @@ const bubbleReactionsVariants = cva(
   },
 );
 
+/** Renders the reactions row attached to a chat bubble. */
 function BubbleReactions({
   side = "bottom",
   align = "end",

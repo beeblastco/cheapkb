@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
+/** Wraps an input or textarea with addons and buttons as one bordered control. */
 function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
