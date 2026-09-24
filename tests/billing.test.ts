@@ -131,6 +131,30 @@ describe("billing", () => {
       expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(1234);
     });
 
+    it("settles at 0 when a delete would make storage negative", async () => {
+      const now = new Date().toISOString();
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 100,
+          storageCostCycleStart: now,
+          storageCostNano: 0,
+          storageCostUpdatedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      await updateStorageBytes("user-1", "table", -500);
+
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":nextBytes"]).toBe(0);
+    });
+
     it("accrues the old storage size before a deletion", async () => {
       const cycleStart = "2024-01-01T00:00:00.000Z";
       const now = Date.UTC(2024, 0, 16);
