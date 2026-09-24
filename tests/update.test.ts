@@ -256,16 +256,6 @@ describe("PATCH /documents/{id}", () => {
       expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
     });
 
-    it("skips propagation when the tags have not changed", async () => {
-      const response = await update(patchEvent({ tags: [" old "] }));
-
-      expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).updatedVectors).toBe(0);
-      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
-      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
-      expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
-    });
-
     it("returns 404 for a missing document", async () => {
       dynamoMock.on(GetCommand).callsFake((input) => {
         if (input.Key?.pk?.startsWith("RATE#")) return {};

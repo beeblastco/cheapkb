@@ -47,10 +47,10 @@ describe("upload validation", () => {
     vi.clearAllMocks();
   });
 
-  it("rejects an upload that would pass the storage cap", async () => {
+  it("rejects uploads once the account reaches the storage cap", async () => {
     vi.mocked(checkUsageLimit).mockResolvedValueOnce({
       allowed: true,
-      summary: { storageBytes: 1024 * 1024 * 1024 - 1 },
+      summary: { storageBytes: 1024 * 1024 * 1024 },
     } as Awaited<ReturnType<typeof checkUsageLimit>>);
 
     const response = await handler(

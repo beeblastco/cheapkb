@@ -71,6 +71,10 @@ const PRICING = {
 
 const SECONDS_PER_MONTH = 30 * 24 * 60 * 60;
 
+type TransactItem = NonNullable<
+  ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]
+>[number];
+
 export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export function accountId(pk: string) {
@@ -511,10 +515,9 @@ export async function getUsageSummary(
   const endDay = dayKey(cycle.endMs - 1);
   const spentNano = await sumUsageNano(userId, tableName, startDay, endDay);
 
-  const cycleStart = new Date(cycle.startMs).toISOString();
   const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
   const tracksCurrentCycle =
-    account.storageCostCycleStart === cycleStart &&
+    startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
     Number.isFinite(storageUpdatedAt) &&
     storageUpdatedAt >= cycle.startMs &&
     storageUpdatedAt <= nowMs;
@@ -588,11 +591,14 @@ export async function sumUsageNano(
   return total;
 }
 
+// alsoWrite commits in the same transaction, so a caller's own record (such as a
+// document's counted bytes) can never disagree with the account total.
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
   deltaBytes: number,
   operationId?: string,
+  alsoWrite?: TransactItem,
 ) {
   if (deltaBytes === 0) return;
   const pk = `ACCOUNT#${userId}`;
@@ -631,7 +637,7 @@ export async function updateStorageBytes(
 
     const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
     const tracksCurrentCycle =
-      account.storageCostCycleStart === cycleStart &&
+      startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
       Number.isFinite(previousUpdateMs) &&
       previousUpdateMs >= cycle.startMs &&
       previousUpdateMs <= nowMs;
@@ -646,9 +652,7 @@ export async function updateStorageBytes(
     const storageUpdatedCondition = account.storageCostUpdatedAt
       ? "storageCostUpdatedAt = :previousUpdate"
       : "attribute_not_exists(storageCostUpdatedAt)";
-    const transactItems: ConstructorParameters<
-      typeof TransactWriteCommand
-    >[0]["TransactItems"] = [
+    const transactItems: TransactItem[] = [
       {
         Update: {
           TableName: tableName,
@@ -669,6 +673,7 @@ export async function updateStorageBytes(
         },
       },
     ];
+    if (alsoWrite) transactItems.push(alsoWrite);
     if (operationKey) {
       transactItems.push({
         Put: {
@@ -830,6 +835,13 @@ function monthAnchor(year: number, monthIndex: number, day: number): number {
 
 function nanoUsdToUsd(nano: number): number {
   return nano / NANO_PER_USD;
+}
+
+// Cycles used to start at the account's creation time; one stored from that
+// time still counts as the current cycle, so accrued cost carries over.
+function startsSameDay(storedStart: string | undefined, startMs: number) {
+  const storedMs = Date.parse(storedStart ?? "");
+  return Number.isFinite(storedMs) && dayKey(storedMs) === dayKey(startMs);
 }
 
 function storageCostNanoUsd(bytes: number, seconds: number): number {

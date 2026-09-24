@@ -106,7 +106,7 @@ export async function handler(event: S3Event) {
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
     if (isDispatched(doc)) {
-      await recountStorage(documentId, doc, objectSize, eventId);
+      await recountStorage(documentId, doc, key, eventId);
       console.log(
         `[ingest-adapter] Document ${documentId} already dispatched, skipping`,
       );
@@ -269,13 +269,24 @@ async function markDispatchSent(documentId: string, eventId: string) {
 }
 
 // A presigned POST stays valid for 15 minutes, so the source can be overwritten
-// after dispatch. Charge the new size so a 1-byte upload can't hide a larger one.
+// after dispatch. The object's current size is charged, whatever order S3 events
+// arrive in, and the document's count moves in the same transaction.
 async function recountStorage(
   documentId: string,
   doc: DocumentRow,
-  objectSize: number,
+  key: string,
   eventId: string,
 ) {
+  let objectSize: number;
+  try {
+    const object = await s3.send(
+      new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
+    );
+    objectSize = object.ContentLength ?? 0;
+  } catch (error) {
+    if ((error as Error).name === "NotFound") return;
+    throw error;
+  }
   const countedBytes = doc.countedBytes ?? 0;
   if (objectSize === countedBytes) return;
 
@@ -283,26 +294,26 @@ async function recountStorage(
     doc.userId,
     AccountsTableName,
     objectSize - countedBytes,
-    `ingest:${eventId}`,
-  );
-  await dynamo.send(
-    new UpdateCommand({
-      TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression: "SET countedBytes = :counted",
-      ConditionExpression:
-        doc.countedBytes === undefined
-          ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
-          : "countedBytes = :previous AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":counted": objectSize,
-        ":deleting": "DELETING",
-        ...(doc.countedBytes === undefined
-          ? {}
-          : { ":previous": doc.countedBytes }),
+    `recount:${eventId}:${objectSize}`,
+    {
+      Update: {
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression: "SET countedBytes = :counted",
+        ConditionExpression:
+          doc.countedBytes === undefined
+            ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
+            : "countedBytes = :previous AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":counted": objectSize,
+          ":deleting": "DELETING",
+          ...(doc.countedBytes === undefined
+            ? {}
+            : { ":previous": doc.countedBytes }),
+        },
       },
-    }),
+    },
   );
 }
 

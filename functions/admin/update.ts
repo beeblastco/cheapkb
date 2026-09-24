@@ -79,22 +79,13 @@ export async function handler(event: APIGatewayProxyEventV2) {
   if (document.userId !== userId) {
     return json(404, { error: "Document not found" });
   }
-
-  const tags = normalizeTags(body.tags);
-  if (JSON.stringify(tags) === JSON.stringify(document.tags ?? null)) {
-    return json(200, {
-      documentId,
-      tags,
-      updatedVectors: 0,
-      updatedAt: document.updatedAt,
-    });
-  }
   if (!isEditable(document)) {
     return json(409, {
       error: `Cannot edit metadata while the document is ${document.status}`,
     });
   }
 
+  const tags = normalizeTags(body.tags);
   // Held across propagation to serialize edits: a revision check alone lets one
   // that read mid-propagation pass and split chunks between two edits' tags.
   const lease = await acquireLease(document, userId);
