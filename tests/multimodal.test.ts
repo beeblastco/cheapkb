@@ -200,7 +200,7 @@ describe("multimodal pipeline", () => {
           Body: {
             transformToString: async () =>
               JSON.stringify({
-                documentId,
+                documentId: documentId,
                 userId: "user-1",
                 chunkId: `image_${documentId}_0`,
                 modality: "image",

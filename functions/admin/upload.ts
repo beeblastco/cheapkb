@@ -140,7 +140,11 @@ export async function handler(event: APIGatewayProxyEventV2) {
       sk: `DOCUMENT#${dedupeKey}`,
     };
     const mapping = await dynamo.send(
-      new GetCommand({ TableName, Key: mappingKey, ConsistentRead: true }),
+      new GetCommand({
+        TableName: TableName,
+        Key: mappingKey,
+        ConsistentRead: true,
+      }),
     );
     const now = new Date().toISOString();
     let documentId: string;
@@ -152,7 +156,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       documentId = mapping.Item.documentId;
       const result = await dynamo.send(
         new GetCommand({
-          TableName,
+          TableName: TableName,
           Key: { pk: `DOC#${documentId}`, sk: "META" },
           ConsistentRead: true,
         }),
@@ -217,12 +221,12 @@ export async function handler(event: APIGatewayProxyEventV2) {
         "X-RateLimit-Remaining": String(remaining),
       },
       body: JSON.stringify({
-        documentId,
+        documentId: documentId,
         uploadUrl: upload.url,
         uploadFields: upload.fields,
-        sourceKey,
-        maxUploadBytes,
-        reused,
+        sourceKey: sourceKey,
+        maxUploadBytes: maxUploadBytes,
+        reused: reused,
       }),
     };
   } catch (error) {
@@ -251,7 +255,7 @@ async function reserveReplacement(
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: document.pk, sk: document.sk },
         UpdateExpression:
           "SET replacementToken = :token, replacementExpiresAt = :expires, replacementPreviousStatus = :previous, pendingFilename = :filename, pendingTitle = :title, pendingTags = :tags, pendingAuthors = :authors, pendingYear = :year, updatedAt = :now",
@@ -297,11 +301,11 @@ async function createDocument(
         TransactItems: [
           {
             Put: {
-              TableName,
+              TableName: TableName,
               Item: {
                 pk: `USER#${userId}`,
                 sk: `DOCUMENT#${dedupeKey}`,
-                documentId,
+                documentId: documentId,
                 createdAt: now,
               },
               ConditionExpression: "attribute_not_exists(pk)",
@@ -309,16 +313,16 @@ async function createDocument(
           },
           {
             Put: {
-              TableName,
+              TableName: TableName,
               Item: {
                 pk: `DOC#${documentId}`,
                 sk: "META",
-                userId,
-                filename,
-                dedupeKey,
+                userId: userId,
+                filename: filename,
+                dedupeKey: dedupeKey,
                 title: body.title ?? filename,
-                sourceKey,
-                mimeType,
+                sourceKey: sourceKey,
+                mimeType: mimeType,
                 status: "UPLOADED",
                 tags: body.tags ?? null,
                 authors: body.authors ?? null,
@@ -399,6 +403,6 @@ function conflictResponse(error: string) {
   return {
     statusCode: 409,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ error }),
+    body: JSON.stringify({ error: error }),
   };
 }

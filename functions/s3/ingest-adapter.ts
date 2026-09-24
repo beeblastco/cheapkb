@@ -137,7 +137,7 @@ export async function handler(event: S3Event) {
           QueueUrl: PipelineQueueUrl,
           MessageBody: JSON.stringify({
             stage: "parse",
-            documentId,
+            documentId: documentId,
             sourceKey: key,
             mimeType: doc.mimeType ?? "application/octet-stream",
           }),
@@ -172,7 +172,7 @@ async function claimDispatch(
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :queued, dispatchState = :claimed, dispatchEventId = :eventId, dispatchLeaseUntil = :leaseUntil, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now",
@@ -221,7 +221,7 @@ async function finalizeReplacement(
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
@@ -254,7 +254,7 @@ async function finalizeReplacement(
 async function markDispatchSent(documentId: string, eventId: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression: "SET dispatchState = :sent REMOVE dispatchLeaseUntil",
       ConditionExpression:
@@ -297,7 +297,7 @@ async function recountStorage(
     `recount:${eventId}:${objectSize}`,
     {
       Update: {
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression: "SET countedBytes = :counted",
         ConditionExpression:
@@ -321,7 +321,7 @@ async function rollbackQueueStatus(documentId: string, eventId: string) {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk REMOVE dispatchState, dispatchEventId, dispatchLeaseUntil",
@@ -344,7 +344,7 @@ async function rollbackQueueStatus(documentId: string, eventId: string) {
 async function setCountedBytes(documentId: string, countedBytes: number) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression: "SET countedBytes = :counted",
       ConditionExpression: "#s = :queued",
@@ -360,7 +360,7 @@ async function setCountedBytes(documentId: string, countedBytes: number) {
 async function updateFailure(documentId: string, error: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",

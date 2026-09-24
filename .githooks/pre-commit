@@ -1,0 +1,28 @@
+#!/bin/sh
+# Secret scan, lint and format check on staged files. Wired by the `prepare`
+# script (`git config core.hooksPath .githooks`); typecheck and tests run in CI.
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# The CI secrets-scan job is the hard gate, so a missing binary only warns.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --no-banner --redact
+else
+  echo "warning: gitleaks not installed, secret scan skipped"
+fi
+
+lintable=$(echo "$staged" | grep -E '\.(ts|tsx|js|mjs)$' || true)
+if [ -n "$lintable" ]; then
+  echo "$lintable" | xargs npx oxlint --no-error-on-unmatched-pattern
+fi
+
+formattable=$(echo "$staged" | grep -E '\.(ts|tsx|js|mjs|json|md|yml|yaml|css|html)$' || true)
+if [ -n "$formattable" ]; then
+  echo "$formattable" | xargs npx prettier --check --no-error-on-unmatched-pattern || {
+    echo ""
+    echo "Unformatted files. Run: npm run format"
+    exit 1
+  }
+fi

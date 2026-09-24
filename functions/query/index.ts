@@ -412,7 +412,7 @@ async function embedQuery(
 
 function buildEmbeddingRequest(text: string, image?: string) {
   const content: Array<Record<string, unknown>> = [];
-  if (text) content.push({ type: "text", text });
+  if (text) content.push({ type: "text", text: text });
   if (image) {
     const parsed = parseImageDataUri(image);
     content.push({
@@ -424,7 +424,7 @@ function buildEmbeddingRequest(text: string, image?: string) {
   }
   return {
     input_type: "search_query",
-    inputs: [{ content }],
+    inputs: [{ content: content }],
     embedding_types: ["float"],
     output_dimension: parseInt(process.env.EMBEDDING_DIMENSION ?? "1024", 10),
     max_tokens: 128000,
@@ -516,5 +516,5 @@ function parseImageDataUri(value: string) {
   }
   const format = match[1].replace("image/", "") as
     "gif" | "jpeg" | "png" | "webp";
-  return { base64: match[2], format };
+  return { base64: match[2], format: format };
 }

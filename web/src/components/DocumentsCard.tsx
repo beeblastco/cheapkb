@@ -360,9 +360,9 @@ export function DocumentsCard({
 
   const tableData = useMemo<DocumentTableRow[]>(
     () => [
-      ...items.map((item) => ({ item, kind: "upload" as const })),
+      ...items.map((item) => ({ item: item, kind: "upload" as const })),
       ...documents.map((document) => ({
-        document,
+        document: document,
         kind: "document" as const,
       })),
     ],
@@ -389,7 +389,12 @@ export function DocumentsCard({
     onPaginationChange: setPagination,
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
-    state: { globalFilter: query, pagination, rowSelection, sorting },
+    state: {
+      globalFilter: query,
+      pagination: pagination,
+      rowSelection: rowSelection,
+      sorting: sorting,
+    },
   });
   const totalCount = table.getFilteredRowModel().rows.length;
   const pageCount = table.getPageCount();
@@ -458,7 +463,7 @@ export function DocumentsCard({
                 title: item.title.trim() || item.file.name,
                 year: Number(item.year) || undefined,
               },
-              (progress) => updateItem(item.id, { progress }),
+              (progress) => updateItem(item.id, { progress: progress }),
             );
             const now = new Date().toISOString();
             setDocuments((current) => {
@@ -467,7 +472,7 @@ export function DocumentsCard({
               );
               byId.set(documentId, {
                 createdAt: now,
-                documentId,
+                documentId: documentId,
                 mimeType: getFileMimeType(item.file),
                 status: "QUEUED",
                 title: item.title.trim() || item.file.name,

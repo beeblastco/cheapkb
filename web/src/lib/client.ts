@@ -90,14 +90,14 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
         fallback,
     );
     return {
-      email,
+      email: email,
       initials: name
         .split(/\s+/)
         .map((part: string) => part[0])
         .join("")
         .slice(0, 2)
         .toUpperCase(),
-      name,
+      name: name,
       picture: String(claims.picture || ""),
     };
   } catch {
@@ -200,7 +200,7 @@ export async function apiCall(
   if (!token) throw new Error("Not signed in");
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
   const options: RequestInit = {
-    method,
+    method: method,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${token}`,
@@ -237,7 +237,10 @@ export async function createTag(
   name: string,
   color: TagColor = DEFAULT_TAG_COLOR,
 ): Promise<Tag> {
-  const data = await apiCall(token, "POST", "/tags", { name, color });
+  const data = await apiCall(token, "POST", "/tags", {
+    name: name,
+    color: color,
+  });
   return normalizeTag(data.tag as Tag);
 }
 
@@ -250,7 +253,7 @@ export async function updateTagColor(
     token,
     "PATCH",
     `/tags/${encodeURIComponent(name)}`,
-    { color },
+    { color: color },
   );
   return normalizeTag(data.tag as Tag);
 }
@@ -281,7 +284,7 @@ export async function updateDocumentTags(
     token,
     "PATCH",
     `/documents/${encodeURIComponent(documentId)}`,
-    { tags },
+    { tags: tags },
   );
   return Array.isArray(data.tags) ? (data.tags as string[]) : [];
 }
@@ -467,7 +470,7 @@ export async function uploadDocument(
     body.append("file", file);
     const response = await fetch(metadata.uploadUrl, {
       method: "POST",
-      body,
+      body: body,
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error("Failed to upload file to S3");

@@ -23,3 +23,10 @@ Always check for lint, typescript errors and warnings. Use prettier to format th
 No sonner or other toast libraries. Errors go through `notify()` in App.tsx, which shows the shadcn Alert in `Notices.tsx` at the top center of the screen. Everything else should be visible and interactive through the main components.
 
 Don't try to add custom gap an stuff as the current shadcn/ui already include the theme and style itself. Try to use default first, only add custom gap, margin, padding when specifically asked.
+
+## Checks and automation
+
+- Run `npm run check` (oxlint, prettier, tsc, vitest) before calling work done. After a web build, `npm run bundle:check` compares the shipped JavaScript with `scripts/bundle-budgets.json`; re-record with `npm run bundle:record` only for intended growth, and say why in the PR.
+- `.oxlintrc.json` runs `@shadcn/lint` on `web/src`: style shadcn components through their variants and sizes, not by overriding their color, spacing or typography. `web/src/components/ui/**` is exempt.
+- `npm install` sets `core.hooksPath` to `.githooks`, whose pre-commit runs gitleaks, oxlint and prettier on staged files. `.claude/settings.json` formats and lints every file an agent edits.
+- CI runs lint, format, typecheck, tests, the web build, the bundle budget and a gitleaks scan on every PR, and deploys `main` to production after both jobs pass.

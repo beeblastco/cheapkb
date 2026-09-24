@@ -129,7 +129,7 @@ async function listDocuments(userId: string): Promise<DocumentRow[]> {
   do {
     const page = await dynamo.send(
       new QueryCommand({
-        TableName,
+        TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },
@@ -148,7 +148,7 @@ async function markDeleting(document: DocumentRow): Promise<void> {
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: document.pk, sk: "META" },
         UpdateExpression:
           "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t REMOVE lastError",
