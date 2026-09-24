@@ -614,7 +614,17 @@ export function centsToUsd(cents: number): number {
   return cents / 100;
 }
 
-export function formatDate(value: string | undefined): string {
+// The table shows the date only; the details sheet adds the time.
+export function formatDate(
+  value: string | undefined,
+  withTime = false,
+): string {
   if (!value) return "Just now";
-  return new Date(value).toLocaleString();
+  const date = new Date(value);
+  return withTime
+    ? date.toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      })
+    : date.toLocaleDateString(undefined, { dateStyle: "medium" });
 }

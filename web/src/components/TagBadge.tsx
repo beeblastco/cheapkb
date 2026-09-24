@@ -14,6 +14,8 @@ export function TagBadge({
 }) {
   return (
     <Badge
+      // Tag colors are user data, so their classes can't be static.
+      // oxlint-disable-next-line shadcn/require-static-classes
       className={cn(TAG_BADGE_CLASSES[color], className)}
       variant="secondary"
     >

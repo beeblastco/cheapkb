@@ -32,6 +32,7 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
@@ -73,6 +74,7 @@ import {
 import type { TagVocabulary } from "@/hooks/use-tags";
 import {
   extractMetadata,
+  formatDate,
   getFileMimeType,
   getStatusBadgeVariant,
   isActiveStatus,
@@ -82,7 +84,7 @@ import {
   writePendingDocuments,
 } from "@/lib/client";
 import type { Document, Tag, TagColor, UploadQueueItem } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { formatBytes } from "@/lib/utils";
 import {
   type Column,
   type ColumnDef,
@@ -567,65 +569,70 @@ export function DocumentsCard({
           <CardDescription>
             {documents.length + items.length} total · 50 per page
           </CardDescription>
-          <CardAction className="flex items-center gap-2">
-            {loading ? <Spinner /> : null}
-            {selectedCount ? (
-              <AlertDialog>
-                <AlertDialogTrigger
-                  render={
-                    <Button disabled={deletingSelected} variant="destructive" />
-                  }
-                >
-                  {deletingSelected ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <Trash2 data-icon="inline-start" />
-                  )}
-                  Delete selected ({selectedCount})
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      Delete {selectedCount} selected items?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Staged files will be removed from the upload queue. Synced
-                      documents and their sources, parsed content, chunks, and
-                      vectors will be deleted. Failed deletions will remain
-                      selected.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={deleteSelected}
-                      variant="destructive"
-                    >
-                      Delete selected
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            ) : null}
-            <Button
-              disabled={syncing || deletingSelected}
-              onClick={() => fileInput.current?.click()}
-              variant="outline"
-            >
-              <FilePlus2 data-icon="inline-start" />
-              Add files
-            </Button>
-            <Button
-              disabled={!readyCount || syncing || deletingSelected}
-              onClick={syncAll}
-            >
-              {syncing ? (
-                <Spinner data-icon="inline-start" />
-              ) : (
-                <RefreshCw data-icon="inline-start" />
-              )}
-              Sync all{readyCount ? ` (${readyCount})` : ""}
-            </Button>
+          <CardAction>
+            <div className="flex items-center gap-2">
+              {loading ? <Spinner /> : null}
+              {selectedCount ? (
+                <AlertDialog>
+                  <AlertDialogTrigger
+                    render={
+                      <Button
+                        disabled={deletingSelected}
+                        variant="destructive"
+                      />
+                    }
+                  >
+                    {deletingSelected ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <Trash2 data-icon="inline-start" />
+                    )}
+                    Delete selected ({selectedCount})
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Delete {selectedCount} selected items?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Staged files will be removed from the upload queue.
+                        Synced documents and their sources, parsed content,
+                        chunks, and vectors will be deleted. Failed deletions
+                        will remain selected.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={deleteSelected}
+                        variant="destructive"
+                      >
+                        Delete selected
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : null}
+              <Button
+                disabled={syncing || deletingSelected}
+                onClick={() => fileInput.current?.click()}
+                variant="outline"
+              >
+                <FilePlus2 data-icon="inline-start" />
+                Add files
+              </Button>
+              <Button
+                disabled={!readyCount || syncing || deletingSelected}
+                onClick={syncAll}
+              >
+                {syncing ? (
+                  <Spinner data-icon="inline-start" />
+                ) : (
+                  <RefreshCw data-icon="inline-start" />
+                )}
+                Sync all{readyCount ? ` (${readyCount})` : ""}
+              </Button>
+            </div>
           </CardAction>
           <input
             ref={fileInput}
@@ -639,8 +646,8 @@ export function DocumentsCard({
             type="file"
           />
         </CardHeader>
-        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
-          <InputGroup className="max-w-sm">
+        <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <InputGroup className="mb-4 max-w-sm">
             <InputGroupInput
               aria-label="Search documents"
               onChange={(event) => setQuery(event.target.value)}
@@ -653,8 +660,8 @@ export function DocumentsCard({
           </InputGroup>
 
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden *:data-[slot=table-container]:h-full">
-            <Table className="min-w-3xl table-fixed">
-              <TableHeader className="sticky top-0 z-10 bg-card">
+            <Table className="min-w-250 table-fixed">
+              <TableHeader className="sticky top-0 z-10">
                 <TableRow>
                   <TableHead className="w-10">
                     <Checkbox
@@ -668,33 +675,34 @@ export function DocumentsCard({
                     />
                   </TableHead>
                   <SortableHead
-                    className="w-1/2"
+                    className="w-72"
                     column={table.getColumn("title")!}
                     label="Document"
                   />
+                  <TableHead className="w-44">Tags</TableHead>
                   <SortableHead
-                    className="w-1/8"
+                    className="w-32"
                     column={table.getColumn("status")!}
                     label="Status"
                   />
                   <SortableHead
-                    className="w-1/8"
+                    className="w-32"
                     column={table.getColumn("createdAt")!}
                     label="Uploaded"
                   />
                   <SortableHead
-                    className="w-1/8"
+                    className="w-32"
                     column={table.getColumn("updatedAt")!}
                     label="Modified"
                   />
-                  <TableHead className="w-1/8 text-right">Actions</TableHead>
+                  <TableHead className="w-28 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading && !documents.length && !items.length ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <TableRow key={index}>
-                      <TableCell colSpan={6}>
+                      <TableCell colSpan={7}>
                         <Skeleton className="h-8 w-full" />
                       </TableCell>
                     </TableRow>
@@ -704,6 +712,7 @@ export function DocumentsCard({
                     const original = row.original;
                     return original.kind === "upload" ? (
                       <UploadRow
+                        colorOf={colorOf}
                         item={original.item}
                         key={row.id}
                         onEdit={() => setSelectedItemId(original.item.id)}
@@ -727,7 +736,7 @@ export function DocumentsCard({
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Empty>
                         <EmptyHeader>
                           <EmptyTitle>
@@ -760,10 +769,6 @@ export function DocumentsCard({
                 <PaginationItem>
                   <PaginationPrevious
                     aria-disabled={!table.getCanPreviousPage()}
-                    className={cn(
-                      !table.getCanPreviousPage() &&
-                        "pointer-events-none opacity-50",
-                    )}
                     href="#"
                     onClick={(event) => {
                       event.preventDefault();
@@ -775,10 +780,6 @@ export function DocumentsCard({
                 <PaginationItem>
                   <PaginationNext
                     aria-disabled={!table.getCanNextPage()}
-                    className={cn(
-                      !table.getCanNextPage() &&
-                        "pointer-events-none opacity-50",
-                    )}
                     href="#"
                     onClick={(event) => {
                       event.preventDefault();
@@ -842,26 +843,46 @@ function SortableHead({
       }
       className={className}
     >
-      <Button
-        className="justify-start bg-transparent! px-0 text-inherit! hover:bg-transparent! hover:text-inherit! active:translate-y-0"
+      {/* A plain button keeps the label flush with the cell text below it. */}
+      <button
+        className="inline-flex cursor-pointer items-center gap-1.5 font-medium"
         onClick={column.getToggleSortingHandler()}
-        size="sm"
-        variant="ghost"
+        type="button"
       >
         {label}
-        <ArrowDownUp data-icon="inline-end" />
-      </Button>
+        <ArrowDownUp className="size-3.5" />
+      </button>
     </TableHead>
   );
 }
 
+function TagList({
+  colorOf,
+  tags,
+}: {
+  colorOf: (name: string) => TagColor;
+  tags: string[];
+}) {
+  if (!tags.length) return <span className="text-muted-foreground">—</span>;
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {tags.map((name) => (
+        <TagBadge color={colorOf(name)} key={name} name={name} />
+      ))}
+    </div>
+  );
+}
+
 function UploadRow({
+  colorOf,
   item,
   onEdit,
   onRemove,
   onSelectedChange,
   selected,
 }: {
+  colorOf: (name: string) => TagColor;
   item: UploadQueueItem;
   onEdit: () => void;
   onRemove: () => void;
@@ -905,6 +926,9 @@ function UploadRow({
         </div>
       </TableCell>
       <TableCell className="max-w-0">
+        <TagList colorOf={colorOf} tags={item.tags} />
+      </TableCell>
+      <TableCell className="max-w-0">
         <div className="flex items-center gap-2">
           {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
             <Spinner />
@@ -912,8 +936,8 @@ function UploadRow({
           <Badge variant="outline">{item.state}</Badge>
         </div>
       </TableCell>
-      <TableCell className="truncate">—</TableCell>
-      <TableCell className="truncate">—</TableCell>
+      <TableCell>—</TableCell>
+      <TableCell>—</TableCell>
       <TableCell
         className="max-w-0"
         onClick={(event) => event.stopPropagation()}
@@ -996,13 +1020,6 @@ function DocumentRow({
           <span className="truncate text-muted-foreground">
             {document.mimeType || document.documentId}
           </span>
-          {document.tags?.length ? (
-            <div className="flex flex-wrap gap-1">
-              {document.tags.map((name) => (
-                <TagBadge color={colorOf(name)} key={name} name={name} />
-              ))}
-            </div>
-          ) : null}
           {document.lastError ? (
             <span className="truncate text-destructive">
               {document.lastError}
@@ -1010,16 +1027,19 @@ function DocumentRow({
           ) : null}
         </div>
       </TableCell>
+      <TableCell className="max-w-0">
+        <TagList colorOf={colorOf} tags={document.tags ?? []} />
+      </TableCell>
       <TableCell>
         <Badge variant={getStatusBadgeVariant(document.status)}>
           {document.status}
         </Badge>
       </TableCell>
-      <TableCell className="truncate">
-        {formatDate(document.createdAt)}
+      <TableCell>
+        <span className="block truncate">{formatDate(document.createdAt)}</span>
       </TableCell>
-      <TableCell className="truncate">
-        {formatDate(document.updatedAt)}
+      <TableCell>
+        <span className="block truncate">{formatDate(document.updatedAt)}</span>
       </TableCell>
       <TableCell
         onClick={(event) => event.stopPropagation()}
@@ -1162,11 +1182,7 @@ function DocumentTagsSheet({
                 Select from your tags or create a new one.
               </FieldDescription>
             </Field>
-            {error ? (
-              <FieldDescription className="text-destructive" role="alert">
-                {error}
-              </FieldDescription>
-            ) : null}
+            {error ? <FieldError>{error}</FieldError> : null}
             <div className="flex justify-end gap-2">
               <Button disabled={saving} onClick={onClose} variant="outline">
                 Cancel
@@ -1330,18 +1346,4 @@ function splitList(value: string): string[] | undefined {
     .map((item) => item.trim())
     .filter(Boolean);
   return items.length ? items : undefined;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatDate(value: string | undefined): string {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
 }

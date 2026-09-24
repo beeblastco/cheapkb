@@ -193,93 +193,95 @@ export function QueryCard({
         </MessageScrollerProvider>
       </CardContent>
 
-      <CardFooter className="flex-col items-stretch gap-3">
-        {image || imageError ? (
-          <div
-            className={
-              imageError ? "text-destructive" : "text-muted-foreground"
-            }
-          >
-            {imageError || image?.name}
-            {image ? (
-              <Button
-                aria-label="Remove query image"
-                onClick={() => setImage(null)}
+      <CardFooter>
+        <div className="flex w-full flex-col gap-3">
+          {image || imageError ? (
+            <div
+              className={
+                imageError ? "text-destructive" : "text-muted-foreground"
+              }
+            >
+              {imageError || image?.name}
+              {image ? (
+                <Button
+                  aria-label="Remove query image"
+                  onClick={() => setImage(null)}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <X />
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          <input
+            accept="image/gif,image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={(event) => {
+              void selectImage(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+            ref={imageInput}
+            type="file"
+          />
+          <InputGroup>
+            <InputGroupTextarea
+              aria-label="Ask a question"
+              disabled={loading}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void submit();
+                }
+              }}
+              placeholder="Search with text, an image, or both…"
+              value={query}
+            />
+            <InputGroupAddon align="block-end">
+              <InputGroupButton
+                aria-label="Add query image"
+                disabled={loading}
+                onClick={() => imageInput.current?.click()}
                 size="icon-sm"
                 type="button"
                 variant="ghost"
               >
-                <X />
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-        <input
-          accept="image/gif,image/jpeg,image/png,image/webp"
-          className="hidden"
-          onChange={(event) => {
-            void selectImage(event.target.files?.[0]);
-            event.target.value = "";
-          }}
-          ref={imageInput}
-          type="file"
-        />
-        <InputGroup>
-          <InputGroupTextarea
-            aria-label="Ask a question"
-            disabled={loading}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void submit();
-              }
-            }}
-            placeholder="Search with text, an image, or both…"
-            value={query}
-          />
-          <InputGroupAddon align="block-end">
-            <InputGroupButton
-              aria-label="Add query image"
-              disabled={loading}
-              onClick={() => imageInput.current?.click()}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
-              <ImagePlus />
-            </InputGroupButton>
-            <Select
-              items={TOP_K_OPTIONS}
-              onValueChange={(value) => value && setTopK(value)}
-              value={topK}
-            >
-              <SelectTrigger aria-label="Number of results" size="sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {TOP_K_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <InputGroupButton
-              aria-label="Send question"
-              className="ml-auto"
-              disabled={(!query.trim() && !image) || loading}
-              onClick={() => void submit()}
-              size="icon-sm"
-              type="button"
-              variant="default"
-            >
-              <ArrowUp />
-            </InputGroupButton>
-          </InputGroupAddon>
-        </InputGroup>
+                <ImagePlus />
+              </InputGroupButton>
+              <Select
+                items={TOP_K_OPTIONS}
+                onValueChange={(value) => value && setTopK(value)}
+                value={topK}
+              >
+                <SelectTrigger aria-label="Number of results" size="sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {TOP_K_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <InputGroupButton
+                aria-label="Send question"
+                className="ml-auto"
+                disabled={(!query.trim() && !image) || loading}
+                onClick={() => void submit()}
+                size="icon-sm"
+                type="button"
+                variant="default"
+              >
+                <ArrowUp />
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
+        </div>
       </CardFooter>
     </Card>
   );
@@ -335,17 +337,19 @@ function MessageGroup({
             ))}
           </BubbleGroup>
           {groups.length ? (
-            <MessageFooter className="flex-col items-start gap-1">
-              {groups.map((group) => (
-                <Button
-                  key={group.document.documentId}
-                  onClick={() => onView(group.document.documentId)}
-                  size="xs"
-                  variant="ghost"
-                >
-                  {group.document.title || group.document.documentId}
-                </Button>
-              ))}
+            <MessageFooter>
+              <div className="flex flex-col items-start gap-1">
+                {groups.map((group) => (
+                  <Button
+                    key={group.document.documentId}
+                    onClick={() => onView(group.document.documentId)}
+                    size="xs"
+                    variant="ghost"
+                  >
+                    {group.document.title || group.document.documentId}
+                  </Button>
+                ))}
+              </div>
             </MessageFooter>
           ) : null}
         </MessageContent>
