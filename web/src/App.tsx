@@ -1,6 +1,7 @@
 import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
 import { Header } from "@/components/Header";
+import { Notices, type Notice } from "@/components/Notices";
 import { QueryCard } from "@/components/QueryCard";
 import { UsageCard } from "@/components/UsageCard";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,9 @@ import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-function Guest({ error, onSignIn }: { error: string; onSignIn: () => void }) {
+const NOTICE_MS = 6000;
+
+function Guest({ onSignIn }: { onSignIn: () => void }) {
   return (
     <TooltipProvider>
       <div className="flex min-h-dvh flex-col">
@@ -42,13 +45,10 @@ function Guest({ error, onSignIn }: { error: string; onSignIn: () => void }) {
                 Continue to your private knowledge base.
               </CardDescription>
             </CardHeader>
-            <CardFooter className="flex-col items-stretch gap-2">
+            <CardFooter>
               <Button className="w-full cursor-pointer" onClick={onSignIn}>
                 <LogIn data-icon="inline-start" /> Continue with Google
               </Button>
-              {error ? (
-                <p className="text-sm text-destructive">{error}</p>
-              ) : null}
             </CardFooter>
           </Card>
         </main>
@@ -70,12 +70,7 @@ function App() {
   > | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
-  // Each error is shown by the component whose action failed.
-  const [listError, setListError] = useState("");
-  const [usageError, setUsageError] = useState("");
-  const [signInError, setSignInError] = useState("");
-  const [documentError, setDocumentError] = useState("");
-  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [notices, setNotices] = useState<Notice[]>([]);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
   const usageRequest = useRef(0);
@@ -83,6 +78,28 @@ function App() {
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+
+  const dismissNotice = useCallback((id: string) => {
+    setNotices((current) => current.filter((notice) => notice.id !== id));
+  }, []);
+
+  // Shows an error at the top of the screen. A repeat of the same error, such
+  // as a failing background refresh, replaces the one already shown.
+  const notify = useCallback(
+    (title: string, message: string) => {
+      const id = crypto.randomUUID();
+      setNotices((current) => [
+        ...current
+          .filter(
+            (notice) => notice.title !== title || notice.message !== message,
+          )
+          .slice(-2),
+        { id: id, title: title, message: message },
+      ]);
+      window.setTimeout(() => dismissNotice(id), NOTICE_MS);
+    },
+    [dismissNotice],
+  );
 
   // Lifted above DocumentsCard so the detail panel can color tags too.
   const tagVocabulary = useTags(identity?.token ?? "");
@@ -101,12 +118,11 @@ function App() {
       const data = await getUsageSummary(identity.token);
       if (requestId !== usageRequest.current) return;
       setUsage(data);
-      setUsageError("");
     } catch (error) {
       if (requestId !== usageRequest.current) return;
-      setUsageError((error as Error).message);
+      notify("Couldn't load usage", (error as Error).message);
     }
-  }, [identity?.token]);
+  }, [identity?.token, notify]);
 
   // Called by child components after actions that affect usage (upload,
   // query, delete). Future backend can push real-time usage
@@ -121,26 +137,25 @@ function App() {
         setDocuments((current) =>
           mergeDocuments(current, (data.documents as Document[]) || []),
         );
-        setListError("");
       } catch (error) {
-        setListError((error as Error).message);
+        notify("Couldn't load documents", (error as Error).message);
       } finally {
         setLoadingDocuments(false);
       }
     },
-    [identity?.token, request],
+    [identity?.token, notify, request],
   );
 
   useEffect(() => {
     async function initialize() {
       if (!import.meta.env.VITE_API_URL) {
-        setSignInError("API URL is not configured.");
+        notify("App is not configured", "The API URL is missing.");
         return;
       }
       try {
         if (await handleSignInCallback()) return;
       } catch (error) {
-        setSignInError((error as Error).message);
+        notify("Sign-in failed", (error as Error).message);
       }
       const currentIdentity = getIdentity();
       setIdentity(currentIdentity);
@@ -150,7 +165,7 @@ function App() {
       }
     }
     initialize();
-  }, []);
+  }, [notify]);
 
   useEffect(() => {
     if (identity?.token) loadDocuments(true);
@@ -163,18 +178,15 @@ function App() {
       usageRequest.current = requestId;
       try {
         const data = await getUsageSummary(identity.token);
-        if (requestId === usageRequest.current) {
-          setUsage(data);
-          setUsageError("");
-        }
+        if (requestId === usageRequest.current) setUsage(data);
       } catch (error) {
         if (requestId === usageRequest.current) {
-          setUsageError((error as Error).message);
+          notify("Couldn't load usage", (error as Error).message);
         }
       }
     }
     loadUsage();
-  }, [identity?.token]);
+  }, [identity?.token, notify]);
 
   useEffect(() => {
     const hasInflight = documents.some(
@@ -189,10 +201,9 @@ function App() {
 
   async function signIn() {
     try {
-      setSignInError("");
       await startSignIn();
     } catch {
-      setSignInError("Could not start sign-in. Please try again.");
+      notify("Sign-in failed", "Could not start sign-in. Please try again.");
     }
   }
 
@@ -206,7 +217,6 @@ function App() {
       document || { documentId, status: "", title: documentId },
     );
     setSelectedDocumentData(null);
-    setDocumentError("");
     setLoadingDocument(true);
     try {
       const data = await request(
@@ -218,7 +228,7 @@ function App() {
       }
     } catch (error) {
       if (requestId === documentRequest.current) {
-        setDocumentError((error as Error).message);
+        notify("Couldn't load document details", (error as Error).message);
       }
     } finally {
       if (requestId === documentRequest.current) setLoadingDocument(false);
@@ -234,7 +244,6 @@ function App() {
 
   async function reindexDocument(documentId: string) {
     const previous = documentsRef.current;
-    setRowError(documentId, "");
     setDocuments((current) =>
       current.map((document) =>
         document.documentId === documentId
@@ -250,7 +259,7 @@ function App() {
       await loadDocuments();
     } catch (error) {
       setDocuments(previous);
-      setRowError(documentId, `Reindex failed: ${(error as Error).message}`);
+      notify("Reindex failed", (error as Error).message);
     }
   }
 
@@ -262,7 +271,6 @@ function App() {
     const deletedSnapshot = documentsRef.current.find(
       (document) => document.documentId === documentId,
     );
-    setRowError(documentId, "");
     setDocuments((current) =>
       current.map((document) =>
         document.documentId === documentId
@@ -299,7 +307,7 @@ function App() {
       }
       setDocuments(restored);
       writePendingDocuments(restored);
-      setRowError(documentId, `Delete failed: ${message}`);
+      notify("Delete failed", message);
       return false;
     }
   }
@@ -318,17 +326,13 @@ function App() {
     return failedDocumentIds;
   }
 
-  function setRowError(documentId: string, message: string) {
-    setRowErrors((current) => {
-      const next = { ...current };
-      if (message) next[documentId] = message;
-      else delete next[documentId];
-      return next;
-    });
-  }
-
   if (!identity?.token) {
-    return <Guest error={signInError} onSignIn={signIn} />;
+    return (
+      <>
+        <Notices notices={notices} onDismiss={dismissNotice} />
+        <Guest onSignIn={signIn} />
+      </>
+    );
   }
 
   return (
@@ -348,23 +352,18 @@ function App() {
                 loading={loadingDocuments}
                 token={identity.token}
                 setDocuments={setDocuments}
-                listError={listError}
                 loadDocuments={loadDocuments}
+                notify={notify}
                 onDelete={deleteDocument}
                 onDeleteSelected={deleteDocuments}
                 onReindex={reindexDocument}
                 onView={showDocument}
                 onUsageChange={refreshUsage}
-                rowErrors={rowErrors}
                 tagVocabulary={tagVocabulary}
               />
             </div>
             <div className="flex min-h-0 flex-col gap-3 min-w-0 lg:col-span-4 xl:col-span-3">
-              <UsageCard
-                error={usageError}
-                onRetry={refreshUsage}
-                summary={usage}
-              />
+              <UsageCard summary={usage} />
               <QueryCard
                 request={request}
                 onView={showDocument}
@@ -377,10 +376,10 @@ function App() {
           colorOf={tagVocabulary.colorOf}
           data={selectedDocumentData}
           document={selectedDocument}
-          error={documentError}
           loading={loadingDocument}
           onClose={closeDocument}
         />
+        <Notices notices={notices} onDismiss={dismissNotice} />
       </div>
     </TooltipProvider>
   );

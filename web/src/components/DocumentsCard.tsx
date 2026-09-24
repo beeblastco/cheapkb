@@ -164,28 +164,26 @@ export function DocumentsCard({
   loading,
   token,
   setDocuments,
-  listError,
   loadDocuments,
+  notify,
   onDelete,
   onDeleteSelected,
   onReindex,
   onView,
   onUsageChange,
-  rowErrors,
   tagVocabulary,
 }: {
   documents: Document[];
   loading: boolean;
   token: string;
   setDocuments: React.Dispatch<React.SetStateAction<Document[]>>;
-  listError: string;
   loadDocuments: (showLoading?: boolean) => Promise<void>;
+  notify: (title: string, message: string) => void;
   onDelete: (documentId: string) => Promise<boolean>;
   onDeleteSelected: (documentIds: string[]) => Promise<string[]>;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
   onUsageChange?: () => void;
-  rowErrors: Record<string, string>;
   tagVocabulary: TagVocabulary;
 }) {
   const {
@@ -202,7 +200,6 @@ export function DocumentsCard({
   const [syncing, setSyncing] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
-  const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [sorting, setSorting] = useState<SortingState>([
     { id: "createdAt", desc: true },
@@ -244,67 +241,77 @@ export function DocumentsCard({
     [setDocuments, token],
   );
 
-  const addFiles = useCallback(async (files: File[]) => {
-    if (syncingRef.current) return;
-    const supportedFiles = files.filter((file) =>
-      SUPPORTED_EXTENSIONS.some((extension) =>
-        file.name.toLowerCase().endsWith(extension),
-      ),
-    );
-    const validFiles = supportedFiles.filter(
-      (file) => !validateUploadFile(file),
-    );
-    const skipped = files.length - validFiles.length;
-    setNotice(
-      skipped
-        ? `${skipped} file${skipped === 1 ? " was" : "s were"} not added. Use PDF, Markdown, text or images, up to 10 MB (images 5 MB).`
-        : "",
-    );
-
-    const existing = new Set(
-      itemsRef.current.map(
-        (item) =>
-          `${item.file.name}:${item.file.size}:${item.file.lastModified}`,
-      ),
-    );
-    const queued: UploadQueueItem[] = [];
-    for (const file of validFiles) {
-      const fingerprint = `${file.name}:${file.size}:${file.lastModified}`;
-      if (existing.has(fingerprint)) continue;
-      existing.add(fingerprint);
-      queued.push({
-        authors: "",
-        error: "",
-        file,
-        id: crypto.randomUUID(),
-        progress: "Reading metadata",
-        state: "EXTRACTING",
-        tags: [],
-        title: file.name.replace(/\.[^/.]+$/, ""),
-        year: "",
-      });
-    }
-
-    if (!queued.length) return;
-    setItems((current) => [...current, ...queued]);
-    for (const item of queued) {
-      const metadata = await extractMetadata(item.file);
-      setItems((current) =>
-        current.map((currentItem) =>
-          currentItem.id === item.id
-            ? {
-                ...currentItem,
-                authors: metadata.authors.join(", "),
-                progress: "Ready to sync",
-                state: "READY",
-                title: metadata.title || currentItem.title,
-                year: metadata.year?.toString() || "",
-              }
-            : currentItem,
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (syncingRef.current) return;
+      const supportedFiles = files.filter((file) =>
+        SUPPORTED_EXTENSIONS.some((extension) =>
+          file.name.toLowerCase().endsWith(extension),
         ),
       );
-    }
-  }, []);
+      if (supportedFiles.length !== files.length) {
+        notify(
+          "Some files were not added",
+          "Only PDF, Markdown, text, JPEG, PNG, WebP, and GIF files are supported.",
+        );
+      }
+      const validFiles = supportedFiles.filter(
+        (file) => !validateUploadFile(file),
+      );
+      const oversized = supportedFiles.length - validFiles.length;
+      if (oversized > 0) {
+        notify(
+          "Some files were not added",
+          `${oversized} file${oversized === 1 ? " is" : "s are"} over the size limit.`,
+        );
+      }
+
+      const existing = new Set(
+        itemsRef.current.map(
+          (item) =>
+            `${item.file.name}:${item.file.size}:${item.file.lastModified}`,
+        ),
+      );
+      const queued: UploadQueueItem[] = [];
+      for (const file of validFiles) {
+        const fingerprint = `${file.name}:${file.size}:${file.lastModified}`;
+        if (existing.has(fingerprint)) continue;
+        existing.add(fingerprint);
+        queued.push({
+          authors: "",
+          error: "",
+          file,
+          id: crypto.randomUUID(),
+          progress: "Reading metadata",
+          state: "EXTRACTING",
+          tags: [],
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          year: "",
+        });
+      }
+
+      if (!queued.length) return;
+      setItems((current) => [...current, ...queued]);
+      for (const item of queued) {
+        const metadata = await extractMetadata(item.file);
+        setItems((current) =>
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? {
+                  ...currentItem,
+                  authors: metadata.authors.join(", "),
+                  progress: "Ready to sync",
+                  state: "READY",
+                  title: metadata.title || currentItem.title,
+                  year: metadata.year?.toString() || "",
+                }
+              : currentItem,
+          ),
+        );
+      }
+    },
+    [notify],
+  );
 
   useEffect(() => {
     function dragEnter(event: DragEvent) {
@@ -491,11 +498,12 @@ export function DocumentsCard({
     // Notify App to refresh usage. Future backend can emit billing events
     // here instead of relying on the client to poll.
     onUsageChange?.();
-    setNotice(
-      failed
-        ? `${succeeded} synced, ${failed} failed. See the rows below.`
-        : "",
-    );
+    if (failed) {
+      notify(
+        "Sync failed",
+        `${succeeded} synced, ${failed} failed. See the rows for details.`,
+      );
+    }
   }
 
   function updateItem(id: string, values: Partial<UploadQueueItem>) {
@@ -705,7 +713,6 @@ export function DocumentsCard({
                       />
                     ) : (
                       <DocumentRow
-                        actionError={rowErrors[original.document.documentId]}
                         colorOf={colorOf}
                         document={original.document}
                         key={row.id}
@@ -740,7 +747,7 @@ export function DocumentsCard({
             </Table>
           </div>
         </CardContent>
-        <CardFooter className="flex-wrap justify-between">
+        <CardFooter className="justify-between">
           <CardDescription>
             {totalCount
               ? `${pagination.pageIndex * PAGE_SIZE + 1}–${Math.min((pagination.pageIndex + 1) * PAGE_SIZE, totalCount)} of ${totalCount}`
@@ -782,23 +789,6 @@ export function DocumentsCard({
                 </PaginationItem>
               </PaginationContent>
             </Pagination>
-          ) : null}
-          {listError || notice ? (
-            <div className="flex w-full items-center justify-between gap-2 text-sm text-destructive">
-              <span>
-                {listError ? `Couldn't refresh the list. ${listError}` : notice}
-              </span>
-              {listError ? (
-                <Button
-                  className="cursor-pointer"
-                  onClick={() => void loadDocuments(true)}
-                  size="sm"
-                  variant="outline"
-                >
-                  Retry
-                </Button>
-              ) : null}
-            </div>
           ) : null}
         </CardFooter>
       </Card>
@@ -951,7 +941,6 @@ function UploadRow({
 }
 
 function DocumentRow({
-  actionError,
   colorOf,
   document,
   onDelete,
@@ -961,7 +950,6 @@ function DocumentRow({
   onView,
   selected,
 }: {
-  actionError?: string;
   colorOf: (name: string) => TagColor;
   document: Document;
   onDelete: (documentId: string) => Promise<boolean>;
@@ -978,7 +966,7 @@ function DocumentRow({
   return (
     <TableRow
       aria-label={`View ${document.title || document.documentId}`}
-      className={cn("cursor-pointer", actionError && "bg-destructive/10")}
+      className="cursor-pointer"
       data-state={selected ? "selected" : undefined}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
@@ -1015,9 +1003,9 @@ function DocumentRow({
               ))}
             </div>
           ) : null}
-          {actionError || document.lastError ? (
+          {document.lastError ? (
             <span className="truncate text-destructive">
-              {actionError || document.lastError}
+              {document.lastError}
             </span>
           ) : null}
         </div>

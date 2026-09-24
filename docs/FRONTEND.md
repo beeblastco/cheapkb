@@ -8,7 +8,7 @@ Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pi
 
 The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
 
-Errors appear where the action happened. A failed delete or reindex shows on that document's row. A failed list or usage load shows at the bottom of its card with a Retry button, and sign-in errors show in the sign-in card.
+Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A document's own processing error also stays on its row.
 
 Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MB and other files over 50 MB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
 

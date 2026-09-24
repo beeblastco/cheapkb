@@ -20,6 +20,6 @@ Put all defined const, types, interface at the beginning of the scripts. Next sh
 
 Always check for lint, typescript errors and warnings. Use prettier to format the code.
 
-No use of sonner, toast, etc... UX, UI should be visible and interactive through the main components.
+No sonner or other toast libraries. Errors go through `notify()` in App.tsx, which shows the shadcn Alert in `Notices.tsx` at the top center of the screen. Everything else should be visible and interactive through the main components.
 
 Don't try to add custom gap an stuff as the current shadcn/ui already include the theme and style itself. Try to use default first, only add custom gap, margin, padding when specifically asked.
