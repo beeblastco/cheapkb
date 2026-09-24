@@ -36,6 +36,19 @@ describe("infrastructure hardening", () => {
     );
   });
 
+  it("lets every HeadObject caller tell a missing object from a denied one", () => {
+    // HeadObject needs s3:GetObject, and returns 404 instead of 403 for a
+    // missing key only with s3:ListBucket.
+    for (const name of ["AdminDelete", "CleanupAdapter", "IngestAdapter"]) {
+      const block = config.slice(
+        config.indexOf(`new sst.aws.Function("${name}"`) + 1,
+      );
+      const fn = block.slice(0, block.indexOf("new sst.aws.Function("));
+      expect(fn).toContain('"s3:GetObject"');
+      expect(fn).toContain('actions: ["s3:ListBucket"]');
+    }
+  });
+
   it("grants vector writes only to the embed and update functions", () => {
     expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(2);
   });

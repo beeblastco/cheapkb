@@ -79,6 +79,12 @@ describe("reindex migration", () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body).restartFrom).toBe("EMBEDDING");
     expect(sqsMock.commandCalls(SendMessageBatchCommand)).toHaveLength(1);
+    const chunkReset = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) => call.args[0].input.Key?.sk === "CHUNK#chunk_doc-1_0");
+    expect(chunkReset?.args[0].input.UpdateExpression).toContain(
+      "REMOVE embedClaimedAt",
+    );
   });
 
   it("restarts failed image chunking from the image manifest", async () => {
