@@ -28,7 +28,7 @@ const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
 const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "10485760",
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
 );
 const MAX_IMAGE_UPLOAD_BYTES = Math.min(

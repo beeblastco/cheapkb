@@ -306,19 +306,29 @@ async function listChunkKeys(documentId: string): Promise<string[]> {
   return keys;
 }
 
+// Updated 25 at a time so a 1,000-chunk document resets inside the timeout.
 async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
-  for (const chunkKey of chunkKeys) {
-    const filename = chunkKey.split("/").pop();
-    const chunkId = filename?.replace(/\.json$/, "");
-    if (!chunkId) continue;
-    await dynamo.send(
-      new UpdateCommand({
-        TableName,
-        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
-        UpdateExpression: "SET #s = :queued",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: { ":queued": "QUEUED" },
-      }),
+  const chunkIds = chunkKeys
+    .map((chunkKey) =>
+      chunkKey
+        .split("/")
+        .pop()
+        ?.replace(/\.json$/, ""),
+    )
+    .filter((chunkId): chunkId is string => Boolean(chunkId));
+  for (let start = 0; start < chunkIds.length; start += 25) {
+    await Promise.all(
+      chunkIds.slice(start, start + 25).map((chunkId) =>
+        dynamo.send(
+          new UpdateCommand({
+            TableName,
+            Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+            UpdateExpression: "SET #s = :queued",
+            ExpressionAttributeNames: { "#s": "status" },
+            ExpressionAttributeValues: { ":queued": "QUEUED" },
+          }),
+        ),
+      ),
     );
   }
 }

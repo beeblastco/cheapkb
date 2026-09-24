@@ -93,7 +93,7 @@ describe("upload validation", () => {
       expect.anything(),
       expect.objectContaining({
         Conditions: expect.arrayContaining([
-          ["content-length-range", 1, 10485760],
+          ["content-length-range", 1, 52428800],
         ]),
       }),
     );
