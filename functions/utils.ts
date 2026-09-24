@@ -43,6 +43,7 @@ const jwks = createRemoteJWKSet(
   new URL("/.well-known/jwks.json", SHOO_BASE_URL),
 );
 
+// GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
@@ -92,6 +93,8 @@ export function docId(pk: string) {
   return pk.replace("DOC#", "");
 }
 
+/** Verifies a Shoo ID token for the app origin and returns its payload.
+ * Used by extractUserId to authenticate API requests. */
 export async function verifyShooToken(idToken: string, appOrigin: string) {
   // Tokens minted for the local dev server are only accepted outside production.
   const audiences = [
@@ -110,6 +113,8 @@ export async function verifyShooToken(idToken: string, appOrigin: string) {
   return payload;
 }
 
+/** Reads the bearer token from an API event and returns the caller's user id.
+ * Handlers return `response` as-is when it is set, which is a 401. */
 export async function extractUserId(
   event: APIGatewayProxyEventV2,
 ): Promise<{ userId: string; response?: unknown }> {
@@ -143,7 +148,8 @@ export async function extractUserId(
   }
 }
 
-// GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
+/** Lists every chunk record of a document, following DynamoDB pagination.
+ * Used by deleteDocumentVectors and by the update handler before a retag. */
 export async function listDocumentChunkItems(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
@@ -182,6 +188,8 @@ export async function listDocumentChunkItems(
   return chunkItems;
 }
 
+/** Deletes all of a document's vectors and returns its chunk records.
+ * Callers pass the records to deleteDocumentChunkRecords afterwards. */
 export async function deleteDocumentVectors(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
@@ -199,21 +207,25 @@ export async function deleteDocumentVectors(
   const vectorKeys = chunkItems
     .map((item) => chunkId(item.sk))
     .filter((id): id is string => Boolean(id));
+  const deletes: Promise<unknown>[] = [];
   for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
-    await vectorClient.send(
-      new DeleteVectorsCommand({
-        vectorBucketName: vectorBucketName,
-        indexName: vectorIndexName,
-        keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
-      }),
+    deletes.push(
+      vectorClient.send(
+        new DeleteVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
+        }),
+      ),
     );
   }
+  await Promise.all(deletes);
 
   return chunkItems;
 }
 
-// PutVectors replaces metadata instead of merging it, so each vector is
-// fetched and re-put with only tags swapped to preserve search visibility.
+/** Swaps the tags on a document's vectors and returns how many were rewritten.
+ * PutVectors replaces metadata, so each vector is fetched and re-put whole. */
 export async function retagDocumentVectors(
   chunkItems: ChunkItem[],
   tags: string[] | null,
@@ -222,43 +234,49 @@ export async function retagDocumentVectors(
   vectorIndexName: string,
 ): Promise<number> {
   const vectorKeys = chunkItems.map((item) => chunkId(item.sk)).filter(Boolean);
-  let updated = 0;
-
+  const batches: string[][] = [];
   for (let i = 0; i < vectorKeys.length; i += VECTOR_GET_BATCH) {
-    const keys = vectorKeys.slice(i, i + VECTOR_GET_BATCH);
-    const existing = await vectorClient.send(
-      new GetVectorsCommand({
-        vectorBucketName: vectorBucketName,
-        indexName: vectorIndexName,
-        keys: keys,
-        returnData: true,
-        returnMetadata: true,
-      }),
-    );
-
-    const vectors = (existing.vectors ?? [])
-      // A chunk with no text is never embedded, so it has no vector to retag.
-      .filter((vector) => vector.key && vector.data)
-      .map((vector) => ({
-        key: vector.key!,
-        data: vector.data!,
-        metadata: applyTags(vector.metadata, tags),
-      }));
-    if (vectors.length === 0) continue;
-
-    await vectorClient.send(
-      new PutVectorsCommand({
-        vectorBucketName: vectorBucketName,
-        indexName: vectorIndexName,
-        vectors: vectors,
-      }),
-    );
-    updated += vectors.length;
+    batches.push(vectorKeys.slice(i, i + VECTOR_GET_BATCH));
   }
 
-  return updated;
+  const counts = await Promise.all(
+    batches.map(async (keys) => {
+      const existing = await vectorClient.send(
+        new GetVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          keys: keys,
+          returnData: true,
+          returnMetadata: true,
+        }),
+      );
+
+      const vectors = (existing.vectors ?? [])
+        // A chunk with no text is never embedded, so it has no vector to retag.
+        .filter((vector) => vector.key && vector.data)
+        .map((vector) => ({
+          key: vector.key!,
+          data: vector.data!,
+          metadata: applyTags(vector.metadata, tags),
+        }));
+      if (vectors.length === 0) return 0;
+
+      await vectorClient.send(
+        new PutVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          vectors: vectors,
+        }),
+      );
+      return vectors.length;
+    }),
+  );
+
+  return counts.reduce((total, count) => total + count, 0);
 }
 
+/** Loads a document's META row, or null when the document does not exist.
+ * Used by the update handler and the S3 ingest and cleanup adapters. */
 export async function getDocument(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
@@ -273,6 +291,8 @@ export async function getDocument(
   return (result.Item as DocumentRow | undefined) ?? null;
 }
 
+/** Batch deletes chunk records 25 at a time, retrying unprocessed items.
+ * Throws when some records still fail after three attempts. */
 export async function deleteDocumentChunkRecords(
   chunkItems: ChunkItem[],
   documentClient: DynamoDBDocumentClient,
@@ -288,7 +308,7 @@ export async function deleteDocumentChunkRecords(
       },
     }));
 
-    for (let attempt = 0; requests.length > 0 && attempt < 3; attempt++) {
+    for (let attempt = 0; requests.length > 0 && attempt < 3; attempt += 1) {
       // Back off before resending throttled items so retries don't hammer the
       // same throttling window.
       if (attempt > 0)
@@ -316,6 +336,8 @@ export async function deleteDocumentS3Data(
   await deleteS3Prefix(`parsed/${documentId}/`, s3Client, storageBucketName);
 }
 
+/** Deletes every object version and delete marker under a prefix.
+ * Returns the number of versions removed; used by delete and cleanup flows. */
 export async function deleteS3Prefix(
   prefix: string,
   s3Client: S3Client,
@@ -360,6 +382,8 @@ export async function deleteS3Prefix(
   return count;
 }
 
+/** Takes one token from the caller's bucket for an operation, refilling hourly.
+ * Handlers reject the request when `allowed` is false. */
 export async function checkRateLimit(
   userId: string,
   tableName: string,
@@ -371,7 +395,7 @@ export async function checkRateLimit(
   const now = new Date();
   const maxAttempts = 3;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await documentClient.send(
       new GetCommand({
         TableName: tableName,
@@ -438,6 +462,8 @@ export async function checkRateLimit(
   return { allowed: false, remaining: 0 };
 }
 
+/** Loads a plan row by id from the plans table, or null when it is missing.
+ * Used by getDefaultPlan. */
 export async function getPlan(
   planId: string,
   plansTableName: string,
@@ -460,6 +486,8 @@ export async function getDefaultPlan(
   );
 }
 
+/** Returns the user's account profile, creating it on the default plan once.
+ * Used by getUsageSummary so every caller has an account row. */
 export async function getOrCreateAccount(
   userId: string,
   tableName: string,
@@ -506,6 +534,8 @@ export async function getOrCreateAccount(
   }
 }
 
+/** Builds the current billing cycle's spend, storage and allowance summary.
+ * Served by the usage handler and used by checkUsageLimit. */
 export async function getUsageSummary(
   userId: string,
   tableName: string,
@@ -565,6 +595,8 @@ export async function checkUsageLimit(
   return { allowed: !summary.paused, summary: summary };
 }
 
+/** Sums the nano USD cost of a user's daily usage rows between two days.
+ * Used by getUsageSummary for the current cycle. */
 export async function sumUsageNano(
   userId: string,
   tableName: string,
@@ -594,9 +626,8 @@ export async function sumUsageNano(
   return total;
 }
 
-// alsoWrite commits in the same transaction, so a caller's own record (such as a
-// document's counted bytes) can never disagree with the account total.
-// With expectedBytes, nothing changes unless the account still holds that total.
+/** Adds deltaBytes to the account's storage and accrued cost, once per operationId.
+ * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches. */
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
@@ -609,7 +640,7 @@ export async function updateStorageBytes(
   const pk = `ACCOUNT#${userId}`;
   const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     if (operationKey) {
       const existing = await dynamo.send(
         new GetCommand({
@@ -711,6 +742,8 @@ export async function updateStorageBytes(
   throw new Error("Storage usage changed concurrently");
 }
 
+/** Adds billable units to the user's daily usage row, once per operationId.
+ * Called by the upload, query, ingest and embed functions. */
 export async function recordUsage(
   userId: string,
   tableName: string,
@@ -782,6 +815,8 @@ export async function recordUsage(
   }
 }
 
+/** Returns vector metadata with its tags replaced, dropping the key when empty.
+ * Used by retagDocumentVectors. */
 function applyTags(
   metadata: DocumentType | undefined,
   tags: string[] | null,
@@ -810,8 +845,8 @@ function centsToNanoUsd(cents: number): number {
   return cents * NANO_PER_CENT;
 }
 
-// Billing cycles start at midnight UTC on the account's creation day-of-month,
-// so each daily usage row falls in exactly one cycle. Days 29-31 clamp to month end.
+/** Returns the billing cycle containing nowMs, from midnight UTC on the creation
+ * day-of-month (29-31 clamp to month end), so each usage day is in one cycle. */
 function currentCycle(account: Account, nowMs: number) {
   const created = new Date(account.createdAt);
   const anchorDay = created.getUTCDate();
@@ -819,7 +854,7 @@ function currentCycle(account: Account, nowMs: number) {
   const month = created.getUTCMonth();
 
   let index = 0;
-  while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index++;
+  while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index += 1;
 
   return {
     startMs: monthAnchor(year, month + index, anchorDay),
@@ -836,7 +871,9 @@ function defaultPlanId(): string {
 }
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function monthAnchor(year: number, monthIndex: number, day: number): number {

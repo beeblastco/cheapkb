@@ -27,7 +27,7 @@ interface BundleBudgets {
   metrics: Record<string, BundleMetric>;
 }
 
-const mode = process.argv[2];
+const [, , mode] = process.argv;
 if (mode !== "--check" && mode !== "--record") {
   console.error("usage: node scripts/bundle-budget.ts --check|--record");
   process.exit(2);
