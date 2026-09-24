@@ -27,6 +27,7 @@ const IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
+/** Parse stage entry, called by the pipeline router with parse records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
 
@@ -68,6 +69,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures: batchItemFailures };
 }
 
+/** Extracts pages or image metadata from the raw upload and queues chunking. */
 async function parseDocument(
   documentId: string,
   sourceKey: string,
@@ -154,6 +156,7 @@ async function parseDocument(
   );
 }
 
+/** Resets the error fields on a document after a stage succeeds. */
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -173,8 +176,8 @@ async function clearError(documentId: string, now: string) {
   );
 }
 
-// The page count is checked before any text is extracted, so a huge PDF fails
-// fast instead of exhausting the Lambda's memory.
+/** Extracts trimmed non-empty page text from a PDF. The page count is checked
+ * first, so a huge PDF fails fast instead of exhausting the Lambda's memory. */
 async function extractPdfText(bytes: Uint8Array) {
   let text: string[];
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>> | undefined;
@@ -199,6 +202,7 @@ async function extractPdfText(bytes: Uint8Array) {
     .filter((p) => p.text.length > 0);
 }
 
+/** Marks the document PARSED and queues its chunk stage message. */
 async function finishParsing(
   documentId: string,
   parsedKey: string,
@@ -227,6 +231,7 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
   }
 }
 
+/** Sets the document status and its status index keys. */
 async function updateStatus(documentId: string, status: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -247,6 +252,7 @@ async function updateStatus(documentId: string, status: string, now: string) {
   );
 }
 
+/** Records a parse failure, marking the document FAILED on the third attempt. */
 async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
   // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
@@ -298,6 +304,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   );
 }
 
+/** Checks the leading magic bytes match the declared image MIME type. */
 function matchesImageSignature(bytes: Uint8Array, mimeType: string) {
   if (mimeType === "image/jpeg") {
     return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
