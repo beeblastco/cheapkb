@@ -637,9 +637,14 @@ export async function updateStorageBytes(
     const cycleStart = new Date(cycle.startMs).toISOString();
     const storageBytes = account.storageBytes ?? 0;
     if (expectedBytes !== undefined && storageBytes !== expectedBytes) return;
-    const nextStorageBytes = storageBytes + deltaBytes;
-    if (nextStorageBytes < 0)
-      throw new Error("Storage usage cannot be negative");
+    // A delete can outrun a reset that already removed its bytes; it settles at
+    // 0 instead of failing, so the cleanup never gets stuck.
+    const nextStorageBytes = Math.max(0, storageBytes + deltaBytes);
+    if (storageBytes + deltaBytes < 0) {
+      console.warn("[storage] Clamped negative storage to 0", {
+        userId: userId,
+      });
+    }
 
     const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
     const tracksCurrentCycle =
