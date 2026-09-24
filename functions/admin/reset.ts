@@ -21,6 +21,7 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const TagsTableName = process.env.TAGS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
+const BATCH_SIZE = 25;
 
 // Deletes every document and tag the caller owns and brings stored bytes to 0.
 // Usage history stays, so a reset never grants a fresh allowance.
@@ -41,8 +42,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   try {
     const documents = await listDocuments(userId);
-    // Bytes counted on no document are drift from earlier failed deletes. It
-    // is removed before any cleanup starts, so the cleanups end at exactly 0.
     const account = await dynamo.send(
       new GetCommand({
         TableName: AccountsTableName,
@@ -52,28 +51,45 @@ export async function handler(event: APIGatewayProxyEventV2) {
     );
     const storedBytes =
       (account.Item as AccountRow | undefined)?.storageBytes ?? 0;
-    const countedBytes = documents.reduce(
-      (total, document) => total + (document.countedBytes ?? 0),
-      0,
-    );
+
+    // Marking returns each document's current row, so the counted bytes are
+    // read consistently, not from the eventually consistent index.
+    let countedBytes = 0;
+    for (let start = 0; start < documents.length; start += BATCH_SIZE) {
+      const marked = await Promise.all(
+        documents.slice(start, start + BATCH_SIZE).map(markDeleting),
+      );
+      for (const bytes of marked) countedBytes += bytes;
+    }
+
+    // Bytes counted on no document are drift from earlier failed deletes. They
+    // go before any cleanup starts, and only if the total hasn't moved since.
     if (storedBytes > countedBytes) {
       await updateStorageBytes(
         userId,
         AccountsTableName,
         countedBytes - storedBytes,
+        undefined,
+        undefined,
+        storedBytes,
       );
     }
 
     // A delete marker on each source runs the cleanup adapter, which removes
     // the document's data and subtracts its counted bytes.
-    for (const document of documents) {
-      await markDeleting(document);
-      if (!document.sourceKey) continue;
-      await s3.send(
-        new DeleteObjectCommand({
-          Bucket: StorageBucketName,
-          Key: document.sourceKey,
-        }),
+    for (let start = 0; start < documents.length; start += BATCH_SIZE) {
+      await Promise.all(
+        documents
+          .slice(start, start + BATCH_SIZE)
+          .filter((document) => document.sourceKey)
+          .map((document) =>
+            s3.send(
+              new DeleteObjectCommand({
+                Bucket: StorageBucketName,
+                Key: document.sourceKey,
+              }),
+            ),
+          ),
       );
     }
 
@@ -106,15 +122,20 @@ async function deleteTags(userId: string): Promise<number> {
     );
     const keys = page.Items ?? [];
     for (let start = 0; start < keys.length; start += 25) {
-      await dynamo.send(
-        new BatchWriteCommand({
-          RequestItems: {
-            [TagsTableName]: keys.slice(start, start + 25).map((key) => ({
-              DeleteRequest: { Key: { pk: key.pk, sk: key.sk } },
-            })),
-          },
-        }),
-      );
+      let requests = keys.slice(start, start + 25).map((key) => ({
+        DeleteRequest: { Key: { pk: key.pk, sk: key.sk } },
+      }));
+      // Throttled deletes come back as UnprocessedItems and are sent again.
+      for (let attempt = 0; requests.length > 0 && attempt < 3; attempt++) {
+        const response = await dynamo.send(
+          new BatchWriteCommand({
+            RequestItems: { [TagsTableName]: requests },
+          }),
+        );
+        requests = (response.UnprocessedItems?.[TagsTableName] ??
+          []) as typeof requests;
+      }
+      if (requests.length > 0) throw new Error("Failed to delete tags");
     }
     deleted += keys.length;
     lastKey = page.LastEvaluatedKey;
@@ -143,12 +164,13 @@ async function listDocuments(userId: string): Promise<DocumentRow[]> {
   return documents;
 }
 
-async function markDeleting(document: DocumentRow): Promise<void> {
+// Returns the document's counted bytes, or 0 if it was already gone.
+async function markDeleting(document: DocumentRow): Promise<number> {
   const now = new Date().toISOString();
   try {
-    await dynamo.send(
+    const result = await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: document.pk, sk: "META" },
         UpdateExpression:
           "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t REMOVE lastError",
@@ -159,10 +181,13 @@ async function markDeleting(document: DocumentRow): Promise<void> {
           ":s": "DELETING",
           ":t": now,
         },
+        ReturnValues: "ALL_NEW",
       }),
     );
+    return (result.Attributes as DocumentRow | undefined)?.countedBytes ?? 0;
   } catch (error) {
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    if (error instanceof ConditionalCheckFailedException) return 0;
+    throw error;
   }
 }
 

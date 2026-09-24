@@ -52,7 +52,10 @@ describe("DELETE /account/data", () => {
       };
     });
     dynamoMock.on(PutCommand).resolves({});
-    dynamoMock.on(UpdateCommand).resolves({});
+    // Marking returns the consistent row, which is where counted bytes come from.
+    dynamoMock.on(UpdateCommand).callsFake((input) => ({
+      Attributes: { countedBytes: input.Key.pk === "DOC#a" ? 100 : 50 },
+    }));
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(BatchWriteCommand).resolves({});
     dynamoMock.on(QueryCommand, { IndexName: "GSI2" }).resolves({
@@ -70,6 +73,30 @@ describe("DELETE /account/data", () => {
       .on(QueryCommand, { TableName: "tags" })
       .resolves({ Items: [{ pk: "USER#owner", sk: "TAG#research" }] });
     s3Mock.on(DeleteObjectCommand).resolves({});
+  });
+
+  it("skips the drift correction when storage changed after it was read", async () => {
+    let reads = 0;
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.TableName === "rate-limits") return {};
+      reads += 1;
+      return {
+        Item: {
+          pk: "ACCOUNT#owner",
+          sk: "PROFILE",
+          storageBytes: reads === 1 ? 400 : 900,
+          storageCostUpdatedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+      };
+    });
+
+    await handler(apiEvent());
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(2);
   });
 
   it("removes drift, then deletes every source and tag", async () => {
@@ -94,6 +121,9 @@ describe("DELETE /account/data", () => {
   });
 
   it("does not touch storage when it matches the documents", async () => {
+    dynamoMock
+      .on(UpdateCommand)
+      .resolves({ Attributes: { countedBytes: 400 } });
     dynamoMock.on(QueryCommand, { IndexName: "GSI2" }).resolves({
       Items: [
         {
