@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories: ["/", "/web"]
+    schedule:
+      interval: weekly
+    groups:
+      aws-sdk:
+        patterns: ["@aws-sdk/*"]
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # SST ships its own @pulumi/aws; bump it together with sst.
+      - dependency-name: "@pulumi/aws"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
