@@ -182,6 +182,8 @@ export function TagPicker({
             {(selected: string[]) =>
               selected.map((name) => (
                 <ComboboxChip
+                  // Tag colors are user data, so their classes can't be static.
+                  // oxlint-disable-next-line shadcn/require-static-classes
                   className={cn(TAG_BADGE_CLASSES[colorOf(name)])}
                   key={name}
                 >
@@ -329,7 +331,6 @@ function TagRow({
       >
         <Button
           aria-label={`Change color of ${tag.name}`}
-          className="text-muted-foreground"
           disabled={disabled}
           onClick={() => onRecolor(tag)}
           size="icon-xs"
@@ -339,7 +340,6 @@ function TagRow({
         </Button>
         <Button
           aria-label={`Delete tag ${tag.name}`}
-          className="text-muted-foreground hover:text-destructive"
           disabled={disabled}
           onClick={() => onRequestDelete(tag)}
           size="icon-xs"
@@ -381,7 +381,7 @@ function ColorPanel({
       </div>
       {TAG_COLORS.map((option) => (
         <Button
-          className="justify-start font-medium"
+          className="justify-start"
           key={option}
           onClick={() => onPick(option)}
           variant="ghost"

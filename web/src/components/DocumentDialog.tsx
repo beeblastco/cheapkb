@@ -43,8 +43,8 @@ export function DocumentDialog({
           ["ID", detailedDocument.documentId],
           ["MIME type", detailedDocument.mimeType],
           ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
-          ["Uploaded", formatDate(detailedDocument.createdAt)],
-          ["Modified", formatDate(detailedDocument.updatedAt)],
+          ["Uploaded", formatDate(detailedDocument.createdAt, true)],
+          ["Modified", formatDate(detailedDocument.updatedAt, true)],
           [
             "Tags",
             // A span, not a div: FieldDescription renders a <p>.

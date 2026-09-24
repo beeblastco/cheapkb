@@ -425,14 +425,12 @@ describe("frontend", () => {
       expect(documentsSource).toContain("multiple");
       expect(documentsSource).toContain('window.addEventListener("drop"');
       expect(documentsSource).toContain("Sync all");
+      // Wide enough that columns never truncate; narrower screens scroll.
       expect(documentsSource).toContain(
-        'Table className="min-w-3xl table-fixed"',
+        'Table className="min-w-250 table-fixed"',
       );
-      expect(documentsSource).toContain(
-        'TableHeader className="sticky top-0 z-10 bg-card"',
-      );
-      expect(documentsSource).toContain("bg-transparent!");
-      expect(documentsSource).toContain("text-inherit!");
+      expect(documentsSource).toContain('TableHead className="w-44">Tags');
+      expect(documentsSource).not.toContain("bg-transparent!");
       expect(documentsSource).toContain('className="cursor-pointer"');
       expect(documentsSource).toContain('event.key !== "Enter"');
       expect(documentsSource).not.toContain("STATUS_LABELS");
