@@ -83,21 +83,19 @@ function App() {
     setNotices((current) => current.filter((notice) => notice.id !== id));
   }, []);
 
-  // Shows an error at the top of the screen, ignoring repeats of one already
-  // shown. A notice with a retry stays until the user retries or closes it.
+  // Shows an error at the top of the screen. A repeat replaces the one shown
+  // with a fresh timer, and a notice with a retry stays until used or closed.
   const notify = useCallback(
     (title: string, message: string, retry?: () => void) => {
       const id = crypto.randomUUID();
-      setNotices((current) =>
-        current.some(
-          (notice) => notice.title === title && notice.message === message,
-        )
-          ? current
-          : [
-              ...current.slice(-2),
-              { id: id, message: message, retry: retry, title: title },
-            ],
-      );
+      setNotices((current) => [
+        ...current
+          .filter(
+            (notice) => notice.title !== title || notice.message !== message,
+          )
+          .slice(-2),
+        { id: id, message: message, retry: retry, title: title },
+      ]);
       if (!retry) window.setTimeout(() => dismissNotice(id), NOTICE_MS);
     },
     [dismissNotice],
