@@ -167,6 +167,47 @@ describe("chunk records", () => {
     expect(chunkBody).not.toHaveProperty("tokenCount");
   });
 
+  it("keeps embedded chunks when a message is redelivered", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock
+      .on(PutCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "done" }),
+      );
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-again",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+          }),
+          attributes: { ApproximateReceiveCount: "2" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression,
+    ).toContain(":embedded");
+    expect(sqsMock.calls()).toHaveLength(0);
+    const finish = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) => call.args[0].input.ExpressionAttributeValues?.[":c"]);
+    expect(finish?.args[0].input.ExpressionAttributeValues?.[":c"]).toBe(1);
+  });
+
   it("drops the message when the document was deleted", async () => {
     dynamoMock
       .on(UpdateCommand)

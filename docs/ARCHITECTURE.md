@@ -4,20 +4,21 @@
 
 ## Main components
 
-| Component                   | Purpose                                                                                                                                                  |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web app                     | Lets users sign in, upload content, manage documents and metadata, review usage, and run searches.                                                       |
-| API                         | Authenticates requests and routes each action to the appropriate handler. The stage is throttled to 50 requests per second with bursts of 100.           |
-| Upload and ingest handlers  | Create the document record, provide a temporary direct-upload form, and start processing after S3 accepts the file.                                      |
-| Content bucket              | Keeps the original uploads and the intermediate content needed while documents are processed.                                                            |
-| Ingest and cleanup adapters | React to S3 changes. New objects enter the processing pipeline; deleted objects have their related search data removed.                                  |
-| Pipeline queue              | Buffers processing work so uploads do not wait for parsing and embedding. Failed work is retried, then moved to the dead-letter queue for investigation. |
-| Pipeline                    | Validates the file, extracts document content, divides text into searchable sections, and prepares text or images for embedding.                         |
-| Amazon Bedrock              | Runs Cohere Embed v4 to create compatible vectors for document text, images, and search queries.                                                         |
-| S3 Vectors                  | Stores embeddings and performs similarity search.                                                                                                        |
-| Metadata store              | Tracks ownership, document metadata, processing status, errors, and the relationship between documents and vectors.                                      |
-| Document and tag handlers   | List, retrieve, edit, retry, replace, and delete documents and their tags.                                                                               |
-| Plan and usage handlers     | Apply the deployment-owned default plan and return the signed-in account's allowance, storage, and processing usage.                                     |
+| Component                   | Purpose                                                                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web app                     | Lets users sign in, upload content, manage documents and metadata, review usage, and run searches.                                             |
+| API                         | Authenticates requests and routes each action to the appropriate handler. The stage is throttled to 50 requests per second with bursts of 100. |
+| Upload and ingest handlers  | Create the document record, provide a temporary direct-upload form, and start processing after S3 accepts the file.                            |
+| Content bucket              | Keeps the original uploads and the intermediate content needed while documents are processed.                                                  |
+| Ingest and cleanup adapters | React to S3 changes. New objects enter the processing pipeline; deleted objects have their related search data removed.                        |
+| Pipeline queue              | Buffers processing work so uploads do not wait for parsing and embedding. Failed work is retried, then moved to the dead-letter queue.         |
+| Sweeper                     | Runs hourly. Gives dead-lettered pipeline work and failed S3 adapter events one more try, then marks the document failed.                      |
+| Pipeline                    | Validates the file, extracts document content, divides text into searchable sections, and prepares text or images for embedding.               |
+| Amazon Bedrock              | Runs Cohere Embed v4 to create compatible vectors for document text, images, and search queries.                                               |
+| S3 Vectors                  | Stores embeddings and performs similarity search.                                                                                              |
+| Metadata store              | Tracks ownership, document metadata, processing status, errors, and the relationship between documents and vectors.                            |
+| Document and tag handlers   | List, retrieve, edit, retry, replace, and delete documents and their tags.                                                                     |
+| Plan and usage handlers     | Apply the deployment-owned default plan and return the signed-in account's allowance, storage, and processing usage.                           |
 
 ## Upload flow
 
@@ -48,6 +49,6 @@ Deleting a document removes its uploaded content, intermediate content, metadata
 
 ## Reliability and cost controls
 
-Processing happens asynchronously so upload requests remain short. Failed records are retried without replaying successful records; a failed embedding batch is split to isolate its failing input. Repeated failures move to the dead-letter queue and appear as failed documents that users can retry.
+Processing happens asynchronously so upload requests remain short. Failed records are retried without replaying successful records; a failed embedding batch is split to isolate its failing input. Content that can never succeed, such as a PDF over 500 pages or a file with no text, fails on the first attempt. Repeated failures move to the dead-letter queue, and the hourly sweeper retries them once before marking the document failed so users can retry it. A redelivered chunk message keeps chunks that were already embedded, so they are not embedded or charged twice.
 
-CheapKB shares pipeline resources and batches available embedding work to avoid unnecessary idle infrastructure and requests. File, image, chunk, and account allowance limits bound unexpected processing cost. Only the S3 upload event queues and charges a new document. Reindex is rate limited, checks the allowance, and refuses documents that are still processing.
+CheapKB shares pipeline resources and batches available embedding work to avoid unnecessary idle infrastructure and requests. The pipeline runs at most 5 concurrent Lambdas, so one busy account cannot use up the shared Bedrock quota. File, image, chunk, and account allowance limits bound unexpected processing cost. Only the S3 upload event queues and charges a new document. Reindex is rate limited, checks the allowance, and refuses documents that are still processing.
