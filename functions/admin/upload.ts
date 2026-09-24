@@ -352,6 +352,11 @@ async function createDocument(
 
 /** Returns a validation message for a bad upload body, or null when it is valid. */
 function validateBody(body: Record<string, unknown>): string | null {
+  // JSON.parse("null") and "[]" both succeed, so reading body.filename off the
+  // result would throw and surface as a 500 instead of a validation error.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "Request body must be an object";
+  }
   const { filename } = body;
   if (typeof filename !== "string" || !filename.trim()) {
     return "Filename is required";

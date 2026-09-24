@@ -79,6 +79,15 @@ describe("upload validation", () => {
     ).toHaveLength(0);
   });
 
+  it("rejects a JSON null body with a 400", async () => {
+    const response = await handler(jsonApiEvent(null));
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toBe(
+      "Request body must be an object",
+    );
+  });
+
   it("creates a size-constrained presigned POST", async () => {
     const response = await handler(
       jsonApiEvent({

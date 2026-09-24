@@ -54,15 +54,21 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
         continue;
       }
       console.error(`[parse] Failed for ${documentId}:`, err);
-      if (err instanceof ContentError) {
-        await handleError(documentId, err, 3);
-        continue;
+      const attempt =
+        err instanceof ContentError
+          ? 3
+          : parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10);
+      // A failed error write retries only this record, so the records already
+      // parsed in this batch are not replayed.
+      try {
+        await handleError(documentId, err, attempt);
+        if (err instanceof ContentError) continue;
+      } catch (writeErr) {
+        console.error(
+          `[parse] Could not record failure for ${documentId}:`,
+          writeErr,
+        );
       }
-      const attempt = parseInt(
-        record.attributes.ApproximateReceiveCount ?? "1",
-        10,
-      );
-      await handleError(documentId, err, attempt);
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }

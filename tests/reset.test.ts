@@ -120,6 +120,29 @@ describe("DELETE /account/data", () => {
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(1);
   });
 
+  it("backs off before resending throttled tag deletes", async () => {
+    const unprocessed = {
+      tags: [
+        { DeleteRequest: { Key: { pk: "USER#owner", sk: "TAG#research" } } },
+      ],
+    };
+    dynamoMock
+      .on(BatchWriteCommand)
+      .resolvesOnce({ UnprocessedItems: unprocessed })
+      .resolvesOnce({ UnprocessedItems: unprocessed })
+      .resolves({});
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    const response = await handler(apiEvent());
+
+    expect(response.statusCode).toBe(202);
+    expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(3);
+    expect(setTimeoutSpy.mock.calls.map(([, ms]) => ms)).toEqual(
+      expect.arrayContaining([100, 200]),
+    );
+    setTimeoutSpy.mockRestore();
+  });
+
   it("does not touch storage when it matches the documents", async () => {
     dynamoMock
       .on(UpdateCommand)

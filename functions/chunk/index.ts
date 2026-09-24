@@ -59,11 +59,21 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
         continue;
       }
       console.error(`[chunk] Failed for ${documentId}:`, err);
-      if (err instanceof ContentError) {
-        await handleError(documentId, err, 3);
-        continue;
+      // A failed error write retries only this record, so the records already
+      // chunked in this batch are not replayed.
+      try {
+        await handleError(
+          documentId,
+          err,
+          err instanceof ContentError ? 3 : attempt,
+        );
+        if (err instanceof ContentError) continue;
+      } catch (writeErr) {
+        console.error(
+          `[chunk] Could not record failure for ${documentId}:`,
+          writeErr,
+        );
       }
-      await handleError(documentId, err, attempt);
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }

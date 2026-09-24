@@ -80,17 +80,32 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
+  // Older documents have no countedBytes, so the refund falls back to the
+  // source size. Any lookup error but NotFound stops before the source is gone.
   let sourceSize = 0;
-  try {
-    const head = await s3.send(
-      new HeadObjectCommand({
-        Bucket: StorageBucketName,
-        Key: doc.sourceKey,
-      }),
-    );
-    sourceSize = head.ContentLength ?? 0;
-  } catch {
-    // A missing source leaves sourceSize at 0; countedBytes wins when present.
+  if (typeof doc.countedBytes !== "number" && doc.sourceKey) {
+    try {
+      const head = await s3.send(
+        new HeadObjectCommand({
+          Bucket: StorageBucketName,
+          Key: doc.sourceKey,
+        }),
+      );
+      sourceSize = head.ContentLength ?? 0;
+    } catch (err) {
+      if ((err as Error).name !== "NotFound") {
+        await markDeleting(documentId, "Delete did not finish, try again");
+        return {
+          statusCode: 500,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            documentId: documentId,
+            deleted: false,
+            warnings: [`source size: ${(err as Error).message}`],
+          }),
+        };
+      }
+    }
   }
   const errors: string[] = [];
   let chunkItems: ChunkItem[] = [];

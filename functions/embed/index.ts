@@ -51,6 +51,9 @@ const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 const MAX_COHERE_ITEMS = 96;
 const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
+// Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
+// before SQS redelivers its message (visibility timeout 900 seconds).
+const EMBED_CLAIM_LEASE_MS = 300_000;
 
 interface ChunkMetadata {
   documentId: string;
@@ -129,9 +132,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchSize = Math.max(1, parseInt(process.env.EMBED_BATCH ?? "10", 10));
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
+    const documents = new Map<string, { attempt: number; error: unknown }>();
     try {
       const failures = await batchProcess(batch);
-      const documents = new Map<string, { attempt: number; error: unknown }>();
       for (const [messageId, failure] of failures) {
         failedMessageIds.add(messageId);
         const previous = documents.get(failure.documentId);
@@ -142,26 +145,28 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
           });
         }
       }
-      await Promise.all(
-        Array.from(documents, ([documentId, failure]) =>
-          handleError(documentId, failure.error, failure.attempt),
-        ),
-      );
     } catch (err) {
       console.error(`[embed] Batch failed:`, err);
-      const attempts = new Map<string, number>();
       for (const chunk of batch) {
         failedMessageIds.add(chunk.messageId);
-        attempts.set(
-          chunk.documentId,
-          Math.max(attempts.get(chunk.documentId) ?? 1, chunk.attempt),
-        );
+        const previous = documents.get(chunk.documentId);
+        documents.set(chunk.documentId, {
+          attempt: Math.max(previous?.attempt ?? 1, chunk.attempt),
+          error: err,
+        });
       }
-      await Promise.all(
-        Array.from(attempts, ([documentId, attempt]) =>
-          handleError(documentId, err, attempt),
-        ),
-      );
+    }
+    // Error writes run outside the batch try, so one failing write cannot fail
+    // chunks that were already embedded; their own messages are retried anyway.
+    const writes = await Promise.allSettled(
+      Array.from(documents, ([documentId, failure]) =>
+        handleError(documentId, failure.error, failure.attempt),
+      ),
+    );
+    for (const write of writes) {
+      if (write.status === "rejected") {
+        console.error("[embed] Could not record failure:", write.reason);
+      }
     }
   }
   return {
@@ -252,6 +257,17 @@ async function batchProcess(
         );
         if (existing.Item?.status === "EMBEDDED") {
           reconcileDocuments.add(chunk.documentId);
+          return undefined;
+        }
+        // Two deliveries can both pass the read above, so only the one that
+        // claims the chunk calls Bedrock; the other is dropped.
+        if (
+          existing.Item &&
+          !(await claimChunk(chunk.documentId, metadata.chunkId))
+        ) {
+          console.log(
+            `[embed] ${metadata.chunkId} is claimed by another delivery, dropping`,
+          );
           return undefined;
         }
 
@@ -385,6 +401,33 @@ async function batchProcess(
   );
   console.log(`[embed] OK: ${writtenVectors.length} vectors written`);
   return failures;
+}
+
+/** Claims a chunk for this delivery, or returns false when another delivery holds a
+ * live claim or the chunk is already embedded. */
+async function claimChunk(documentId: string, chunkId: string) {
+  const now = Date.now();
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+        UpdateExpression: "SET embedClaimedAt = :now",
+        ConditionExpression:
+          "attribute_exists(pk) AND #s <> :embedded AND (attribute_not_exists(embedClaimedAt) OR embedClaimedAt < :expired)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":embedded": "EMBEDDED",
+          ":expired": now - EMBED_CLAIM_LEASE_MS,
+          ":now": now,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
+  }
 }
 
 /** Resets the error fields on a document after a stage succeeds. */
