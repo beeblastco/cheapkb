@@ -1012,7 +1012,10 @@ export default $config({
             resources: [pipelineDlq.arn, adapterDlq.arn],
           },
           { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
-          { actions: ["dynamodb:UpdateItem"], resources: [table.arn] },
+          {
+            actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+            resources: [table.arn],
+          },
           {
             actions: ["lambda:InvokeFunction"],
             resources: [

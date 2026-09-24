@@ -29,7 +29,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
 
   for (const record of event.Records) {
-    let body: { documentId?: string; parsedKey?: string };
+    let body: { documentId?: string; parsedKey?: string; sweeps?: number };
     try {
       body = JSON.parse(record.body);
     } catch {
@@ -43,9 +43,11 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
-    const attempt = parseInt(
-      record.attributes.ApproximateReceiveCount ?? "1",
-      10,
+    // A message the sweeper re-queued starts a new receive count, but it is
+    // still a redelivery.
+    const attempt = Math.max(
+      parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
+      body.sweeps ? 2 : 1,
     );
     try {
       await chunkDocument(documentId, parsedKey, attempt);
@@ -246,6 +248,7 @@ async function finishChunking(
     }),
   );
   await clearError(documentId, now);
+  if (chunkKeys.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
 
   const sendSize = 10;
   for (let i = 0; i < chunkKeys.length; i += sendSize) {
@@ -271,6 +274,34 @@ async function finishChunking(
 async function handleError(documentId: string, err: unknown, attempt: number) {
   try {
     await writeError(documentId, err, attempt);
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+}
+
+// When a redelivered message finds every chunk already embedded, no embed step
+// will run to finish the document, so it is finished here.
+async function markEmbeddedIfDone(documentId: string, chunkCount: number) {
+  const now = new Date().toISOString();
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+        ConditionExpression:
+          "attribute_exists(pk) AND embeddedCount >= :count AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":count": chunkCount,
+          ":deleting": "DELETING",
+          ":gsi1pk": "STATUS#EMBEDDED",
+          ":s": "EMBEDDED",
+          ":t": now,
+        },
+      }),
+    );
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
