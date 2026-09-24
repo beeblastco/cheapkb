@@ -42,17 +42,12 @@ export async function handler(event: S3Event) {
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
     const document = await getDocument(documentId, dynamo, TableName);
     // S3 can deliver a removal after the same key was uploaded again, so a live
-    // document is only cleaned up once its object is really gone.
-    if (
-      document &&
-      document.status !== "DELETING" &&
-      (await objectExists(key))
-    ) {
-      console.log(`[cleanup-adapter] Skipping stale removal for ${key}`);
-      continue;
-    }
+    // document is only cleaned up once its object is gone and no upload is reserved.
     if (document && document.status !== "DELETING") {
-      await markDeleting(documentId);
+      if ((await objectExists(key)) || !(await markDeleting(documentId))) {
+        console.log(`[cleanup-adapter] Skipping stale removal for ${key}`);
+        continue;
+      }
     }
 
     // The three deletes are independent, so they run together and every
@@ -148,8 +143,8 @@ async function deleteDynamoRecords(
   console.log(`[cleanup-adapter] Deleted DynamoDB record for ${documentId}`);
 }
 
-/** Pipeline stages refuse to write to a DELETING document, so a vector written
- * during this cleanup cannot stay searchable. */
+/** Marks the document DELETING so pipeline stages stop writing to it. Returns false
+ * while a replacement upload is reserved, since upload cannot reserve a DELETING one. */
 async function markDeleting(documentId: string) {
   const now = new Date().toISOString();
   try {
@@ -159,7 +154,8 @@ async function markDeleting(documentId: string) {
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
-        ConditionExpression: "attribute_exists(pk)",
+        ConditionExpression:
+          "attribute_exists(pk) AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :t)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":gsi1pk": "STATUS#DELETING",
@@ -168,9 +164,14 @@ async function markDeleting(documentId: string) {
         },
       }),
     );
+    return true;
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
+  // Only a document that is gone may still be cleaned up after a refused mark.
+  const document = await getDocument(documentId, dynamo, TableName);
+
+  return !document;
 }
 
 /** Reports whether the removed object has been uploaded again since the event. */
