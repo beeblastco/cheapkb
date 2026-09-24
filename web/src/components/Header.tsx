@@ -1,4 +1,16 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -18,7 +30,14 @@ import {
 import { getUserProfile } from "@/lib/client";
 import type { ShooIdentity, UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
-import { HelpCircle, LogOut, Scale, Settings, Shield } from "lucide-react";
+import {
+  HelpCircle,
+  LogOut,
+  Scale,
+  Settings,
+  Shield,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 
 const MENU_CONTENT = {
@@ -43,12 +62,15 @@ export function Header({
   identity,
   usage,
   onSignOut,
+  onDeleteAllData,
 }: {
   identity?: ShooIdentity | null;
   usage?: UsageSummary | null;
   onSignOut?: () => void;
+  onDeleteAllData?: () => Promise<void>;
 }) {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
+  const [deletingData, setDeletingData] = useState(false);
   const profile = identity?.token ? getUserProfile(identity) : null;
   const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
 
@@ -151,6 +173,60 @@ export function Header({
                         Storage: {formatBytes(usage.storageBytes)}
                       </p>
                     ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Your data</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col items-start gap-2">
+                    <p className="text-sm text-muted-foreground">
+                      Delete every document, image and tag in this account and
+                      reset storage to 0. Usage already spent this cycle stays.
+                    </p>
+                    <AlertDialog>
+                      <AlertDialogTrigger
+                        render={
+                          <Button
+                            disabled={deletingData}
+                            variant="destructive"
+                          />
+                        }
+                      >
+                        <Trash2 data-icon="inline-start" />
+                        Delete all my data
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            Delete all your data?
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            All documents, their search data and your tags are
+                            deleted. This can't be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={async () => {
+                              setDeletingData(true);
+                              try {
+                                await onDeleteAllData?.();
+                                setDialog(null);
+                              } finally {
+                                setDeletingData(false);
+                              }
+                            }}
+                            variant="destructive"
+                          >
+                            Delete everything
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 </CardContent>
               </Card>

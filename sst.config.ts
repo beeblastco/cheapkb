@@ -880,6 +880,44 @@ export default $config({
       },
     });
 
+    const accountResetFn = new sst.aws.Function("AccountReset", {
+      handler: "./functions/admin/reset.handler",
+      runtime: "nodejs22.x",
+      timeout: "30 seconds",
+      memory: "256 MB",
+      description: "Delete every document and tag the caller owns",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:Query"],
+          resources: [pulumi.interpolate`${table.arn}/index/GSI2`],
+        },
+        { actions: ["dynamodb:UpdateItem"], resources: [table.arn] },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:TransactWriteItems",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [accountsTable.arn, rateLimitsTable.arn],
+        },
+        {
+          actions: ["dynamodb:BatchWriteItem", "dynamodb:Query"],
+          resources: [tagsTable.arn],
+        },
+        {
+          actions: ["s3:DeleteObject"],
+          resources: [pulumi.interpolate`${storage.arn}/raw/*`],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("account-reset");
+        },
+      },
+    });
+
     const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
       handler: "./functions/s3/ingest-adapter.handler",
       runtime: "nodejs22.x",
@@ -1049,6 +1087,7 @@ export default $config({
     api.route("DELETE /tags/{name}", tagsDeleteFn.arn);
     api.route("GET /account/usage", billingFn.arn);
     api.route("GET /account", billingAccountFn.arn);
+    api.route("DELETE /account/data", accountResetFn.arn);
 
     return {
       apiEndpoint: api.url,
