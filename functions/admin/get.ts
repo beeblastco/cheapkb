@@ -11,6 +11,7 @@ import { docId, chunkId, extractUserId } from "../utils";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 
+/** GET /documents/{id}: returns one owned document and its chunk statuses. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -73,6 +74,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
+/** Maps a META row to the document fields the API returns. */
 function pickDocumentFields(item: DocumentRow) {
   return {
     documentId: docId(item.pk),

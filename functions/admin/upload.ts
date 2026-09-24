@@ -48,6 +48,7 @@ const ALLOWED_MIME_TYPES = new Set([
 ]);
 const REPLACEABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
+/** POST /upload: creates or reserves a document and returns a presigned S3 POST for its source. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -153,7 +154,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     let reused = false;
 
     if (mapping?.Item) {
-      documentId = mapping.Item.documentId;
+      ({ documentId } = mapping.Item);
       const result = await dynamo.send(
         new GetCommand({
           TableName: TableName,
@@ -241,6 +242,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
+/** Claims an existing document for a re-upload; false when another upload holds it or it is busy. */
 async function reserveReplacement(
   document: DocumentRow,
   replacementToken: string,
@@ -285,6 +287,7 @@ async function reserveReplacement(
   }
 }
 
+/** Writes the dedupe mapping and META row together; false when the file is already being uploaded. */
 async function createDocument(
   documentId: string,
   userId: string,
@@ -347,13 +350,14 @@ async function createDocument(
   }
 }
 
+/** Returns a validation message for a bad upload body, or null when it is valid. */
 function validateBody(body: Record<string, unknown>): string | null {
-  const filename = body.filename;
+  const { filename } = body;
   if (typeof filename !== "string" || !filename.trim()) {
     return "Filename is required";
   }
   if (filename.length > 255) return "Filename must be 255 characters or fewer";
-  const mimeType = body.mimeType;
+  const { mimeType } = body;
   if (typeof mimeType !== "string" || !ALLOWED_MIME_TYPES.has(mimeType)) {
     return `MIME type must be one of: ${[...ALLOWED_MIME_TYPES].join(", ")}`;
   }
