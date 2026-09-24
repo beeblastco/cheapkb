@@ -185,7 +185,7 @@ describe("query handler usage", () => {
     expect(response.statusCode).toBe(200);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
     expect(vectorsMock.commandCalls(QueryVectorsCommand)).toHaveLength(1);
-    const call = bedrockMock.commandCalls(InvokeModelCommand)[0];
+    const [call] = bedrockMock.commandCalls(InvokeModelCommand);
     const metadata = JSON.parse(String(call.args[0].input.requestMetadata));
     const request = JSON.parse(String(call.args[0].input.body));
     expect(metadata.cheapkbInputModality).toBe("mixed");

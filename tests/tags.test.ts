@@ -25,7 +25,7 @@ import { apiEvent } from "./helpers/events";
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 
 function isRateLimitCall(call: any) {
-  const input = call.args[0].input;
+  const [{ input }] = call.args;
   return (
     input.Key?.pk?.startsWith("RATE#") || input.Item?.pk?.startsWith("RATE#")
   );

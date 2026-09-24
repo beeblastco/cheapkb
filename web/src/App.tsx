@@ -232,6 +232,7 @@ function App() {
     setLoadingDocument(false);
   }
 
+  /** Queues a document for reindexing and rolls the table back on failure. */
   async function reindexDocument(documentId: string) {
     const previous = documentsRef.current;
     setDocuments((current) =>
@@ -253,6 +254,10 @@ function App() {
     }
   }
 
+  /**
+   * Marks a document as deleting and deletes it; on failure it restores the row.
+   * Returns false instead of throwing, so bulk deletes can collect failures.
+   */
   async function deleteDocument(
     documentId: string,
     refresh = true,
@@ -304,6 +309,7 @@ function App() {
     }
   }
 
+  /** Deletes documents one at a time and returns the ids that failed. */
   async function deleteDocuments(documentIds: string[]): Promise<string[]> {
     const failedDocumentIds: string[] = [];
     for (const documentId of documentIds) {

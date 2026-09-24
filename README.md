@@ -44,8 +44,9 @@ The `/v1` API supports uploads, search, documents, tags, account usage, and read
 ## Verify changes
 
 ```bash
-npm run format:check && npm run build && npm test
+npm run check   # oxlint, prettier, tsc, vitest
 API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
+npm run bundle:check
 ```
 
 ## Deploy
