@@ -12,6 +12,7 @@ import { extractUserId } from "../utils";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TAGS_TABLE_NAME!;
 
+/** API handler for GET /tags; returns the caller's tags sorted by name. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;

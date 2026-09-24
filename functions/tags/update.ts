@@ -7,6 +7,7 @@ import { extractUserId } from "../utils";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TAGS_TABLE_NAME!;
 
+/** API handler for PATCH /tags/{name}; changes the color of the caller's tag. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -85,6 +86,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
+/** Reads the tag name from the path, or returns a 400 response when it is invalid. */
 function decodeTagName(event: {
   pathParameters?: Record<string, string | undefined>;
 }):

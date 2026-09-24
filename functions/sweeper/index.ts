@@ -31,18 +31,19 @@ const STAGE_STEPS: Record<string, string> = {
   parse: "PARSING",
 };
 
-// Runs hourly so nothing that lands in a dead-letter queue is silently lost.
+/** Runs hourly so nothing that lands in a dead-letter queue is silently lost. */
 export async function handler(): Promise<void> {
   await drain(PipelineDlqUrl, redrivePipelineMessage);
   await drain(AdapterDlqUrl, redriveAdapterEvent);
 }
 
-// handle returns false to leave a message for the next run.
+/** Drains a dead-letter queue through handle, which returns false to leave
+ * a message for the next run. */
 async function drain(
   queueUrl: string,
   handle: (body: string) => Promise<boolean>,
 ): Promise<void> {
-  for (let batch = 0; batch < MAX_BATCHES; batch++) {
+  for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
     const { Messages = [] } = await sqs.send(
       new ReceiveMessageCommand({
         QueueUrl: queueUrl,
@@ -69,6 +70,7 @@ async function drain(
   }
 }
 
+/** Marks a stuck document FAILED at step unless it already settled. */
 async function markFailed(documentId: string, step: string): Promise<void> {
   const now = new Date().toISOString();
   try {
@@ -97,8 +99,8 @@ async function markFailed(documentId: string, step: string): Promise<void> {
   }
 }
 
-// S3 gives up on an adapter after two retries. One more try an hour later covers
-// an outage; a second failure is logged and dropped.
+/** S3 gives up on an adapter after two retries. One more try an hour later covers
+ * an outage; a second failure is logged and dropped. */
 async function redriveAdapterEvent(body: string): Promise<boolean> {
   const record = parseJson(body) as {
     requestContext?: { functionArn?: string };
@@ -121,9 +123,8 @@ async function redriveAdapterEvent(body: string): Promise<boolean> {
   return true;
 }
 
-// A batch that crashed the Lambda sends every message in it to the DLQ, so each
-// one gets one more try before its document is marked FAILED. A document that
-// already settled, or that a reindex is moving again, is left alone.
+/** Gives a dead-lettered pipeline message one more try, then marks its document FAILED.
+ * A document that already settled, or that a reindex is moving again, is left alone. */
 async function redrivePipelineMessage(body: string): Promise<boolean> {
   const message = parseJson(body) as {
     documentId?: string;
