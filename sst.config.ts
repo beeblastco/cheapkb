@@ -316,6 +316,7 @@ export default $config({
       MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "10485760",
       MAX_IMAGE_UPLOAD_BYTES: process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880",
       MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200",
+      MAX_STORAGE_BYTES: process.env.MAX_STORAGE_BYTES ?? "1073741824",
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
         process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12",
       DEPLOYMENT_STAGE: STAGE,
@@ -714,6 +715,14 @@ export default $config({
             "dynamodb:UpdateItem",
           ],
           resources: [table.arn],
+        },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [rateLimitsTable.arn],
         },
         {
           actions: ["s3vectors:GetVectors", "s3vectors:PutVectors"],

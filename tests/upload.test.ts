@@ -20,7 +20,10 @@ vi.mock("jose", () => ({
 vi.mock("../functions/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../functions/utils")>()),
   extractUserId: vi.fn().mockResolvedValue({ userId: "user-1" }),
-  checkUsageLimit: vi.fn().mockResolvedValue({ allowed: true }),
+  checkUsageLimit: vi.fn().mockResolvedValue({
+    allowed: true,
+    summary: { storageBytes: 0 },
+  }),
   recordUsage: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@aws-sdk/s3-presigned-post", () => ({
@@ -31,6 +34,7 @@ vi.mock("@aws-sdk/s3-presigned-post", () => ({
 }));
 
 import { handler } from "../functions/admin/upload";
+import { checkUsageLimit } from "../functions/utils";
 import { jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
@@ -41,6 +45,20 @@ describe("upload validation", () => {
     dynamoMock.on(GetCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
     vi.clearAllMocks();
+  });
+
+  it("rejects an upload that would pass the storage cap", async () => {
+    vi.mocked(checkUsageLimit).mockResolvedValueOnce({
+      allowed: true,
+      summary: { storageBytes: 1024 * 1024 * 1024 - 1 },
+    } as Awaited<ReturnType<typeof checkUsageLimit>>);
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(createPresignedPost).not.toHaveBeenCalled();
   });
 
   it("rejects unsupported content types before creating storage", async () => {

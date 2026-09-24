@@ -104,14 +104,15 @@ export async function handler(event: S3Event) {
       doc = { ...doc, status: "UPLOADED" };
     }
 
-    if (doc.status === "EMBEDDED") {
+    const eventId = `${documentId}:${record.s3.object.sequencer}`;
+    if (isDispatched(doc)) {
+      await recountStorage(documentId, doc, objectSize, eventId);
       console.log(
-        `[ingest-adapter] Document ${documentId} already embedded, skipping`,
+        `[ingest-adapter] Document ${documentId} already dispatched, skipping`,
       );
       continue;
     }
 
-    const eventId = `${documentId}:${record.s3.object.sequencer}`;
     const queued = await claimDispatch(documentId, doc, now, eventId);
     if (!queued) {
       console.log(
@@ -267,6 +268,44 @@ async function markDispatchSent(documentId: string, eventId: string) {
   );
 }
 
+// A presigned POST stays valid for 15 minutes, so the source can be overwritten
+// after dispatch. Charge the new size so a 1-byte upload can't hide a larger one.
+async function recountStorage(
+  documentId: string,
+  doc: DocumentRow,
+  objectSize: number,
+  eventId: string,
+) {
+  const countedBytes = doc.countedBytes ?? 0;
+  if (objectSize === countedBytes) return;
+
+  await updateStorageBytes(
+    doc.userId,
+    AccountsTableName,
+    objectSize - countedBytes,
+    `ingest:${eventId}`,
+  );
+  await dynamo.send(
+    new UpdateCommand({
+      TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET countedBytes = :counted",
+      ConditionExpression:
+        doc.countedBytes === undefined
+          ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
+          : "countedBytes = :previous AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":counted": objectSize,
+        ":deleting": "DELETING",
+        ...(doc.countedBytes === undefined
+          ? {}
+          : { ":previous": doc.countedBytes }),
+      },
+    }),
+  );
+}
+
 async function rollbackQueueStatus(documentId: string, eventId: string) {
   const now = new Date().toISOString();
   await dynamo.send(
@@ -325,4 +364,10 @@ async function updateFailure(documentId: string, error: string, now: string) {
       },
     }),
   );
+}
+
+// Dispatch already charged this document once, so later events only recount.
+function isDispatched(doc: DocumentRow): boolean {
+  if (doc.status === "UPLOADED" || doc.status === "DELETING") return false;
+  return doc.status !== "QUEUED" || doc.dispatchState === "SENT";
 }

@@ -159,6 +159,15 @@ describe("billing", () => {
       );
     });
 
+    it("starts cycles at midnight UTC so each day's usage counts once", () => {
+      const now = Date.UTC(2024, 1, 15, 9);
+      const cycle = currentCycle(account("2024-01-15T18:30:00.000Z"), now);
+
+      expect(new Date(cycle.startMs).toISOString()).toBe(
+        "2024-02-15T00:00:00.000Z",
+      );
+    });
+
     it("clamps a day-31 anchor to the last day of shorter months", () => {
       const now = Date.UTC(2024, 1, 10);
       const cycle = currentCycle(account("2024-01-31T00:00:00.000Z"), now);
@@ -185,6 +194,16 @@ describe("billing", () => {
   });
 
   describe("usage", () => {
+    it("prices query results per chunk fetched", async () => {
+      dynamoMock.on(UpdateCommand).resolves({});
+
+      await recordUsage("user-1", "table", "queryResult", 100);
+
+      const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      expect(update.UpdateExpression).toContain("queryResults");
+      expect(update.ExpressionAttributeValues[":c"]).toBe(40_000);
+    });
+
     it("records a query usage event", async () => {
       dynamoMock.on(UpdateCommand).resolves({});
 

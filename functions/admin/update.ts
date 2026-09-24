@@ -12,6 +12,7 @@ import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
+  checkRateLimit,
   extractUserId,
   getDocument,
   listDocumentChunkItems,
@@ -22,6 +23,7 @@ const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
+const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
@@ -46,6 +48,18 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
+  // Each edit rewrites every chunk object and vector, so edits are rate limited.
+  const { allowed } = await checkRateLimit(
+    userId,
+    RateLimitsTableName,
+    "UPDATE",
+    20,
+    20,
+  );
+  if (!allowed) {
+    return json(429, { error: "Rate limit exceeded. Try again later." });
+  }
+
   const documentId = event.pathParameters?.id;
   if (!documentId) return json(400, { error: "Document ID is required" });
 
@@ -65,13 +79,22 @@ export async function handler(event: APIGatewayProxyEventV2) {
   if (document.userId !== userId) {
     return json(404, { error: "Document not found" });
   }
+
+  const tags = normalizeTags(body.tags);
+  if (JSON.stringify(tags) === JSON.stringify(document.tags ?? null)) {
+    return json(200, {
+      documentId,
+      tags,
+      updatedVectors: 0,
+      updatedAt: document.updatedAt,
+    });
+  }
   if (!isEditable(document)) {
     return json(409, {
       error: `Cannot edit metadata while the document is ${document.status}`,
     });
   }
 
-  const tags = normalizeTags(body.tags);
   // Held across propagation to serialize edits: a revision check alone lets one
   // that read mid-propagation pass and split chunks between two edits' tags.
   const lease = await acquireLease(document, userId);

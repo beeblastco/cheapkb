@@ -36,7 +36,10 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          $ref: "#/components/responses/RateLimited"
+          description: Rate limit, monthly allowance, or storage limit reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalServerError"
       requestBody:
@@ -155,6 +158,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalServerError"
       requestBody:

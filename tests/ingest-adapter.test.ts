@@ -247,6 +247,49 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
+  it("charges a source overwritten after the document was embedded", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk === "ACCOUNT#user-1" && input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            storageBytes: 1,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 1,
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    const storageUpdate =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems?.[0].Update;
+    expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(1000);
+    expect(
+      dynamoMock.commandCalls(UpdateCommand)[0].args[0].input
+        .ExpressionAttributeValues?.[":counted"],
+    ).toBe(1000);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
   it("does not resend a completed queued dispatch", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {
