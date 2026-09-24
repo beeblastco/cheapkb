@@ -1089,9 +1089,49 @@ export default $config({
     api.route("GET /account", billingAccountFn.arn);
     api.route("DELETE /account/data", accountResetFn.arn);
 
+    // GitHub Actions deploys through this role with short-lived OIDC tokens,
+    // and only from this repository's production environment.
+    let deployRoleArn: $util.Output<string> | undefined;
+    if (STAGE === PROD_STAGE) {
+      const githubOidc = new pulumiAws.iam.OpenIdConnectProvider("GithubOidc", {
+        url: "https://token.actions.githubusercontent.com",
+        clientIdLists: ["sts.amazonaws.com"],
+      });
+      const deployRole = new pulumiAws.iam.Role("GithubDeployRole", {
+        name: name("github-deploy"),
+        maxSessionDuration: 3600,
+        assumeRolePolicy: githubOidc.arn.apply((providerArn) =>
+          JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Effect: "Allow",
+                Principal: { Federated: providerArn },
+                Action: "sts:AssumeRoleWithWebIdentity",
+                Condition: {
+                  StringEquals: {
+                    "token.actions.githubusercontent.com:aud":
+                      "sts.amazonaws.com",
+                    "token.actions.githubusercontent.com:sub":
+                      "repo:beeblastco/cheapkb:environment:production",
+                  },
+                },
+              },
+            ],
+          }),
+        ),
+      });
+      new pulumiAws.iam.RolePolicyAttachment("GithubDeployRoleAdmin", {
+        role: deployRole.name,
+        policyArn: "arn:aws:iam::aws:policy/AdministratorAccess",
+      });
+      deployRoleArn = deployRole.arn;
+    }
+
     return {
       apiEndpoint: api.url,
       webEndpoint: web.url,
+      deployRoleArn: deployRoleArn,
     };
   },
 });
