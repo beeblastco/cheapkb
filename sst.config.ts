@@ -10,7 +10,7 @@ export default $config({
       name: PROJECT,
       providers: {
         aws: {
-          // Use profile locally; CI uses AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars
+          // Use a profile locally; CI gets short-lived keys from the OIDC role
           ...(!process.env.AWS_ACCESS_KEY_ID && {
             profile: process.env.AWS_PROFILE,
           }),
