@@ -1,10 +1,33 @@
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 
-export function UsageCard({ summary }: { summary: UsageSummary | null }) {
+export function UsageCard({
+  error,
+  onRetry,
+  summary,
+}: {
+  error: string;
+  onRetry: () => void;
+  summary: UsageSummary | null;
+}) {
+  const errorLine = error ? (
+    <div className="flex items-center justify-between gap-2 text-sm text-destructive">
+      <span>Couldn't load usage. {error}</span>
+      <Button
+        className="cursor-pointer"
+        onClick={onRetry}
+        size="sm"
+        variant="outline"
+      >
+        Retry
+      </Button>
+    </div>
+  ) : null;
+
   if (!summary) {
     return (
       <Card className="shrink-0">
@@ -12,7 +35,7 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
           <CardTitle>Usage</CardTitle>
         </CardHeader>
         <CardContent>
-          <Skeleton className="h-24 w-full" />
+          {errorLine ?? <Skeleton className="h-24 w-full" />}
         </CardContent>
       </Card>
     );
@@ -53,6 +76,7 @@ export function UsageCard({ summary }: { summary: UsageSummary | null }) {
         </div>
 
         <Progress className="w-full shrink-0" value={shown} />
+        {errorLine}
       </CardContent>
     </Card>
   );
