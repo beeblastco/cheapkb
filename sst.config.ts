@@ -81,9 +81,37 @@ export default $config({
         },
         stage: (s) => {
           s.name = "v1";
+          // Caps unauthenticated floods before they reach a Lambda.
+          s.defaultRouteSettings = {
+            throttlingBurstLimit: 100,
+            throttlingRateLimit: 50,
+          };
         },
       },
     });
+
+    // Browsers ignore frame-ancestors in a <meta> CSP, so framing and
+    // transport rules are sent as headers from CloudFront.
+    const webHeaders = new pulumiAws.cloudfront.ResponseHeadersPolicy(
+      "WebHeaders",
+      {
+        name: name("web-headers"),
+        securityHeadersConfig: {
+          contentSecurityPolicy: {
+            contentSecurityPolicy: "frame-ancestors 'none'",
+            override: true,
+          },
+          contentTypeOptions: { override: true },
+          frameOptions: { frameOption: "DENY", override: true },
+          referrerPolicy: { referrerPolicy: "no-referrer", override: true },
+          strictTransportSecurity: {
+            accessControlMaxAgeSec: 63072000,
+            includeSubdomains: true,
+            override: true,
+          },
+        },
+      },
+    );
 
     // Deploy the frontend to an S3 bucket served by a CloudFront distribution
     const web = new sst.aws.StaticSite("Web", {
@@ -96,6 +124,20 @@ export default $config({
         VITE_API_URL: pulumi.interpolate`${api.url}/v1`,
         VITE_API_ORIGIN: api.url,
         VITE_STORAGE_ORIGIN: storageOrigin,
+      },
+      transform: {
+        cdn: (c) => {
+          c.transform = {
+            distribution: (d) => {
+              d.defaultCacheBehavior = pulumi
+                .output(d.defaultCacheBehavior)
+                .apply((behavior) => ({
+                  ...behavior,
+                  responseHeadersPolicyId: webHeaders.id,
+                }));
+            },
+          };
+        },
       },
     });
 
@@ -152,6 +194,7 @@ export default $config({
       transform: {
         table: (a) => {
           a.name = name("meta");
+          a.deletionProtectionEnabled = STAGE === PROD_STAGE;
         },
       },
     });
@@ -165,6 +208,7 @@ export default $config({
       transform: {
         table: (a) => {
           a.name = name("plans");
+          a.deletionProtectionEnabled = STAGE === PROD_STAGE;
         },
       },
     });
@@ -179,6 +223,7 @@ export default $config({
       transform: {
         table: (a) => {
           a.name = name("accounts");
+          a.deletionProtectionEnabled = STAGE === PROD_STAGE;
         },
       },
     });
@@ -192,6 +237,7 @@ export default $config({
       transform: {
         table: (a) => {
           a.name = name("tags");
+          a.deletionProtectionEnabled = STAGE === PROD_STAGE;
         },
       },
     });
@@ -205,6 +251,7 @@ export default $config({
       transform: {
         table: (a) => {
           a.name = name("rate-limits");
+          a.deletionProtectionEnabled = STAGE === PROD_STAGE;
         },
       },
     });

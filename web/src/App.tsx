@@ -23,6 +23,7 @@ import {
   readPendingDocuments,
   signOut,
   startSignIn,
+  watchSession,
   writePendingDocuments,
 } from "@/lib/client";
 import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
@@ -134,7 +135,10 @@ function App() {
       }
       const currentIdentity = getIdentity();
       setIdentity(currentIdentity);
-      if (currentIdentity?.token) setDocuments(readPendingDocuments());
+      if (currentIdentity?.token) {
+        setDocuments(readPendingDocuments());
+        watchSession();
+      }
     }
     initialize();
   }, [notify]);
@@ -191,7 +195,10 @@ function App() {
     setSelectedDocumentData(null);
     setLoadingDocument(true);
     try {
-      const data = await request("GET", `/documents/${documentId}`);
+      const data = await request(
+        "GET",
+        `/documents/${encodeURIComponent(documentId)}`,
+      );
       if (requestId === documentRequest.current) {
         setSelectedDocumentData(data);
       }
@@ -219,7 +226,10 @@ function App() {
       ),
     );
     try {
-      const data = await request("POST", `/documents/${documentId}/reindex`);
+      const data = await request(
+        "POST",
+        `/documents/${encodeURIComponent(documentId)}/reindex`,
+      );
       notify((data.message as string) || "Reindex started", "success");
       await loadDocuments();
     } catch (error) {
@@ -249,7 +259,7 @@ function App() {
       ),
     );
     try {
-      await request("DELETE", `/documents/${documentId}`);
+      await request("DELETE", `/documents/${encodeURIComponent(documentId)}`);
       if (refresh) {
         await loadDocuments();
         refreshUsage();

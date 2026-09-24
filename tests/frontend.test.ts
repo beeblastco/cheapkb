@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiCall,
+  getIdentity,
   getFileMimeType,
   getUserProfile,
   groupResults,
@@ -78,6 +79,29 @@ describe("frontend", () => {
   });
 
   describe("API client", () => {
+    it("treats an expired token as signed out", () => {
+      window.localStorage.setItem(
+        "shoo_identity",
+        JSON.stringify({
+          userId: "user-1",
+          token: jwt({ exp: Date.now() / 1000 - 60 }),
+        }),
+      );
+
+      expect(getIdentity()).toBeNull();
+      expect(window.localStorage.getItem("shoo_identity")).toBeNull();
+    });
+
+    it("keeps a token that has not expired", () => {
+      const token = jwt({ exp: Date.now() / 1000 + 600 });
+      window.localStorage.setItem(
+        "shoo_identity",
+        JSON.stringify({ userId: "user-1", token: token }),
+      );
+
+      expect(getIdentity()).toEqual({ token: token, userId: "user-1" });
+    });
+
     it("sends authenticated JSON requests to the configured API", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ documents: [] }), {
@@ -394,9 +418,9 @@ describe("frontend", () => {
 
       expect(sourceHtml).toContain("Content-Security-Policy");
       expect(sourceHtml).toContain("script-src 'self'");
-      expect(sourceHtml).toContain("script-src 'self' https://shoo.dev");
+      expect(sourceHtml).toContain("script-src 'self';");
+      expect(sourceHtml).not.toContain("shoo.js");
       expect(sourceHtml).toContain("https://lh3.googleusercontent.com");
-      expect(sourceHtml).toContain('data-shoo-pii="true"');
       expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
       expect(documentsSource).toContain("multiple");
       expect(documentsSource).toContain('window.addEventListener("drop"');
@@ -422,6 +446,12 @@ describe("frontend", () => {
     }, 30000);
   });
 });
+
+function jwt(claims: Record<string, unknown>): string {
+  const encode = (value: unknown) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode(claims)}.signature`;
+}
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
