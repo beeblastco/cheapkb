@@ -281,6 +281,29 @@ describe("chunk records", () => {
     ).toContain(":embedded");
   });
 
+  it("fails only the record whose error could not be recorded", async () => {
+    s3Mock.on(GetObjectCommand).rejects(new Error("parsed pages missing"));
+    dynamoMock.on(GetCommand).resolves({ Item: { retryCount: 0 } });
+    dynamoMock.on(UpdateCommand).rejects(new Error("dynamo unavailable"));
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-failed",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([
+      { itemIdentifier: "chunk-failed" },
+    ]);
+  });
+
   it("drops the message when the document was deleted", async () => {
     dynamoMock
       .on(UpdateCommand)

@@ -322,9 +322,10 @@ export function buildFilter(
         });
       }
     } else {
+      // JSON like 1e999 parses to Infinity, which S3 Vectors rejects with a 500.
       if (
         typeof value !== "string" &&
-        typeof value !== "number" &&
+        !(typeof value === "number" && Number.isFinite(value)) &&
         typeof value !== "boolean"
       ) {
         throw new Error(
@@ -467,14 +468,14 @@ function isValidOperatorValue(operator: string, value: unknown): boolean {
       value.every(
         (item) =>
           typeof item === "string" ||
-          typeof item === "number" ||
+          (typeof item === "number" && Number.isFinite(item)) ||
           typeof item === "boolean",
       )
     );
   }
   return (
     typeof value === "string" ||
-    typeof value === "number" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
     typeof value === "boolean"
   );
 }

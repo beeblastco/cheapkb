@@ -74,6 +74,12 @@ describe("query tenant filter", () => {
     ]);
   });
 
+  it("rejects non-finite numbers in every filter form", () => {
+    for (const year of [Infinity, { $eq: Infinity }, { $in: [Infinity] }]) {
+      expect(() => buildFilter({ year: year }, "owner")).toThrow();
+    }
+  });
+
   it("rejects unknown metadata keys", () => {
     expect(() => buildFilter({ secret: "value" }, "owner")).toThrow(
       "Unsupported filter",

@@ -22,6 +22,7 @@ const TagsTableName = process.env.TAGS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const BATCH_SIZE = 25;
+const TAG_DELETE_BACKOFF_MS = 100;
 
 // Deletes every document and tag the caller owns and brings stored bytes to 0.
 // Usage history stays, so a reset never grants a fresh allowance.
@@ -125,8 +126,14 @@ async function deleteTags(userId: string): Promise<number> {
       let requests = keys.slice(start, start + 25).map((key) => ({
         DeleteRequest: { Key: { pk: key.pk, sk: key.sk } },
       }));
-      // Throttled deletes come back as UnprocessedItems and are sent again.
+      // Throttled deletes come back as UnprocessedItems and are sent again,
+      // backing off so retries don't land in the same throttling window.
       for (let attempt = 0; requests.length > 0 && attempt < 3; attempt += 1) {
+        if (attempt > 0) {
+          await new Promise((resolve) => {
+            setTimeout(resolve, 2 ** (attempt - 1) * TAG_DELETE_BACKOFF_MS);
+          });
+        }
         const response = await dynamo.send(
           new BatchWriteCommand({
             RequestItems: { [TagsTableName]: requests },

@@ -1,4 +1,10 @@
-import { ListObjectVersionsCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  HeadObjectCommand,
+  ListObjectVersionsCommand,
+  NotFound,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DeleteCommand,
@@ -60,6 +66,9 @@ describe("S3 cleanup adapter", () => {
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(DeleteCommand).resolves({});
     s3Mock.on(ListObjectVersionsCommand).resolves({});
+    s3Mock
+      .on(HeadObjectCommand)
+      .rejects(new NotFound({ $metadata: {}, message: "not found" }));
 
     await handler(s3Event("raw/doc-1/file.pdf", 0));
 
@@ -70,5 +79,25 @@ describe("S3 cleanup adapter", () => {
       transaction?.[0].Update?.ExpressionAttributeValues?.[":nextBytes"],
     ).toBe(0);
     expect(transaction?.[1].Put?.Item?.sk).toBe("STORAGE#delete:doc-1");
+  });
+
+  it("skips a removal whose object was uploaded again", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        countedBytes: 100,
+        pk: "DOC#doc-1",
+        sk: "META",
+        sourceKey: "raw/doc-1/file.pdf",
+        status: "EMBEDDED",
+        userId: "owner",
+      },
+    });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 100 });
+
+    await handler(s3Event("raw/doc-1/file.pdf", 0));
+
+    expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 });

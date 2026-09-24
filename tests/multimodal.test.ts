@@ -19,6 +19,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handler as embed } from "../functions/embed/index";
@@ -320,6 +321,104 @@ describe("multimodal pipeline", () => {
     expect(first.batchItemFailures).toEqual([{ itemIdentifier: "embed-1" }]);
     expect(second.batchItemFailures).toEqual([]);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
+    expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
+  });
+
+  it("drops a duplicate delivery while another one holds the chunk claim", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            documentId: "doc-1",
+            userId: "user-1",
+            chunkId: "chunk-1",
+            modality: "text",
+            text: "hello",
+          }),
+      } as any,
+    });
+    dynamoMock.on(GetCommand).resolves({ Item: { status: "QUEUED" } });
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "held" }),
+      );
+
+    const result = await embed(
+      sqsEvent(
+        "embed-dup",
+        JSON.stringify({
+          documentId: "doc-1",
+          s3ChunkKey: "chunks/doc-1/chunk-1.json",
+        }),
+        1,
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);
+  });
+
+  it("keeps embedded chunks when recording another chunk's error fails", async () => {
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === "chunks/doc-2/chunk-2.json") {
+        throw new Error("chunk missing");
+      }
+      return {
+        Body: {
+          transformToString: async () =>
+            JSON.stringify({
+              documentId: "doc-1",
+              userId: "user-1",
+              chunkId: "chunk-1",
+              modality: "text",
+              text: "hello",
+            }),
+        } as any,
+      };
+    });
+    bedrockMock.on(InvokeModelCommand).resolves({
+      $metadata: { bedrockInputTokenCount: 1 } as any,
+      body: new TextEncoder().encode(
+        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
+      ),
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.sk?.startsWith("CHUNK#")
+          ? { Item: { status: "QUEUED" } }
+          : { Item: { chunkCount: 1, embeddedCount: 1, retryCount: 0 } },
+      );
+    dynamoMock.on(UpdateCommand).callsFake((input) => {
+      if (input.Key?.pk === "DOC#doc-2") throw new Error("dynamo unavailable");
+      return {};
+    });
+
+    const result = await embed({
+      Records: [
+        {
+          messageId: "embed-ok",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            s3ChunkKey: "chunks/doc-1/chunk-1.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+        {
+          messageId: "embed-bad",
+          body: JSON.stringify({
+            documentId: "doc-2",
+            s3ChunkKey: "chunks/doc-2/chunk-2.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([{ itemIdentifier: "embed-bad" }]);
     expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
   });
 

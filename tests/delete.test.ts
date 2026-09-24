@@ -1,5 +1,6 @@
 import {
   DeleteObjectsCommand,
+  HeadObjectCommand,
   ListObjectVersionsCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -84,6 +85,7 @@ describe("document deletion", () => {
       Versions: [{ Key: "raw/doc-1/file.pdf", VersionId: "version-1" }],
     });
     s3Mock.on(DeleteObjectsCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 10 });
 
     const response = await handler(
       apiEvent({ pathParameters: { id: "doc-1" } }),
@@ -96,5 +98,20 @@ describe("document deletion", () => {
       );
     }
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(2);
+  });
+
+  it("stops before deleting when the source size cannot be read", async () => {
+    s3Mock
+      .on(HeadObjectCommand)
+      .rejects(Object.assign(new Error("denied"), { name: "AccessDenied" }));
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 });

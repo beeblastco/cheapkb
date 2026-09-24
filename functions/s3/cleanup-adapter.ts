@@ -3,7 +3,7 @@ import {
   ConditionalCheckFailedException,
   DynamoDBClient,
 } from "@aws-sdk/client-dynamodb";
-import { S3Client } from "@aws-sdk/client-s3";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import {
   DeleteCommand,
@@ -41,6 +41,16 @@ export async function handler(event: S3Event) {
     const [, documentId] = parts;
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
     const document = await getDocument(documentId, dynamo, TableName);
+    // S3 can deliver a removal after the same key was uploaded again, so a live
+    // document is only cleaned up once its object is really gone.
+    if (
+      document &&
+      document.status !== "DELETING" &&
+      (await objectExists(key))
+    ) {
+      console.log(`[cleanup-adapter] Skipping stale removal for ${key}`);
+      continue;
+    }
     if (document && document.status !== "DELETING") {
       await markDeleting(documentId);
     }
@@ -160,5 +170,18 @@ async function markDeleting(documentId: string) {
     );
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+}
+
+/** Reports whether the removed object has been uploaded again since the event. */
+async function objectExists(key: string) {
+  try {
+    await s3.send(
+      new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as Error).name === "NotFound") return false;
+    throw error;
   }
 }
