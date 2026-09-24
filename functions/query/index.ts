@@ -284,14 +284,16 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
+// S3 Vectors rejects a filter with several top-level keys, so every condition
+// goes inside $and. The caller's userId is always replaced with their own.
 export function buildFilter(
   filters: Record<string, unknown> | undefined,
   userId: string,
 ): Record<string, DocumentType> {
-  const result: Record<string, DocumentType> = {
-    embeddingModel: embeddingModel(),
-    userId,
-  };
+  const conditions: DocumentType[] = [
+    { embeddingModel: { $eq: embeddingModel() } },
+    { userId: { $eq: userId } },
+  ];
   for (const [key, value] of Object.entries(filters ?? {})) {
     if (key === "userId") continue;
     if (!FILTER_KEYS.has(key)) {
@@ -300,8 +302,7 @@ export function buildFilter(
       );
     }
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      const op = value as Record<string, unknown>;
-      const entries = Object.entries(op);
+      const entries = Object.entries(value as Record<string, unknown>);
       if (
         entries.length === 0 ||
         entries.some(
@@ -314,7 +315,11 @@ export function buildFilter(
           `Unsupported operator for filter: ${key}. Allowed operators: ${[...FILTER_OPERATORS].join(", ")}`,
         );
       }
-      result[key] = Object.fromEntries(entries) as DocumentType;
+      for (const [operator, operatorValue] of entries) {
+        conditions.push({
+          [key]: { [operator]: operatorValue as DocumentType },
+        });
+      }
     } else {
       if (
         typeof value !== "string" &&
@@ -325,10 +330,10 @@ export function buildFilter(
           `Invalid filter value for: ${key}. Must be a string, number, boolean, or operator object`,
         );
       }
-      result[key] = value as DocumentType;
+      conditions.push({ [key]: { $eq: value } });
     }
   }
-  return result;
+  return { $and: conditions };
 }
 
 async function embedQuery(

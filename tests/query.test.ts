@@ -49,10 +49,29 @@ describe("query tenant filter", () => {
     expect(
       buildFilter({ userId: "attacker", year: { $gte: 2024 } }, "owner"),
     ).toEqual({
-      embeddingModel: "us.cohere.embed-v4:0",
-      userId: "owner",
-      year: { $gte: 2024 },
+      $and: [
+        { embeddingModel: { $eq: "us.cohere.embed-v4:0" } },
+        { userId: { $eq: "owner" } },
+        { year: { $gte: 2024 } },
+      ],
     });
+  });
+
+  // S3 Vectors answers "Invalid filter" to more than one top-level key.
+  it("puts every condition inside a single $and", () => {
+    const filter = buildFilter(
+      { tags: "research", year: { $gte: 2020, $lte: 2024 } },
+      "owner",
+    );
+
+    expect(Object.keys(filter)).toEqual(["$and"]);
+    expect(filter.$and).toEqual([
+      { embeddingModel: { $eq: "us.cohere.embed-v4:0" } },
+      { userId: { $eq: "owner" } },
+      { tags: { $eq: "research" } },
+      { year: { $gte: 2020 } },
+      { year: { $lte: 2024 } },
+    ]);
   });
 
   it("rejects unknown metadata keys", () => {
