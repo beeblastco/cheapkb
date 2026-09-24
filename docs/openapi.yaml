@@ -322,6 +322,29 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /account/data:
+    delete:
+      operationId: deleteAccountData
+      summary: Delete every document and tag the caller owns
+      description: Marks every document DELETING and removes its source, which starts the same cleanup as a single delete. Storage bytes not counted on any document are removed at once, so storage reaches 0 once the cleanups finish. Usage already spent this cycle stays.
+      tags: [account]
+      responses:
+        "202":
+          description: Deletion started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletingDocuments: { type: integer }
+                  deletedTags: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /account/usage:
     get:
       operationId: getAccountUsage

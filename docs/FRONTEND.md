@@ -4,6 +4,8 @@
 
 Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pinned `@shoojs/auth` client instead of loading a script from shoo.dev, and signs you out when your token expires or the session is revoked. Each account can only access its own documents, images, and search results.
 
+Settings has **Delete all my data**, which deletes every document, image and tag in the account and resets storage to 0. Usage already spent in the current cycle stays.
+
 ## Documents
 
 The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
