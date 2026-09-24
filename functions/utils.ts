@@ -219,7 +219,10 @@ export async function deleteDocumentVectors(
       ),
     );
   }
-  await Promise.all(deletes);
+  // Every batch settles before a failure is thrown, so no delete is still in flight.
+  const deleted = await Promise.allSettled(deletes);
+  const failedDelete = deleted.find((result) => result.status === "rejected");
+  if (failedDelete) throw failedDelete.reason;
 
   return chunkItems;
 }
@@ -239,7 +242,9 @@ export async function retagDocumentVectors(
     batches.push(vectorKeys.slice(i, i + VECTOR_GET_BATCH));
   }
 
-  const counts = await Promise.all(
+  // Every batch settles before a failure is thrown, so no stale put lands after
+  // the caller releases its update lease.
+  const results = await Promise.allSettled(
     batches.map(async (keys) => {
       const existing = await vectorClient.send(
         new GetVectorsCommand({
@@ -272,7 +277,14 @@ export async function retagDocumentVectors(
     }),
   );
 
-  return counts.reduce((total, count) => total + count, 0);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+
+  return results.reduce(
+    (total, result) =>
+      total + (result.status === "fulfilled" ? result.value : 0),
+    0,
+  );
 }
 
 /** Loads a document's META row, or null when the document does not exist.
