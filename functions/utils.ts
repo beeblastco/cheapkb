@@ -77,6 +77,9 @@ type TransactItem = NonNullable<
 
 export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
+// A document the pipeline can never process, so it fails without retries.
+export class ContentError extends Error {}
+
 export function accountId(pk: string) {
   return pk.replace("ACCOUNT#", "");
 }

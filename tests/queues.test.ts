@@ -34,6 +34,32 @@ describe("SQS partial failures", () => {
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "parse-1" }]);
   });
 
+  it("fails a document with no text on the first attempt", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToByteArray: async () => new TextEncoder().encode("   "),
+      } as any,
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+
+    const result = await parse(
+      sqsEvent(
+        "parse-empty",
+        JSON.stringify({
+          documentId: "doc-1",
+          sourceKey: "raw/doc-1/empty.txt",
+          mimeType: "text/plain",
+        }),
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(
+      dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
+        .ExpressionAttributeValues,
+    ).toEqual(expect.objectContaining({ ":s": "FAILED", ":f": "PARSING" }));
+  });
+
   it("returns failed embedding records to SQS and records the attempt", async () => {
     s3Mock.on(GetObjectCommand).rejects(new Error("temporary S3 failure"));
     dynamoMock.on(GetCommand).resolves({ Item: { retryCount: 0 } });

@@ -10,7 +10,8 @@ import {
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
-import { extractText } from "unpdf";
+import { extractText, getDocumentProxy } from "unpdf";
+import { ContentError } from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
@@ -18,6 +19,7 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const MAX_PDF_PAGES = 500;
 const IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",
@@ -51,6 +53,10 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
         continue;
       }
       console.error(`[parse] Failed for ${documentId}:`, err);
+      if (err instanceof ContentError) {
+        await handleError(documentId, err, 3);
+        continue;
+      }
       const attempt = parseInt(
         record.attributes.ApproximateReceiveCount ?? "1",
         10,
@@ -77,7 +83,9 @@ async function parseDocument(
 
   if (IMAGE_MIME_TYPES.has(mimeType)) {
     if (!matchesImageSignature(bytes, mimeType)) {
-      throw new Error("Image content does not match its declared MIME type");
+      throw new ContentError(
+        "Image content does not match its declared MIME type",
+      );
     }
     const parsedKey = `parsed/${documentId}/v1/image.json`;
     await s3.send(
@@ -120,7 +128,7 @@ async function parseDocument(
 
   const hasText = pages.some((p) => p.text && p.text.trim().length > 0);
   if (!hasText) {
-    throw new Error("Document produced no extractable text");
+    throw new ContentError("Document produced no extractable text");
   }
 
   const parsedKey = `parsed/${documentId}/v1/pages.json`;
@@ -165,9 +173,21 @@ async function clearError(documentId: string, now: string) {
   );
 }
 
+// The page count is checked before any text is extracted, so a huge PDF fails
+// fast instead of exhausting the Lambda's memory.
 async function extractPdfText(bytes: Uint8Array) {
-  const { text } = await extractText(bytes, { mergePages: false });
-  return (text as string[])
+  let text: string[];
+  try {
+    const pdf = await getDocumentProxy(bytes);
+    if (pdf.numPages > MAX_PDF_PAGES) {
+      throw new ContentError(`PDF exceeds the ${MAX_PDF_PAGES} page limit`);
+    }
+    ({ text } = await extractText(pdf, { mergePages: false }));
+  } catch (err) {
+    if (err instanceof ContentError) throw err;
+    throw new ContentError(`Could not read PDF: ${(err as Error).message}`);
+  }
+  return text
     .map((pageText: string, i: number) => ({
       pageNumber: i + 1,
       text: pageText.trim(),

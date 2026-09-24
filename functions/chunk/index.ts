@@ -16,6 +16,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import { decode, encode } from "gpt-tokenizer";
+import { ContentError } from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
@@ -42,18 +43,22 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       batchItemFailures.push({ itemIdentifier: record.messageId });
       continue;
     }
+    const attempt = parseInt(
+      record.attributes.ApproximateReceiveCount ?? "1",
+      10,
+    );
     try {
-      await chunkDocument(documentId, parsedKey);
+      await chunkDocument(documentId, parsedKey, attempt);
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
         console.log(`[chunk] Document ${documentId} was deleted, dropping`);
         continue;
       }
       console.error(`[chunk] Failed for ${documentId}:`, err);
-      const attempt = parseInt(
-        record.attributes.ApproximateReceiveCount ?? "1",
-        10,
-      );
+      if (err instanceof ContentError) {
+        await handleError(documentId, err, 3);
+        continue;
+      }
       await handleError(documentId, err, attempt);
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
@@ -61,7 +66,11 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures };
 }
 
-async function chunkDocument(documentId: string, parsedKey: string) {
+async function chunkDocument(
+  documentId: string,
+  parsedKey: string,
+  attempt: number,
+) {
   const now = new Date().toISOString();
   await updateStatus(documentId, "CHUNKING", now);
 
@@ -109,22 +118,20 @@ async function chunkDocument(documentId: string, parsedKey: string) {
         ContentType: "application/json",
       }),
     );
-    await dynamo.send(
-      new PutCommand({
-        TableName,
-        Item: {
-          pk: `DOC#${documentId}`,
-          sk: `CHUNK#${chunkId}`,
-          chunkId,
-          s3ChunkKey,
-          pageStart: 1,
-          pageEnd: 1,
-          status: "QUEUED",
-          createdAt: now,
-        },
-      }),
+    const queued = await putChunkRecord(
+      {
+        pk: `DOC#${documentId}`,
+        sk: `CHUNK#${chunkId}`,
+        chunkId,
+        s3ChunkKey,
+        pageStart: 1,
+        pageEnd: 1,
+        status: "QUEUED",
+        createdAt: now,
+      },
+      attempt,
     );
-    await finishChunking(documentId, [s3ChunkKey], now);
+    await finishChunking(documentId, 1, queued ? [s3ChunkKey] : [], now);
     console.log(`[chunk] OK: ${documentId} - image -> ${s3ChunkKey}`);
     return;
   }
@@ -171,26 +178,24 @@ async function chunkDocument(documentId: string, parsedKey: string) {
         ContentType: "application/json",
       }),
     );
-    await dynamo.send(
-      new PutCommand({
-        TableName,
-        Item: {
-          pk: `DOC#${documentId}`,
-          sk: `CHUNK#${chunkId}`,
-          chunkId,
-          s3ChunkKey,
-          pageStart: chunk.pageStart,
-          pageEnd: chunk.pageEnd,
-          tokenCount,
-          status: "QUEUED",
-          createdAt: now,
-        },
-      }),
+    const queued = await putChunkRecord(
+      {
+        pk: `DOC#${documentId}`,
+        sk: `CHUNK#${chunkId}`,
+        chunkId,
+        s3ChunkKey,
+        pageStart: chunk.pageStart,
+        pageEnd: chunk.pageEnd,
+        tokenCount,
+        status: "QUEUED",
+        createdAt: now,
+      },
+      attempt,
     );
-    chunkKeys.push(s3ChunkKey);
+    if (queued) chunkKeys.push(s3ChunkKey);
   }
 
-  await finishChunking(documentId, chunkKeys, now);
+  await finishChunking(documentId, chunks.length, chunkKeys, now);
 
   console.log(
     `[chunk] OK: ${documentId} - ${chunks.length} chunks -> ${chunkKeys[0]}`,
@@ -218,6 +223,7 @@ async function clearError(documentId: string, now: string) {
 
 async function finishChunking(
   documentId: string,
+  chunkCount: number,
   chunkKeys: string[],
   now: string,
 ) {
@@ -232,7 +238,7 @@ async function finishChunking(
       ExpressionAttributeValues: {
         ":deleting": "DELETING",
         ":s": "CHUNKED",
-        ":c": chunkKeys.length,
+        ":c": chunkCount,
         ":t": now,
         ":gsi1pk": "STATUS#CHUNKED",
         ":gsi1sk": now,
@@ -267,6 +273,34 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
     await writeError(documentId, err, attempt);
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+}
+
+// A redelivered message keeps chunks that were already embedded, so they are not
+// embedded and billed twice. A first delivery starts every chunk over.
+async function putChunkRecord(
+  item: Record<string, unknown>,
+  attempt: number,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new PutCommand({
+        TableName,
+        Item: item,
+        ...(attempt > 1
+          ? {
+              ConditionExpression:
+                "attribute_not_exists(pk) OR #s <> :embedded",
+              ExpressionAttributeNames: { "#s": "status" },
+              ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
+            }
+          : {}),
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
   }
 }
 
@@ -366,7 +400,7 @@ function splitIntoChunks(
         i: i++,
       });
       if (out.length > maxChunks) {
-        throw new Error(`Document exceeds the ${maxChunks} chunk limit`);
+        throw new ContentError(`Document exceeds the ${maxChunks} chunk limit`);
       }
     }
     const keep = buffer.slice(Math.max(0, buffer.length - overlapTokens));

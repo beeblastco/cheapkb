@@ -294,12 +294,16 @@ describe("multimodal pipeline", () => {
       ),
     });
     vectorsMock.on(PutVectorsCommand).resolves({});
-    dynamoMock.on(TransactWriteCommand).resolves({});
+    let chunkStatus = "QUEUED";
+    dynamoMock.on(TransactWriteCommand).callsFake(() => {
+      chunkStatus = "EMBEDDED";
+      return {};
+    });
     dynamoMock.on(UpdateCommand).resolves({});
     let metadataReads = 0;
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.sk === "CHUNK#chunk-1") {
-        return { Item: { status: "EMBEDDED" } };
+        return { Item: { status: chunkStatus } };
       }
       metadataReads += 1;
       if (metadataReads === 1) throw new Error("metadata unavailable");

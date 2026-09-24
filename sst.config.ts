@@ -287,6 +287,15 @@ export default $config({
         },
       },
     });
+    // Holds S3 events the adapters could not process after S3's own retries.
+    const adapterDlq = new sst.aws.Queue("AdapterDLQ", {
+      transform: {
+        queue: (a) => {
+          a.name = name("adapter-dlq");
+          a.messageRetentionSeconds = 14 * 24 * 60 * 60;
+        },
+      },
+    });
     // Parse, chunk and embed share one queue because each Lambda event source
     // idle-polls ~260k SQS requests/month against the 1M free tier.
     const pipelineQueue = new sst.aws.Queue("Pipeline", {
@@ -536,6 +545,12 @@ export default $config({
           size: 10,
           window: "1 second",
           partialResponses: true,
+        },
+        transform: {
+          // One tenant flooding the queue must not use up everyone's Bedrock quota.
+          eventSourceMapping: (a) => {
+            a.scalingConfig = { maximumConcurrency: 5 };
+          },
         },
       },
     );
@@ -898,11 +913,18 @@ export default $config({
           actions: ["s3vectors:DeleteVectors"],
           resources: [vectorIndexArn],
         },
-        { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
+        {
+          actions: ["sqs:SendMessage"],
+          resources: [pipelineQueue.arn, adapterDlq.arn],
+        },
       ],
+      retries: 2,
       transform: {
         function: (a) => {
           a.name = name("ingest-adapter");
+        },
+        eventInvokeConfig: (a) => {
+          a.destinationConfig = { onFailure: { destination: adapterDlq.arn } };
         },
       },
     });
@@ -940,10 +962,15 @@ export default $config({
           actions: ["s3vectors:DeleteVectors"],
           resources: [vectorIndexArn],
         },
+        { actions: ["sqs:SendMessage"], resources: [adapterDlq.arn] },
       ],
+      retries: 2,
       transform: {
         function: (a) => {
           a.name = name("cleanup-adapter");
+        },
+        eventInvokeConfig: (a) => {
+          a.destinationConfig = { onFailure: { destination: adapterDlq.arn } };
         },
       },
     });
@@ -959,13 +986,49 @@ export default $config({
         {
           name: "cleanup-adapter",
           function: cleanupAdapterFn.arn,
-          events: [
-            "s3:ObjectRemoved:Delete",
-            "s3:ObjectRemoved:DeleteMarkerCreated",
-          ],
+          // Versioned deletes, including the adapter's own, create no marker.
+          events: ["s3:ObjectRemoved:DeleteMarkerCreated"],
           filterPrefix: "raw/",
         },
       ],
+    });
+
+    new sst.aws.CronV2("Sweeper", {
+      schedule: "rate(1 hour)",
+      function: {
+        handler: "./functions/sweeper/index.handler",
+        runtime: "nodejs22.x",
+        timeout: "300 seconds",
+        memory: "128 MB",
+        description: "Retry or fail work left in the dead-letter queues",
+        environment: {
+          ...baseEnv,
+          PIPELINE_DLQ_URL: pipelineDlq.url,
+          ADAPTER_DLQ_URL: adapterDlq.url,
+        },
+        permissions: [
+          {
+            actions: ["sqs:DeleteMessage", "sqs:ReceiveMessage"],
+            resources: [pipelineDlq.arn, adapterDlq.arn],
+          },
+          { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
+          { actions: ["dynamodb:UpdateItem"], resources: [table.arn] },
+          {
+            actions: ["lambda:InvokeFunction"],
+            resources: [
+              ingestAdapterFn.nodes.function.arn,
+              pulumi.interpolate`${ingestAdapterFn.nodes.function.arn}:*`,
+              cleanupAdapterFn.nodes.function.arn,
+              pulumi.interpolate`${cleanupAdapterFn.nodes.function.arn}:*`,
+            ],
+          },
+        ],
+        transform: {
+          function: (a) => {
+            a.name = name("sweeper");
+          },
+        },
+      },
     });
 
     api.route("POST /upload", uploadFn.arn);

@@ -230,21 +230,21 @@ async function batchProcess(
         s3ChunkKey: chunk.s3ChunkKey,
       };
 
-      if (chunk.attempt > 1) {
-        const existing = await dynamo.send(
-          new GetCommand({
-            TableName,
-            Key: {
-              pk: `DOC#${chunk.documentId}`,
-              sk: `CHUNK#${metadata.chunkId}`,
-            },
-            ConsistentRead: true,
-          }),
-        );
-        if (existing.Item?.status === "EMBEDDED") {
-          reconcileDocuments.add(chunk.documentId);
-          continue;
-        }
+      // A duplicate message for an embedded chunk must not be embedded and
+      // billed again, whichever delivery it is.
+      const existing = await dynamo.send(
+        new GetCommand({
+          TableName,
+          Key: {
+            pk: `DOC#${chunk.documentId}`,
+            sk: `CHUNK#${metadata.chunkId}`,
+          },
+          ConsistentRead: true,
+        }),
+      );
+      if (existing.Item?.status === "EMBEDDED") {
+        reconcileDocuments.add(chunk.documentId);
+        continue;
       }
 
       if (modality === "image") {
