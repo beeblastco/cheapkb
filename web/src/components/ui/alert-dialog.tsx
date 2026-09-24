@@ -95,6 +95,7 @@ function AlertDialogFooter({
   );
 }
 
+/** Renders the round icon or image slot at the top of an alert dialog. */
 function AlertDialogMedia({
   className,
   ...props
@@ -111,6 +112,7 @@ function AlertDialogMedia({
   );
 }
 
+/** Renders the title of an alert dialog. */
 function AlertDialogTitle({
   className,
   ...props

@@ -557,6 +557,7 @@ components:
         results:
           type: array
           items: { $ref: "#/components/schemas/QueryResult" }
+          maxItems: 100
 
     QueryResult:
       type: object

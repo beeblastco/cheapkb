@@ -1,0 +1,16 @@
+{
+  "code_analysis": {
+    "enabled": true,
+    "features": {
+      "sast_analysis": "enabled",
+      "secrets_analysis": "enabled",
+      "sca_analysis": "enabled",
+      "iac_analysis": "enabled",
+      "deadcode_analysis": "enabled",
+      "duplicatecode_analysis": "enabled",
+      "antipatterns_analysis": "disabled",
+      "docstring_analysis": "enabled",
+      "complex_function_analysis": "enabled"
+    }
+  }
+}
