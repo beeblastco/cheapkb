@@ -89,11 +89,9 @@ function App() {
     (title: string, message: string, retry?: () => void) => {
       const id = crypto.randomUUID();
       setNotices((current) => [
-        ...current
-          .filter(
-            (notice) => notice.title !== title || notice.message !== message,
-          )
-          .slice(-2),
+        ...current.filter(
+          (notice) => notice.title !== title || notice.message !== message,
+        ),
         { id: id, message: message, retry: retry, title: title },
       ]);
       if (!retry) window.setTimeout(() => dismissNotice(id), NOTICE_MS);
