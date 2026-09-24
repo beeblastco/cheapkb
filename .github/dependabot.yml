@@ -12,6 +12,12 @@ updates:
     ignore:
       # SST ships its own @pulumi/aws; bump it together with sst.
       - dependency-name: "@pulumi/aws"
+      # Matches the nodejs22.x Lambda runtime; bump with the runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # v9 renames the table API; needs its own PR with a UI check.
+      - dependency-name: "@tanstack/react-table"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
