@@ -86,13 +86,13 @@ export function useTags(token: string): TagVocabulary {
       createTagRequest(token, variables.name, variables.color),
     onMutate: begin,
     onSuccess: (saved) =>
-      patch((current) =>
-        current.some((tag) => byName(tag.name) === byName(saved.name))
-          ? current.map((tag) =>
-              byName(tag.name) === byName(saved.name) ? saved : tag,
-            )
-          : [...current, saved],
-      ),
+      patch((current) => {
+        return current.some((tag) => byName(tag.name) === byName(saved.name))
+          ? current.map((tag) => {
+              return byName(tag.name) === byName(saved.name) ? saved : tag;
+            })
+          : [...current, saved];
+      }),
     onError: fail,
     onSettled: settle,
   });
@@ -104,9 +104,9 @@ export function useTags(token: string): TagVocabulary {
     onMutate: begin,
     onSuccess: (saved) =>
       patch((current) =>
-        current.map((tag) =>
-          byName(tag.name) === byName(saved.name) ? saved : tag,
-        ),
+        current.map((tag) => {
+          return byName(tag.name) === byName(saved.name) ? saved : tag;
+        }),
       ),
     onError: fail,
     onSettled: settle,
@@ -188,9 +188,11 @@ function applyInFlight(serverTags: Tag[], inFlight: TagMutation[]): Tag[] {
       }
     } else if (variables.type === "recolor") {
       const { name, color } = variables;
-      tags = tags.map((tag) =>
-        byName(tag.name) === byName(name) ? { ...tag, color: color } : tag,
-      );
+      tags = tags.map((tag) => {
+        return byName(tag.name) === byName(name)
+          ? { ...tag, color: color }
+          : tag;
+      });
     } else {
       tags = tags.filter((tag) => byName(tag.name) !== byName(variables.name));
     }

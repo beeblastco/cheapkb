@@ -141,7 +141,10 @@ export function Header({
         </Card>
       </header>
 
-      <Dialog onOpenChange={(open) => !open && setDialog(null)} open={!!dialog}>
+      <Dialog
+        onOpenChange={(open) => !open && setDialog(null)}
+        open={Boolean(dialog)}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>

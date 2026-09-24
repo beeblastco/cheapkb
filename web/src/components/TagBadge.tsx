@@ -3,6 +3,7 @@ import { TAG_BADGE_CLASSES, TAG_SWATCH_CLASSES } from "@/lib/tag-colors";
 import type { TagColor } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/** Colored badge showing a tag name, used in document rows and details. */
 export function TagBadge({
   className,
   color,
@@ -24,6 +25,7 @@ export function TagBadge({
   );
 }
 
+/** Small colored dot for a tag color, used in the picker and color panel. */
 export function TagSwatch({
   className,
   color,
