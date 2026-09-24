@@ -632,7 +632,8 @@ async function markEmbedded(documentId: string) {
 
 async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
-  const lastError = (err as Error).message ?? String(err);
+  // Raw SDK messages can name buckets and ARNs; the detail is in the logs.
+  const lastError = "Embedding failed. Reindex to try again.";
 
   if (attempt >= 3) {
     await dynamo.send(
