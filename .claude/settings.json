@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.ts|*.tsx|*.js|*.mjs|*.json|*.md|*.yml|*.yaml|*.css|*.html) npx prettier --write \"$f\" >/dev/null 2>&1;; esac; case \"$f\" in *.ts|*.tsx|*.js|*.mjs) out=$(npx oxlint --format=unix \"$f\" 2>/dev/null); if [ -n \"$out\" ]; then echo \"$out\" >&2; exit 2; fi;; esac",
+            "timeout": 30,
+            "statusMessage": "prettier + oxlint on edited file"
+          }
+        ]
+      }
+    ]
+  }
+}

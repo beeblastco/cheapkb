@@ -398,7 +398,7 @@ describe("frontend", () => {
       execFileSync("npm", ["--prefix", "web", "run", "build"], {
         env: {
           ...process.env,
-          API_URL,
+          API_URL: API_URL,
           VITE_STORAGE_ORIGIN: STORAGE_ORIGIN,
         },
         stdio: "pipe",

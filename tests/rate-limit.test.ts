@@ -5,7 +5,7 @@ describe("rate limit buckets", () => {
     const { checkRateLimit } = await import("../functions/utils");
 
     const send = vi.fn().mockResolvedValue({});
-    const client = { send } as any;
+    const client = { send: send } as any;
 
     await checkRateLimit("user", "table", "QUERY", 100, 100, client);
 

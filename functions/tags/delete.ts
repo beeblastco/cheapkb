@@ -15,7 +15,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   await dynamo.send(
     new DeleteCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `USER#${userId}`, sk: `TAG#${name.toLowerCase()}` },
     }),
   );
@@ -23,7 +23,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, deleted: true }),
+    body: JSON.stringify({ name: name, deleted: true }),
   };
 }
 

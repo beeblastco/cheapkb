@@ -74,7 +74,7 @@ async function markFailed(documentId: string, step: string): Promise<void> {
   try {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :failed, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
@@ -141,7 +141,7 @@ async function redrivePipelineMessage(body: string): Promise<boolean> {
 
   const { Item: doc } = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${message.documentId}`, sk: "META" },
       ConsistentRead: true,
     }),

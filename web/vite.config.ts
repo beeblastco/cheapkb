@@ -14,7 +14,7 @@ export default defineConfig({
     tailwindcss(),
     {
       name: "content-security-policy",
-      transformIndexHtml(html) {
+      transformIndexHtml: function (html) {
         return html
           .replaceAll("__API_ORIGIN__", API_ORIGIN)
           .replaceAll("__STORAGE_ORIGIN__", STORAGE_ORIGIN);

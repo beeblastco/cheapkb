@@ -49,7 +49,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     }
   }
 
-  return { batchItemFailures };
+  return { batchItemFailures: batchItemFailures };
 }
 
 function readStage(record: SQSRecord): Stage | undefined {

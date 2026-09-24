@@ -79,7 +79,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const key = { pk: `USER#${userId}`, sk: `TAG#${name.toLowerCase()}` };
 
-  const existing = await dynamo.send(new GetCommand({ TableName, Key: key }));
+  const existing = await dynamo.send(
+    new GetCommand({ TableName: TableName, Key: key }),
+  );
   if (existing.Item) {
     const stored = existing.Item as Tag;
     return {
@@ -97,7 +99,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const countRes = await dynamo.send(
     new QueryCommand({
-      TableName,
+      TableName: TableName,
       Select: "COUNT",
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
       ExpressionAttributeValues: {
@@ -120,12 +122,12 @@ export async function handler(event: APIGatewayProxyEventV2) {
   try {
     await dynamo.send(
       new PutCommand({
-        TableName,
+        TableName: TableName,
         Item: {
           pk: key.pk,
           sk: key.sk,
-          name,
-          color,
+          name: name,
+          color: color,
           createdAt: now,
         },
         ConditionExpression: "attribute_not_exists(pk)",
@@ -134,13 +136,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tag: { name, color, createdAt: now } }),
+      body: JSON.stringify({
+        tag: { name: name, color: color, createdAt: now },
+      }),
     };
   } catch (error) {
     if ((error as Error).name !== "ConditionalCheckFailedException")
       throw error;
     const raced = await dynamo.send(
-      new GetCommand({ TableName, Key: key, ConsistentRead: true }),
+      new GetCommand({ TableName: TableName, Key: key, ConsistentRead: true }),
     );
     if (!raced.Item) {
       return {

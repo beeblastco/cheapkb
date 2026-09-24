@@ -10,7 +10,13 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "bundle:check": "node scripts/bundle-budget.ts --check",
+    "bundle:record": "node scripts/bundle-budget.ts --record",
+    "check": "npm run lint && npm run format:check && npm run build && npm test",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1138.0",
@@ -30,11 +36,13 @@
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
+    "@shadcn/lint": "^0.2.0",
     "@types/aws-lambda": "^8.10.163",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.20.4",
     "aws-sdk-client-mock": "^4.1.0",
     "jsdom": "^30.1.1",
+    "oxlint": "^1.85.0",
     "prettier": "^3.9.9",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

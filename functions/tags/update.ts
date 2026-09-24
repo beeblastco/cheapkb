@@ -53,7 +53,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   try {
     const updated = await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `USER#${userId}`, sk: `TAG#${name.toLowerCase()}` },
         UpdateExpression: "SET #color = :color",
         ExpressionAttributeNames: { "#color": "color" },
@@ -69,7 +69,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({
         tag: {
           name: attrs?.name ?? name,
-          color,
+          color: color,
           createdAt: attrs?.createdAt,
         },
       }),

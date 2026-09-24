@@ -151,7 +151,7 @@ describe("query handler usage", () => {
     ]).toString("base64")}`;
     const response = await queryHandler({
       headers: { authorization: "Bearer token" },
-      body: JSON.stringify({ image }),
+      body: JSON.stringify({ image: image }),
     });
 
     expect(response.statusCode).toBe(200);
@@ -179,7 +179,7 @@ describe("query handler usage", () => {
     ]).toString("base64")}`;
     const response = await queryHandler({
       headers: { authorization: "Bearer token" },
-      body: JSON.stringify({ query: "catalog photo", image }),
+      body: JSON.stringify({ query: "catalog photo", image: image }),
     });
 
     expect(response.statusCode).toBe(200);

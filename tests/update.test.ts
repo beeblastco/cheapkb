@@ -33,11 +33,11 @@ const s3Mock = mockClient(S3Client);
 const vectorsMock = mockClient(S3VectorsClient);
 
 function patchEvent(body: unknown, id = "doc-1") {
-  return jsonApiEvent(body, { pathParameters: { id } });
+  return jsonApiEvent(body, { pathParameters: { id: id } });
 }
 
 function rawBodyEvent(body: string, id = "doc-1") {
-  return apiEvent({ body, pathParameters: { id } });
+  return apiEvent({ body: body, pathParameters: { id: id } });
 }
 
 function embeddedDocument(overrides: Record<string, any> = {}) {
@@ -75,7 +75,7 @@ function chunkObject(tags: string[] | null = ["old"]) {
           chunkId: "chunk_doc-1_0",
           text: "chunk body",
           title: "Title",
-          tags,
+          tags: tags,
           pageStart: 1,
           pageEnd: 2,
         }),
@@ -87,7 +87,7 @@ function chunkObject(tags: string[] | null = ["old"]) {
 // below are meaningful rather than testing a stripped-down fixture.
 function storedVector(key = "chunk_doc-1_0") {
   return {
-    key,
+    key: key,
     data: { float32: [0.25, -0.5, 0.75] },
     metadata: {
       documentId: "doc-1",

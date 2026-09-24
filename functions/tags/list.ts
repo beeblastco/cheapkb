@@ -22,7 +22,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   do {
     const res = await dynamo.send(
       new QueryCommand({
-        TableName,
+        TableName: TableName,
         KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
         ExpressionAttributeValues: {
           ":pk": `USER#${userId}`,
@@ -49,7 +49,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ count: tags.length, tags }),
+    body: JSON.stringify({ count: tags.length, tags: tags }),
   };
 }
 

@@ -56,7 +56,7 @@ function Bubble({
       data-slot="bubble"
       data-variant={variant}
       data-align={align}
-      className={cn(bubbleVariants({ variant }), className)}
+      className={cn(bubbleVariants({ variant: variant }), className)}
       {...props}
     />
   );
@@ -78,7 +78,7 @@ function BubbleContent({
       },
       props,
     ),
-    render,
+    render: render,
     state: {
       slot: "bubble-content",
     },
@@ -116,7 +116,10 @@ function BubbleReactions({
       data-slot="bubble-reactions"
       data-align={align}
       data-side={side}
-      className={cn(bubbleReactionsVariants({ side, align }), className)}
+      className={cn(
+        bubbleReactionsVariants({ side: side, align: align }),
+        className,
+      )}
       {...props}
     />
   );

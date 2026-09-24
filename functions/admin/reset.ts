@@ -150,7 +150,7 @@ async function listDocuments(userId: string): Promise<DocumentRow[]> {
   do {
     const page = await dynamo.send(
       new QueryCommand({
-        TableName,
+        TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },

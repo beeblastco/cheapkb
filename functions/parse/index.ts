@@ -65,7 +65,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
-  return { batchItemFailures };
+  return { batchItemFailures: batchItemFailures };
 }
 
 async function parseDocument(
@@ -93,12 +93,12 @@ async function parseDocument(
         Bucket: StorageBucketName,
         Key: parsedKey,
         Body: JSON.stringify({
-          documentId,
+          documentId: documentId,
           parserVersion: "multimodal-v1",
           extractedAt: now,
           modality: "image",
-          sourceKey,
-          mimeType,
+          sourceKey: sourceKey,
+          mimeType: mimeType,
           pageCount: 1,
         }),
         ContentType: "application/json",
@@ -137,11 +137,11 @@ async function parseDocument(
       Bucket: StorageBucketName,
       Key: parsedKey,
       Body: JSON.stringify({
-        documentId,
+        documentId: documentId,
         parserVersion: "unpdf-v1",
         extractedAt: now,
         pageCount: pages.length,
-        pages,
+        pages: pages,
       }),
       ContentType: "application/json",
     }),
@@ -157,7 +157,7 @@ async function parseDocument(
 async function clearError(documentId: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
@@ -209,7 +209,11 @@ async function finishParsing(
   await sqs.send(
     new SendMessageCommand({
       QueueUrl: PipelineQueueUrl,
-      MessageBody: JSON.stringify({ stage: "chunk", documentId, parsedKey }),
+      MessageBody: JSON.stringify({
+        stage: "chunk",
+        documentId: documentId,
+        parsedKey: parsedKey,
+      }),
     }),
   );
 }
@@ -226,7 +230,7 @@ async function handleError(documentId: string, err: unknown, attempt: number) {
 async function updateStatus(documentId: string, status: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -254,7 +258,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   if (attempt >= 3) {
     await dynamo.send(
       new UpdateCommand({
-        TableName,
+        TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
@@ -277,7 +281,7 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
 
   await dynamo.send(
     new UpdateCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",

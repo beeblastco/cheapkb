@@ -26,7 +26,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const result = await dynamo.send(
     new GetCommand({
-      TableName,
+      TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
     }),
   );
@@ -48,7 +48,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
 
   const chunksResult = await dynamo.send(
     new QueryCommand({
-      TableName,
+      TableName: TableName,
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :sk)",
       ExpressionAttributeValues: {
         ":pk": `DOC#${documentId}`,

@@ -1,0 +1,15 @@
+{
+  "recordedAt": "2026-09-24T09:00:26.310Z",
+  "metrics": {
+    "web/js-total": {
+      "bytes": 3349027,
+      "ceilingBytes": 5023541,
+      "maxGrowthPct": 10
+    },
+    "web/largest-chunk": {
+      "bytes": 2228489,
+      "ceilingBytes": 3342734,
+      "maxGrowthPct": 10
+    }
+  }
+}
