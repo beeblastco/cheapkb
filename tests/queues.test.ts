@@ -79,7 +79,11 @@ describe("SQS partial failures", () => {
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "embed-1" }]);
     expect(dynamoMock.commandCalls(UpdateCommand)[0].args[0].input).toEqual(
       expect.objectContaining({
-        ExpressionAttributeValues: expect.objectContaining({ ":r": 2 }),
+        // The raw S3 error stays in the logs, not on the document.
+        ExpressionAttributeValues: expect.objectContaining({
+          ":r": 2,
+          ":e": "Embedding failed. Reindex to try again.",
+        }),
       }),
     );
   });

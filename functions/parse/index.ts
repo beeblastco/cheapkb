@@ -245,7 +245,11 @@ async function updateStatus(documentId: string, status: string, now: string) {
 
 async function writeError(documentId: string, err: unknown, attempt: number) {
   const now = new Date().toISOString();
-  const lastError = (err as Error).message ?? String(err);
+  // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
+  const lastError =
+    err instanceof ContentError
+      ? err.message
+      : "Processing failed. Reindex to try again.";
 
   if (attempt >= 3) {
     await dynamo.send(
