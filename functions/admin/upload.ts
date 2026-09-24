@@ -25,7 +25,7 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "10485760",
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
 );
 const MAX_IMAGE_UPLOAD_BYTES = Math.min(

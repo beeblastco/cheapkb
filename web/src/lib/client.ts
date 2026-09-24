@@ -24,7 +24,7 @@ const FAILED_DOCUMENT_MAX_AGE_MS = 5 * 60 * 1000;
 const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
@@ -498,7 +498,7 @@ export function validateUploadFile(file: File): string | undefined {
   ) {
     return "Image exceeds the 5 MB limit";
   }
-  if (file.size > MAX_UPLOAD_BYTES) return "File exceeds the 10 MB limit";
+  if (file.size > MAX_UPLOAD_BYTES) return "File exceeds the 50 MB limit";
   return undefined;
 }
 

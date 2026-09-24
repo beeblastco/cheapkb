@@ -10,7 +10,7 @@ The document list supports filtering, sorting, pagination, selection, tag editin
 
 Errors appear where the action happened. A failed delete or reindex shows on that document's row. A failed list or usage load shows at the bottom of its card with a Retry button, and sign-in errors show in the sign-in card.
 
-Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MB and other files over 10 MB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
+Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MB and other files over 50 MB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
 
 Completed or failed documents can be replaced. Existing content remains searchable until the replacement upload is accepted.
 

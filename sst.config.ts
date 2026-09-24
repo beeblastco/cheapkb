@@ -322,9 +322,9 @@ export default $config({
       VECTOR_INDEX_NAME: vectorIndexName,
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
-      MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "10485760",
+      MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "52428800",
       MAX_IMAGE_UPLOAD_BYTES: process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880",
-      MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200",
+      MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000",
       MAX_STORAGE_BYTES: process.env.MAX_STORAGE_BYTES ?? "1073741824",
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
         process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12",
@@ -491,7 +491,8 @@ export default $config({
         handler: "./functions/pipeline/index.handler",
         runtime: "nodejs22.x",
         timeout: "300 seconds",
-        memory: "1024 MB",
+        // Parsing a 50 MB PDF holds the whole document in memory.
+        memory: "2048 MB",
         description:
           "Route pipeline messages to the parse, chunk and embed stages",
         environment: {
@@ -635,7 +636,7 @@ export default $config({
     const adminReindexFn = new sst.aws.Function("AdminReindex", {
       handler: "./functions/admin/reindex.handler",
       runtime: "nodejs22.x",
-      timeout: "10 seconds",
+      timeout: "30 seconds",
       memory: "128 MB",
       description: "Restart a failed document from its failed pipeline step",
       environment: baseEnv,

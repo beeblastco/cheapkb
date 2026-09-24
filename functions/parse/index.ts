@@ -19,7 +19,7 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
-const MAX_PDF_PAGES = 500;
+const MAX_PDF_PAGES = 2000;
 const IMAGE_MIME_TYPES = new Set([
   "image/gif",
   "image/jpeg",

@@ -77,6 +77,42 @@ describe("chunk records", () => {
     expect(chunkBody.userId).toBe("owner");
   });
 
+  it("writes every chunk of a long document across write groups", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    const text = Array.from({ length: 12_000 }, (_, i) => `word${i}`).join(" ");
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: text }] }),
+      } as any,
+    });
+
+    const result = await handler({
+      Records: [
+        {
+          messageId: "chunk-long",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(result.batchItemFailures).toEqual([]);
+    const written = dynamoMock.commandCalls(PutCommand).length;
+    expect(written).toBeGreaterThan(10);
+    const sent = sqsMock
+      .calls()
+      .flatMap((call) => (call.args[0].input as any).Entries ?? []);
+    expect(sent).toHaveLength(written);
+  });
+
   it("chunks text that contains tokenizer special tokens", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { userId: "owner", title: "Title" },

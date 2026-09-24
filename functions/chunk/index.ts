@@ -24,6 +24,7 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const CHUNK_WRITE_CONCURRENCY = 10;
 
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
@@ -141,7 +142,7 @@ async function chunkDocument(
 
   const maxTokens = parseInt(process.env.CHUNK_MAX_TOKENS ?? "700");
   const overlapTokens = parseInt(process.env.CHUNK_OVERLAP_TOKENS ?? "100");
-  const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "200");
+  const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000");
 
   const chunks = splitIntoChunks(pages, maxTokens, overlapTokens, maxChunks);
   if (chunks.length === 0) {
@@ -150,51 +151,60 @@ async function chunkDocument(
     return;
   }
 
+  // Chunks are written a few at a time so a 1,000-chunk document fits the
+  // Lambda timeout.
   const chunkKeys: string[] = [];
-  for (const { chunk, i } of chunks) {
-    const chunkId = `chunk_${documentId}_${i}`;
-    const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
-    const tokenCount = encode(chunk.text, {
-      disallowedSpecial: new Set(),
-    }).length;
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: StorageBucketName,
-        Key: s3ChunkKey,
-        Body: JSON.stringify({
-          documentId,
-          userId,
-          chunkId,
-          modality: "text",
-          sourceKey,
-          mimeType,
-          text: chunk.text,
-          tokenCount,
-          title,
-          tags,
-          authors,
-          year,
-          pageStart: chunk.pageStart,
-          pageEnd: chunk.pageEnd,
+  for (let start = 0; start < chunks.length; start += CHUNK_WRITE_CONCURRENCY) {
+    const written = await Promise.all(
+      chunks
+        .slice(start, start + CHUNK_WRITE_CONCURRENCY)
+        .map(async ({ chunk, i }) => {
+          const chunkId = `chunk_${documentId}_${i}`;
+          const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
+          const tokenCount = encode(chunk.text, {
+            disallowedSpecial: new Set(),
+          }).length;
+          await s3.send(
+            new PutObjectCommand({
+              Bucket: StorageBucketName,
+              Key: s3ChunkKey,
+              Body: JSON.stringify({
+                documentId,
+                userId,
+                chunkId,
+                modality: "text",
+                sourceKey,
+                mimeType,
+                text: chunk.text,
+                tokenCount,
+                title,
+                tags,
+                authors,
+                year,
+                pageStart: chunk.pageStart,
+                pageEnd: chunk.pageEnd,
+              }),
+              ContentType: "application/json",
+            }),
+          );
+          const queued = await putChunkRecord(
+            {
+              pk: `DOC#${documentId}`,
+              sk: `CHUNK#${chunkId}`,
+              chunkId,
+              s3ChunkKey,
+              pageStart: chunk.pageStart,
+              pageEnd: chunk.pageEnd,
+              tokenCount,
+              status: "QUEUED",
+              createdAt: now,
+            },
+            attempt,
+          );
+          return queued ? s3ChunkKey : null;
         }),
-        ContentType: "application/json",
-      }),
     );
-    const queued = await putChunkRecord(
-      {
-        pk: `DOC#${documentId}`,
-        sk: `CHUNK#${chunkId}`,
-        chunkId,
-        s3ChunkKey,
-        pageStart: chunk.pageStart,
-        pageEnd: chunk.pageEnd,
-        tokenCount,
-        status: "QUEUED",
-        createdAt: now,
-      },
-      attempt,
-    );
-    if (queued) chunkKeys.push(s3ChunkKey);
+    for (const key of written) if (key) chunkKeys.push(key);
   }
 
   await finishChunking(documentId, chunks.length, chunkKeys, now);
