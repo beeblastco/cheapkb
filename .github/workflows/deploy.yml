@@ -10,7 +10,6 @@ on:
     branches: [main]
 
 env:
-  AWS_PROFILE: cheapkb
   AWS_REGION: us-east-1
   BEDROCK_EMBEDDING_MODEL: us.cohere.embed-v4:0
   BEDROCK_ASSUME_ROLE_ARN: ${{ vars.BEDROCK_ASSUME_ROLE_ARN }}
@@ -91,6 +90,10 @@ jobs:
     needs: [check, secrets-scan]
     runs-on: ubuntu-latest
     environment: production
+    # id-token lets the job trade GitHub's OIDC token for short-lived AWS keys.
+    permissions:
+      contents: read
+      id-token: write
     # Only deploys queue behind each other; PR checks run in parallel.
     concurrency:
       group: production-deploy
@@ -104,11 +107,10 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --legacy-peer-deps
-      - name: Configure AWS profile
-        run: |
-          aws configure set aws_access_key_id "${{ secrets.AWS_ACCESS_KEY_ID }}" --profile "$AWS_PROFILE"
-          aws configure set aws_secret_access_key "${{ secrets.AWS_SECRET_ACCESS_KEY }}" --profile "$AWS_PROFILE"
-          aws configure set region "$AWS_REGION" --profile "$AWS_PROFILE"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS account
         run: test "$(aws sts get-caller-identity --query Account --output text)" = "${{ secrets.AWS_ACCOUNT_ID }}"
       - name: Deploy production
