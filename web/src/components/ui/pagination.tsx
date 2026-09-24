@@ -20,6 +20,7 @@ function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
   );
 }
 
+/** Renders the list that holds pagination items. */
 function PaginationContent({
   className,
   ...props
@@ -42,6 +43,7 @@ type PaginationLinkProps = {
 } & Pick<React.ComponentProps<typeof Button>, "size"> &
   React.ComponentProps<"a">;
 
+/** Renders a page link, styled as a button and marked current when active. */
 function PaginationLink({
   className,
   isActive,
@@ -69,6 +71,7 @@ function PaginationLink({
   );
 }
 
+/** Renders the link to the previous page. */
 function PaginationPrevious({
   className,
   text = "Previous",
@@ -87,6 +90,7 @@ function PaginationPrevious({
   );
 }
 
+/** Renders the link to the next page. */
 function PaginationNext({
   className,
   text = "Next",
@@ -105,6 +109,7 @@ function PaginationNext({
   );
 }
 
+/** Renders the ellipsis that stands in for skipped pages. */
 function PaginationEllipsis({
   className,
   ...props

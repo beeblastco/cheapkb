@@ -2,6 +2,7 @@ import { Progress as ProgressPrimitive } from "@base-ui/react/progress";
 
 import { cn } from "@/lib/utils";
 
+/** Renders a progress bar with its track and indicator. */
 function Progress({
   className,
   children,
@@ -23,6 +24,7 @@ function Progress({
   );
 }
 
+/** Renders the background track of a progress bar. */
 function ProgressTrack({ className, ...props }: ProgressPrimitive.Track.Props) {
   return (
     <ProgressPrimitive.Track
@@ -36,6 +38,7 @@ function ProgressTrack({ className, ...props }: ProgressPrimitive.Track.Props) {
   );
 }
 
+/** Renders the filled part of a progress bar. */
 function ProgressIndicator({
   className,
   ...props
@@ -59,6 +62,7 @@ function ProgressLabel({ className, ...props }: ProgressPrimitive.Label.Props) {
   );
 }
 
+/** Renders the formatted progress value as text. */
 function ProgressValue({ className, ...props }: ProgressPrimitive.Value.Props) {
   return (
     <ProgressPrimitive.Value

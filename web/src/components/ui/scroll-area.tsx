@@ -3,6 +3,7 @@ import { ScrollArea as ScrollAreaPrimitive } from "@base-ui/react/scroll-area";
 
 import { cn } from "@/lib/utils";
 
+/** Renders a scrollable region with styled scrollbars. */
 function ScrollArea({
   className,
   children,
@@ -26,6 +27,7 @@ function ScrollArea({
   );
 }
 
+/** Renders a vertical or horizontal scrollbar for a scroll area. */
 function ScrollBar({
   className,
   orientation = "vertical",

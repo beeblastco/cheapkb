@@ -53,8 +53,10 @@ interface UploadMetadata {
 let shooClient: ShooAuthClient | undefined;
 let signingOut = false;
 
-// An expired token counts as signed out, so the app never sends a burst of
-// requests that each come back 401.
+/**
+ * An expired token counts as signed out, so the app never sends a burst of
+ * requests that each come back 401.
+ */
 export function getIdentity(): ShooIdentity | null {
   try {
     const { token, userId } = shoo().getIdentity();
@@ -70,6 +72,7 @@ export function getIdentity(): ShooIdentity | null {
   }
 }
 
+/** Builds the header profile (name, initials, email, picture) from the token. */
 export function getUserProfile(identity: ShooIdentity): UserProfile {
   const fallback = "Account";
   try {
@@ -110,8 +113,10 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
   }
 }
 
-// The verifier is also kept in localStorage, since some browsers drop
-// sessionStorage on the way back from the sign-in page.
+/**
+ * The verifier is also kept in localStorage, since some browsers drop
+ * sessionStorage on the way back from the sign-in page.
+ */
 export async function startSignIn(): Promise<void> {
   const bundle = await shoo().createPkceBundle();
   const pkce = JSON.stringify({
@@ -144,6 +149,7 @@ export function watchSession(): void {
   shoo().startSessionMonitor({ onLoginRequired: () => signOut() });
 }
 
+/** Completes sign-in on the callback path; returns true when it handled it. */
 export async function handleSignInCallback(): Promise<boolean> {
   if (window.location.pathname !== SHOO_CALLBACK_PATH) return false;
   const params = new URLSearchParams(window.location.search);
@@ -172,6 +178,7 @@ function shoo(): ShooAuthClient {
   return shooClient;
 }
 
+/** Restores the PKCE verifier from its localStorage backup if it matches. */
 function restorePkceVerifier(callbackState: string | null): void {
   if (sessionStorage.getItem(SHOO_PKCE_KEY)) return;
   const rawBackup = localStorage.getItem(SHOO_PKCE_BACKUP_KEY);
@@ -191,6 +198,10 @@ function restorePkceVerifier(callbackState: string | null): void {
   }
 }
 
+/**
+ * Sends an authenticated JSON request to the API and returns the parsed body.
+ * A 401 signs the user out; other failures throw with the server's message.
+ */
 export async function apiCall(
   token: string,
   method: string,
@@ -244,6 +255,7 @@ export async function createTag(
   return normalizeTag(data.tag as Tag);
 }
 
+/** Changes a tag's color and returns the updated tag. */
 export async function updateTagColor(
   token: string,
   name: string,
@@ -275,6 +287,7 @@ export async function getUsageSummary(token: string): Promise<UsageSummary> {
   return data as unknown as UsageSummary;
 }
 
+/** Replaces a document's tags and returns the tags the server saved. */
 export async function updateDocumentTags(
   token: string,
   documentId: string,
@@ -302,6 +315,10 @@ export function getStatusBadgeVariant(
   return "outline";
 }
 
+/**
+ * Merges the server list with local documents still uploading, failed or
+ * being deleted, and saves the pending ones for the next page load.
+ */
 export function mergeDocuments(
   currentDocuments: Document[],
   serverDocuments: Document[],
@@ -374,6 +391,7 @@ export function mergeDocuments(
   return documents;
 }
 
+/** Loads pending documents saved by an earlier page load, minus expired ones. */
 export function readPendingDocuments(): Document[] {
   try {
     const documents = JSON.parse(
@@ -398,6 +416,7 @@ export function readPendingDocuments(): Document[] {
   }
 }
 
+/** Saves documents the server doesn't list yet, so a reload still shows them. */
 export function writePendingDocuments(
   documents: Document[],
   serverDocuments: Document[] = [],
@@ -418,6 +437,7 @@ export function writePendingDocuments(
   }
 }
 
+/** Returns the file's MIME type, falling back to its extension. */
 export function getFileMimeType(file: File): string {
   if (
     [
@@ -443,6 +463,10 @@ export function getFileMimeType(file: File): string {
   return file.type;
 }
 
+/**
+ * Uploads a file to S3 and starts indexing, reporting steps via onProgress.
+ * On failure it deletes the new document and attaches its id to the error.
+ */
 export async function uploadDocument(
   token: string,
   file: File,
@@ -507,6 +531,7 @@ export function validateUploadFile(file: File): string | undefined {
   return undefined;
 }
 
+/** Guesses a file's title, year and authors, falling back to its name. */
 export async function extractMetadata(
   file: File,
 ): Promise<{ title: string; year: number | null; authors: string[] }> {
@@ -527,6 +552,7 @@ export async function extractMetadata(
   }
 }
 
+/** Reads PDF metadata, then the first 3 pages if title or authors are missing. */
 async function extractPdfMetadata(
   file: File,
   fallback: { title: string; year: number | null; authors: string[] },
@@ -567,6 +593,7 @@ async function extractPdfMetadata(
   };
 }
 
+/** Picks a title, year and authors out of text, falling back to the defaults. */
 function parseMetadata(
   text: string,
   fallback: { title: string; year: number | null; authors: string[] },
@@ -599,6 +626,7 @@ function normalizeAuthors(authors: string | string[] | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Groups query results by document, sorted by each document's best score. */
 export function groupResults(results: QueryResult[]): ResultGroup[] {
   const groups = new Map<string, ResultGroup>();
   for (const result of results) {
@@ -618,7 +646,7 @@ export function centsToUsd(cents: number): number {
   return cents / 100;
 }
 
-// The table shows the date only; the details sheet adds the time.
+/** The table shows the date only; the details sheet adds the time. */
 export function formatDate(
   value: string | undefined,
   withTime = false,

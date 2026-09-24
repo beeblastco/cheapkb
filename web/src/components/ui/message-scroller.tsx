@@ -16,6 +16,7 @@ function MessageScrollerProvider(
   return <MessageScrollerPrimitive.Provider {...props} />;
 }
 
+/** Renders a scroll area that keeps a message list pinned to the newest item. */
 function MessageScroller({
   className,
   ...props
@@ -32,6 +33,7 @@ function MessageScroller({
   );
 }
 
+/** Renders the scrollable viewport of a message scroller. */
 function MessageScrollerViewport({
   className,
   ...props
@@ -48,6 +50,7 @@ function MessageScrollerViewport({
   );
 }
 
+/** Renders the content wrapper that lays out message scroller items. */
 function MessageScrollerContent({
   className,
   ...props
@@ -61,6 +64,7 @@ function MessageScrollerContent({
   );
 }
 
+/** Renders one tracked item in a message scroller. */
 function MessageScrollerItem({
   className,
   scrollAnchor = false,
@@ -79,6 +83,7 @@ function MessageScrollerItem({
   );
 }
 
+/** Renders the button that scrolls back to the latest message. */
 function MessageScrollerButton({
   direction = "end",
   className,
