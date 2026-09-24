@@ -90,7 +90,7 @@ describe("infrastructure hardening", () => {
       config.match(/"dynamodb:BatchWriteItem"/g)?.length,
     ).toBeGreaterThanOrEqual(3);
     expect(config).toContain('new sst.aws.Function("Upload"');
-    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(5);
+    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(6);
   });
 
   it("keeps Bedrock invocation logs in S3 without a trigger Lambda", () => {
