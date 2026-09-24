@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 
+/** Renders a fieldset that groups related form fields. */
 function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   return (
     <fieldset
@@ -18,6 +19,7 @@ function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   );
 }
 
+/** Renders the legend of a FieldSet, as a legend or a smaller label variant. */
 function FieldLegend({
   className,
   variant = "legend",
@@ -36,6 +38,7 @@ function FieldLegend({
   );
 }
 
+/** Stacks Field components vertically inside a form or FieldSet. */
 function FieldGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -67,6 +70,7 @@ const fieldVariants = cva(
   },
 );
 
+/** Lays out one form control with its label, description and error, in a vertical, horizontal or responsive orientation. */
 function Field({
   className,
   orientation = "vertical",
@@ -83,6 +87,7 @@ function Field({
   );
 }
 
+/** Groups a field's label, description and error next to its control. */
 function FieldContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -96,6 +101,7 @@ function FieldContent({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the label for a field's control. */
 function FieldLabel({
   className,
   ...props
@@ -113,6 +119,7 @@ function FieldLabel({
   );
 }
 
+/** Renders a non-label title for a field, such as for a checkbox card. */
 function FieldTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -126,6 +133,7 @@ function FieldTitle({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders muted helper text below or beside a field. */
 function FieldDescription({ className, ...props }: React.ComponentProps<"p">) {
   return (
     <p
@@ -141,6 +149,7 @@ function FieldDescription({ className, ...props }: React.ComponentProps<"p">) {
   );
 }
 
+/** Renders a horizontal divider between fields, with optional centered text. */
 function FieldSeparator({
   children,
   className,
@@ -151,7 +160,7 @@ function FieldSeparator({
   return (
     <div
       data-slot="field-separator"
-      data-content={!!children}
+      data-content={Boolean(children)}
       className={cn(
         "relative -my-2 h-5 text-sm group-data-[variant=outline]/field-group:-mb-2",
         className,
@@ -171,6 +180,7 @@ function FieldSeparator({
   );
 }
 
+/** Renders a field's validation errors as children, a single message, or a deduplicated list. */
 function FieldError({
   className,
   children,
@@ -192,7 +202,7 @@ function FieldError({
       ...new Map(errors.map((error) => [error?.message, error])).values(),
     ];
 
-    if (uniqueErrors?.length == 1) {
+    if (uniqueErrors?.length === 1) {
       return uniqueErrors[0]?.message;
     }
 

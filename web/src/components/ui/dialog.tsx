@@ -21,6 +21,7 @@ function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
+/** Renders the backdrop behind an open dialog. */
 function DialogOverlay({
   className,
   ...props
@@ -37,6 +38,7 @@ function DialogOverlay({
   );
 }
 
+/** Renders the dialog popup in a portal with overlay and an optional close button. */
 function DialogContent({
   className,
   children,
@@ -87,6 +89,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+/** Renders the dialog's action row, with an optional close button. */
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -114,6 +117,7 @@ function DialogFooter({
   );
 }
 
+/** Renders the dialog heading used as its accessible name. */
 function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
@@ -127,6 +131,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   );
 }
 
+/** Renders the dialog's supporting text used as its accessible description. */
 function DialogDescription({
   className,
   ...props

@@ -20,6 +20,7 @@ function AlertDialogPortal({ ...props }: AlertDialogPrimitive.Portal.Props) {
   );
 }
 
+/** Renders the backdrop behind an open alert dialog. */
 function AlertDialogOverlay({
   className,
   ...props
@@ -36,6 +37,7 @@ function AlertDialogOverlay({
   );
 }
 
+/** Renders the alert dialog popup in a portal with its overlay. */
 function AlertDialogContent({
   className,
   size = "default",
@@ -59,6 +61,7 @@ function AlertDialogContent({
   );
 }
 
+/** Renders the alert dialog's header for title, description and media. */
 function AlertDialogHeader({
   className,
   ...props
@@ -75,6 +78,7 @@ function AlertDialogHeader({
   );
 }
 
+/** Renders the alert dialog's action row. */
 function AlertDialogFooter({
   className,
   ...props
@@ -123,6 +127,7 @@ function AlertDialogTitle({
   );
 }
 
+/** Renders the alert dialog's supporting text. */
 function AlertDialogDescription({
   className,
   ...props
@@ -139,6 +144,7 @@ function AlertDialogDescription({
   );
 }
 
+/** Renders the confirm button of an alert dialog. */
 function AlertDialogAction({
   className,
   ...props
@@ -153,6 +159,7 @@ function AlertDialogAction({
   );
 }
 
+/** Renders the button that closes the alert dialog without acting. */
 function AlertDialogCancel({
   className,
   variant = "outline",

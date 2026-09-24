@@ -38,6 +38,7 @@ const buttonVariants = cva(
   },
 );
 
+/** Renders a button styled by variant and size. */
 function Button({
   className,
   variant = "default",
