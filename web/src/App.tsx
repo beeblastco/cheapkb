@@ -319,6 +319,8 @@ function App() {
       refreshUsage();
     } catch (error) {
       notify("Couldn't delete your data", (error as Error).message);
+      // Rethrown so the settings dialog stays open on failure.
+      throw error;
     }
   }
 

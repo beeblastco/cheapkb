@@ -596,12 +596,14 @@ export async function sumUsageNano(
 
 // alsoWrite commits in the same transaction, so a caller's own record (such as a
 // document's counted bytes) can never disagree with the account total.
+// With expectedBytes, nothing changes unless the account still holds that total.
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
   deltaBytes: number,
   operationId?: string,
   alsoWrite?: TransactItem,
+  expectedBytes?: number,
 ) {
   if (deltaBytes === 0) return;
   const pk = `ACCOUNT#${userId}`;
@@ -634,6 +636,7 @@ export async function updateStorageBytes(
     const cycle = currentCycle(account, nowMs);
     const cycleStart = new Date(cycle.startMs).toISOString();
     const storageBytes = account.storageBytes ?? 0;
+    if (expectedBytes !== undefined && storageBytes !== expectedBytes) return;
     const nextStorageBytes = storageBytes + deltaBytes;
     if (nextStorageBytes < 0)
       throw new Error("Storage usage cannot be negative");
