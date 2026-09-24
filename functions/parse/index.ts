@@ -177,8 +177,9 @@ async function clearError(documentId: string, now: string) {
 // fast instead of exhausting the Lambda's memory.
 async function extractPdfText(bytes: Uint8Array) {
   let text: string[];
+  let pdf: Awaited<ReturnType<typeof getDocumentProxy>> | undefined;
   try {
-    const pdf = await getDocumentProxy(bytes);
+    pdf = await getDocumentProxy(bytes);
     if (pdf.numPages > MAX_PDF_PAGES) {
       throw new ContentError(`PDF exceeds the ${MAX_PDF_PAGES} page limit`);
     }
@@ -186,6 +187,9 @@ async function extractPdfText(bytes: Uint8Array) {
   } catch (err) {
     if (err instanceof ContentError) throw err;
     throw new ContentError(`Could not read PDF: ${(err as Error).message}`);
+  } finally {
+    // unpdf only frees documents it opened itself.
+    await pdf?.loadingTask.destroy();
   }
   return text
     .map((pageText: string, i: number) => ({

@@ -206,6 +206,43 @@ describe("chunk records", () => {
       .commandCalls(UpdateCommand)
       .find((call) => call.args[0].input.ExpressionAttributeValues?.[":c"]);
     expect(finish?.args[0].input.ExpressionAttributeValues?.[":c"]).toBe(1);
+    // No embed step will run, so the document is finished here.
+    expect(
+      dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
+        .ExpressionAttributeValues,
+    ).toEqual(expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }));
+  });
+
+  it("treats a message the sweeper re-queued as a redelivery", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler({
+      Records: [
+        {
+          messageId: "chunk-swept",
+          body: JSON.stringify({
+            documentId: "doc-1",
+            parsedKey: "parsed/doc-1/v1/pages.json",
+            sweeps: 1,
+          }),
+          attributes: { ApproximateReceiveCount: "1" },
+        },
+      ],
+    } as any);
+
+    expect(
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression,
+    ).toContain(":embedded");
   });
 
   it("drops the message when the document was deleted", async () => {

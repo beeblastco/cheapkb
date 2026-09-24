@@ -9,7 +9,11 @@ import {
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 
 const sqs = new SQSClient({});
 const lambda = new LambdaClient({});
@@ -19,6 +23,8 @@ const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const PipelineDlqUrl = process.env.PIPELINE_DLQ_URL!;
 const AdapterDlqUrl = process.env.ADAPTER_DLQ_URL!;
 const MAX_BATCHES = 50;
+const QUIET_MS = 30 * 60 * 1000;
+const SETTLED_STATUSES = new Set(["DELETING", "EMBEDDED", "FAILED"]);
 const STAGE_STEPS: Record<string, string> = {
   chunk: "CHUNKING",
   embed: "EMBEDDING",
@@ -31,9 +37,10 @@ export async function handler(): Promise<void> {
   await drain(AdapterDlqUrl, redriveAdapterEvent);
 }
 
+// handle returns false to leave a message for the next run.
 async function drain(
   queueUrl: string,
-  handle: (body: string) => Promise<void>,
+  handle: (body: string) => Promise<boolean>,
 ): Promise<void> {
   for (let batch = 0; batch < MAX_BATCHES; batch++) {
     const { Messages = [] } = await sqs.send(
@@ -48,7 +55,7 @@ async function drain(
 
     for (const message of Messages) {
       try {
-        await handle(message.Body ?? "");
+        if (!(await handle(message.Body ?? ""))) continue;
         await sqs.send(
           new DeleteMessageCommand({
             QueueUrl: queueUrl,
@@ -92,7 +99,7 @@ async function markFailed(documentId: string, step: string): Promise<void> {
 
 // S3 gives up on an adapter after two retries. One more try an hour later covers
 // an outage; a second failure is logged and dropped.
-async function redriveAdapterEvent(body: string): Promise<void> {
+async function redriveAdapterEvent(body: string): Promise<boolean> {
   const record = parseJson(body) as {
     requestContext?: { functionArn?: string };
     requestPayload?: { sweeps?: number };
@@ -101,7 +108,7 @@ async function redriveAdapterEvent(body: string): Promise<void> {
   const payload = record?.requestPayload;
   if (!functionArn || !payload || (payload.sweeps ?? 0) >= 1) {
     console.error("[sweeper] Dropping adapter event:", body);
-    return;
+    return true;
   }
 
   await lambda.send(
@@ -111,11 +118,13 @@ async function redriveAdapterEvent(body: string): Promise<void> {
       Payload: JSON.stringify({ ...payload, sweeps: 1 }),
     }),
   );
+  return true;
 }
 
 // A batch that crashed the Lambda sends every message in it to the DLQ, so each
-// one gets one more try before its document is marked FAILED.
-async function redrivePipelineMessage(body: string): Promise<void> {
+// one gets one more try before its document is marked FAILED. A document that
+// already settled, or that a reindex is moving again, is left alone.
+async function redrivePipelineMessage(body: string): Promise<boolean> {
   const message = parseJson(body) as {
     documentId?: string;
     stage?: string;
@@ -127,7 +136,20 @@ async function redrivePipelineMessage(body: string): Promise<void> {
     !Object.hasOwn(STAGE_STEPS, message.stage)
   ) {
     console.error("[sweeper] Dropping pipeline message:", body);
-    return;
+    return true;
+  }
+
+  const { Item: doc } = await dynamo.send(
+    new GetCommand({
+      TableName,
+      Key: { pk: `DOC#${message.documentId}`, sk: "META" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!doc || SETTLED_STATUSES.has(doc.status)) return true;
+  const updatedAt = Date.parse(doc.updatedAt ?? "");
+  if (Number.isFinite(updatedAt) && Date.now() - updatedAt < QUIET_MS) {
+    return false;
   }
 
   if ((message.sweeps ?? 0) < 1) {
@@ -137,10 +159,11 @@ async function redrivePipelineMessage(body: string): Promise<void> {
         MessageBody: JSON.stringify({ ...message, sweeps: 1 }),
       }),
     );
-    return;
+    return true;
   }
   await markFailed(message.documentId, STAGE_STEPS[message.stage]);
   console.log(`[sweeper] Marked ${message.documentId} FAILED`);
+  return true;
 }
 
 function parseJson(body: string): unknown {

@@ -5,7 +5,11 @@ import {
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -39,6 +43,9 @@ describe("dead-letter sweeper", () => {
     dynamoMock.reset();
     sqsMock.on(ReceiveMessageCommand).resolves({});
     dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "PARSING", updatedAt: "2026-01-01T00:00:00.000Z" },
+    });
   });
 
   it("gives a pipeline message one more try", async () => {
@@ -71,6 +78,31 @@ describe("dead-letter sweeper", () => {
     expect(update.ExpressionAttributeValues).toEqual(
       expect.objectContaining({ ":failed": "FAILED", ":f": "EMBEDDING" }),
     );
+  });
+
+  it("drops the message of a document that already failed", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "FAILED", updatedAt: "2026-01-01T00:00:00.000Z" },
+    });
+    queueOnce("pipeline-dlq", { stage: "parse", documentId: "doc-1" });
+
+    await handler();
+
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(DeleteMessageCommand)).toHaveLength(1);
+  });
+
+  it("leaves the message while a reindex is moving the document", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "PARSING", updatedAt: new Date().toISOString() },
+    });
+    queueOnce("pipeline-dlq", { stage: "parse", documentId: "doc-1" });
+
+    await handler();
+
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(DeleteMessageCommand)).toHaveLength(0);
   });
 
   it("re-invokes a failed adapter event once", async () => {
