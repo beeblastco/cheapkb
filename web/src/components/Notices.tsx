@@ -14,8 +14,8 @@ export interface Notice {
   title: string;
 }
 
-// Error notices drop down from the top center of the screen. App owns the list
-// and removes each one on a timer, on close, or when Retry is pressed.
+// Error notices drop down from the top center of the screen. Keyed by content,
+// so a repeated error updates in place instead of replaying the drop-in.
 export function Notices({
   notices,
   onDismiss,
@@ -30,7 +30,7 @@ export function Notices({
       {notices.map((notice) => (
         <Alert
           className="pointer-events-auto w-full max-w-md shadow-sm animate-in fade-in-0 slide-in-from-top-4"
-          key={notice.id}
+          key={`${notice.title}:${notice.message}`}
           variant="destructive"
         >
           <CircleAlert />
