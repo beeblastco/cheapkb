@@ -80,8 +80,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  // Older documents have no countedBytes, so the refund falls back to the
-  // source size. Any lookup error but NotFound stops before the source is gone.
+  // Older documents have no countedBytes, so the size is read and saved before
+  // the source is deleted; a retry then refunds it. Other errors stop the delete.
   let sourceSize = 0;
   if (typeof doc.countedBytes !== "number" && doc.sourceKey) {
     try {
@@ -92,6 +92,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
         }),
       );
       sourceSize = head.ContentLength ?? 0;
+      await dynamo.send(
+        new UpdateCommand({
+          TableName: TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          UpdateExpression: "SET countedBytes = :b",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeValues: { ":b": sourceSize },
+        }),
+      );
     } catch (err) {
       if ((err as Error).name !== "NotFound") {
         await markDeleting(documentId, "Delete did not finish, try again");

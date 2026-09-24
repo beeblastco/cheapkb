@@ -100,6 +100,27 @@ describe("document deletion", () => {
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(2);
   });
 
+  it("saves a legacy document's source size before deleting its source", async () => {
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 10 });
+    vectorsMock.on(DeleteVectorsCommand).rejects(new Error("vector failure"));
+    dynamoMock.on(QueryCommand).resolves({
+      Items: [{ pk: "DOC#doc-1", sk: "CHUNK#1", chunkId: "chunk-1" }],
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(500);
+    const saved = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) =>
+        call.args[0].input.UpdateExpression?.includes("countedBytes"),
+      );
+    expect(saved?.args[0].input.ExpressionAttributeValues?.[":b"]).toBe(10);
+  });
+
   it("stops before deleting when the source size cannot be read", async () => {
     s3Mock
       .on(HeadObjectCommand)
