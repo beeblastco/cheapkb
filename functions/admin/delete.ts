@@ -30,6 +30,7 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
+/** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -88,7 +89,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }),
     );
     sourceSize = head.ContentLength ?? 0;
-  } catch {}
+  } catch {
+    // A missing source leaves sourceSize at 0; countedBytes wins when present.
+  }
   const errors: string[] = [];
   let chunkItems: ChunkItem[] = [];
 
@@ -177,8 +180,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
-// A failed delete stays DELETING so in-flight pipeline work still cannot write
-// to it; lastError tells the user to delete again.
+/**
+ * A failed delete stays DELETING so in-flight pipeline work still cannot write
+ * to it; lastError tells the user to delete again.
+ */
 async function markDeleting(documentId: string, lastError: string | null) {
   const now = new Date().toISOString();
   await dynamo.send(

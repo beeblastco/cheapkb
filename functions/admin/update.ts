@@ -44,6 +44,7 @@ interface Lease {
   heldSince: string;
 }
 
+/** PATCH /documents/{id}: replaces an owned document's tags in META, chunk JSON and vectors. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -147,8 +148,10 @@ function isLeaseExpired(document: DocumentRow): boolean {
   return !Number.isFinite(heldSince) || Date.now() - heldSince > LEASE_TTL_MS;
 }
 
-// Returns the lease, or null if it was not taken. updatedAt doubles as the
-// revision token and the lease timestamp.
+/**
+ * Returns the lease, or null if it was not taken. updatedAt doubles as the
+ * revision token and the lease timestamp.
+ */
 async function acquireLease(
   document: DocumentRow,
   userId: string,
@@ -193,8 +196,10 @@ async function acquireLease(
   }
 }
 
-// Tags land only once every store agreed, so a failure leaves the row reporting
-// the edit as not applied rather than advertising tags the vectors lack.
+/**
+ * Tags land only once every store agreed, so a failure leaves the row reporting
+ * the edit as not applied rather than advertising tags the vectors lack.
+ */
 async function finalizeLease(
   document: DocumentRow,
   lease: Lease,
@@ -210,6 +215,7 @@ async function finalizeLease(
   return now;
 }
 
+/** Restores the pre-edit status after a failed edit, keeping the old tags. */
 async function releaseLease(document: DocumentRow, lease: Lease) {
   try {
     await releaseWith(
@@ -224,8 +230,10 @@ async function releaseLease(document: DocumentRow, lease: Lease) {
   }
 }
 
-// Conditioned on the lease still being ours: a successor that took over an
-// expired lease is also UPDATING, so status alone would let us clobber it.
+/**
+ * Conditioned on the lease still being ours: a successor that took over an
+ * expired lease is also UPDATING, so status alone would let us clobber it.
+ */
 async function releaseWith(
   document: DocumentRow,
   lease: Lease,
@@ -250,6 +258,7 @@ async function releaseWith(
   );
 }
 
+/** Rewrites the tags in every chunk JSON, CHUNK_REWRITE_CONCURRENCY objects at a time. */
 async function updateChunkObjects(
   chunkItems: ChunkItem[],
   tags: string[] | null,
@@ -257,9 +266,11 @@ async function updateChunkObjects(
   const pending = chunkItems.filter((item) => item.s3ChunkKey);
   let cursor = 0;
 
+  /** Takes the next pending chunk until none remain. */
   async function worker() {
     while (cursor < pending.length) {
-      const item = pending[cursor++];
+      const item = pending[cursor];
+      cursor += 1;
       const response = await s3.send(
         new GetObjectCommand({
           Bucket: StorageBucketName,
@@ -286,6 +297,7 @@ async function updateChunkObjects(
   );
 }
 
+/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
 function normalizeTags(tags: unknown): string[] | null {
   if (!Array.isArray(tags)) return null;
   const deduped = new Map<string, string>();
@@ -300,6 +312,7 @@ function normalizeTags(tags: unknown): string[] | null {
   return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
+/** Returns a validation message for a bad edit body, or null when it is valid. */
 function validateBody(body: unknown): string | null {
   // JSON.parse("null") and "[]" both succeed, so reading body.tags off the
   // result would throw and surface as a 500 instead of a validation error.

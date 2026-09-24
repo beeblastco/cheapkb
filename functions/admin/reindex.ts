@@ -45,6 +45,7 @@ interface ReindexMessage {
   mimeType?: string;
 }
 
+/** POST /documents/{id}/reindex: requeues a settled or stuck document from its last good stage. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -115,8 +116,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
   const now = new Date().toISOString();
-  const status = doc.status;
-  const failedStep = doc.failedStep;
+  const { status, failedStep } = doc;
 
   const updatedAtMs = Date.parse(doc.updatedAt ?? "");
   const stale =
@@ -287,6 +287,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
+/** Lists every chunk object key the chunk stage wrote for a document. */
 async function listChunkKeys(documentId: string): Promise<string[]> {
   const keys: string[] = [];
   let token: string | undefined;
@@ -306,7 +307,7 @@ async function listChunkKeys(documentId: string): Promise<string[]> {
   return keys;
 }
 
-// Updated 25 at a time so a 1,000-chunk document resets inside the timeout.
+/** Marks chunk rows QUEUED, 25 at a time so a 1,000-chunk document resets inside the timeout. */
 async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
   const chunkIds = chunkKeys
     .map((chunkKey) =>

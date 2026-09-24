@@ -7,6 +7,7 @@ import { docId, extractUserId } from "../utils";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 
+/** GET /documents: lists every document the caller owns, newest first. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;

@@ -3,6 +3,7 @@ import { extractUserId, getUsageSummary } from "../utils";
 
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 
+/** GET /account/usage: returns the caller's usage summary for the current month. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;

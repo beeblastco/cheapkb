@@ -126,7 +126,7 @@ async function deleteTags(userId: string): Promise<number> {
         DeleteRequest: { Key: { pk: key.pk, sk: key.sk } },
       }));
       // Throttled deletes come back as UnprocessedItems and are sent again.
-      for (let attempt = 0; requests.length > 0 && attempt < 3; attempt++) {
+      for (let attempt = 0; requests.length > 0 && attempt < 3; attempt += 1) {
         const response = await dynamo.send(
           new BatchWriteCommand({
             RequestItems: { [TagsTableName]: requests },

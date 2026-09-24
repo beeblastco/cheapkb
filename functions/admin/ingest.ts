@@ -11,8 +11,10 @@ interface IngestBody {
   documentId?: unknown;
 }
 
-// The S3 upload event is the only path that queues and charges a document, so
-// this endpoint reports status and never starts processing itself.
+/**
+ * The S3 upload event is the only path that queues and charges a document, so
+ * this endpoint reports status and never starts processing itself.
+ */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
