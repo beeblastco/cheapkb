@@ -21,14 +21,12 @@ export function DocumentDialog({
   colorOf,
   document,
   data,
-  error,
   loading,
   onClose,
 }: {
   colorOf: (name: string) => TagColor;
   document: Document | null;
   data: Record<string, unknown> | null;
-  error: string;
   loading: boolean;
   onClose: () => void;
 }) {
@@ -78,11 +76,6 @@ export function DocumentDialog({
             <Badge variant={getStatusBadgeVariant(detailedDocument.status)}>
               {detailedDocument.status}
             </Badge>
-            {error ? (
-              <p className="text-sm text-destructive">
-                Couldn't load details. {error}
-              </p>
-            ) : null}
             {loading ? (
               <FieldGroup>
                 <Skeleton className="h-10 w-full" />
