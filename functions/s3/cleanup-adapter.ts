@@ -29,6 +29,7 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
+/** S3 ObjectRemoved handler for raw/ objects; deletes the document's vectors, data and records. */
 export async function handler(event: S3Event) {
   for (const record of event.Records ?? []) {
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
@@ -37,46 +38,52 @@ export async function handler(event: S3Event) {
       console.log(`[cleanup-adapter] Skipping non-raw object: ${key}`);
       continue;
     }
-    const documentId = parts[1];
+    const [, documentId] = parts;
     console.log(`[cleanup-adapter] Cleaning up document ${documentId}`);
     const document = await getDocument(documentId, dynamo, TableName);
     if (document && document.status !== "DELETING") {
       await markDeleting(documentId);
     }
 
-    const errors: string[] = [];
-    let chunkItems: ChunkItem[] = [];
-    try {
-      chunkItems = await deleteDocumentVectors(
+    // The three deletes are independent, so they run together and every
+    // failure is still reported.
+    const [vectorResult, derivedResult, rawResult] = await Promise.allSettled([
+      deleteDocumentVectors(
         documentId,
         dynamo,
         vectors,
         TableName,
         VectorBucketName,
         VectorIndexName,
+      ),
+      deleteDocumentS3Data(documentId, s3, StorageBucketName),
+      deleteS3Prefix(`raw/${documentId}/`, s3, StorageBucketName),
+    ]);
+    const errors: string[] = [];
+    let chunkItems: ChunkItem[] = [];
+    if (vectorResult.status === "fulfilled") {
+      chunkItems = vectorResult.value;
+    } else {
+      errors.push(`vectors: ${(vectorResult.reason as Error).message}`);
+      console.error(
+        `[cleanup-adapter] vector delete failed:`,
+        vectorResult.reason,
       );
-    } catch (err) {
-      errors.push(`vectors: ${(err as Error).message}`);
-      console.error(`[cleanup-adapter] vector delete failed:`, err);
     }
-    try {
-      await deleteDocumentS3Data(documentId, s3, StorageBucketName);
-    } catch (err) {
-      errors.push(`derived data: ${(err as Error).message}`);
-      console.error(`[cleanup-adapter] derived data delete failed:`, err);
-    }
-    try {
-      const removed = await deleteS3Prefix(
-        `raw/${documentId}/`,
-        s3,
-        StorageBucketName,
+    if (derivedResult.status === "rejected") {
+      errors.push(`derived data: ${(derivedResult.reason as Error).message}`);
+      console.error(
+        `[cleanup-adapter] derived data delete failed:`,
+        derivedResult.reason,
       );
+    }
+    if (rawResult.status === "fulfilled") {
       console.log(
-        `[cleanup-adapter] Deleted ${removed} objects from raw/${documentId}/`,
+        `[cleanup-adapter] Deleted ${rawResult.value} objects from raw/${documentId}/`,
       );
-    } catch (err) {
-      errors.push(`raw: ${(err as Error).message}`);
-      console.error(`[cleanup-adapter] raw delete failed:`, err);
+    } else {
+      errors.push(`raw: ${(rawResult.reason as Error).message}`);
+      console.error(`[cleanup-adapter] raw delete failed:`, rawResult.reason);
     }
 
     if (errors.length > 0) {
@@ -104,6 +111,7 @@ export async function handler(event: S3Event) {
   }
 }
 
+/** Deletes the chunk rows, dedupe row and META row of a cleaned-up document. */
 async function deleteDynamoRecords(
   documentId: string,
   chunkItems: ChunkItem[],
@@ -130,8 +138,8 @@ async function deleteDynamoRecords(
   console.log(`[cleanup-adapter] Deleted DynamoDB record for ${documentId}`);
 }
 
-// Pipeline stages refuse to write to a DELETING document, so a vector written
-// during this cleanup cannot stay searchable.
+/** Pipeline stages refuse to write to a DELETING document, so a vector written
+ * during this cleanup cannot stay searchable. */
 async function markDeleting(documentId: string) {
   const now = new Date().toISOString();
   try {

@@ -7,12 +7,13 @@ import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { recordUsage, updateStorageBytes } from "../utils";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
   getDocument,
+  recordUsage,
+  updateStorageBytes,
 } from "../utils";
 import type { DocumentRow } from "../types";
 
@@ -45,6 +46,7 @@ const ALLOWED_MIME_TYPES = new Set([
   "text/plain",
 ]);
 
+/** S3 ObjectCreated handler for raw/ uploads; validates the file and queues the parse stage. */
 export async function handler(event: S3Event) {
   for (const record of event.Records ?? []) {
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
@@ -53,7 +55,7 @@ export async function handler(event: S3Event) {
       console.log(`[ingest-adapter] Skipping non-raw object: ${key}`);
       continue;
     }
-    const documentId = parts[1];
+    const [, documentId] = parts;
     const now = new Date().toISOString();
 
     let doc = await getDocument(documentId, dynamo, TableName);
@@ -153,6 +155,7 @@ export async function handler(event: S3Event) {
   }
 }
 
+/** Claims the document for dispatch with a lease; returns false when another event owns it. */
 async function claimDispatch(
   documentId: string,
   doc: DocumentRow,
@@ -202,6 +205,7 @@ async function claimDispatch(
   }
 }
 
+/** Deletes the old derived data and promotes the pending replacement metadata. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
@@ -251,6 +255,7 @@ async function finalizeReplacement(
   }
 }
 
+/** Marks the claimed dispatch as sent once the parse message is on the queue. */
 async function markDispatchSent(documentId: string, eventId: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -268,9 +273,8 @@ async function markDispatchSent(documentId: string, eventId: string) {
   );
 }
 
-// A presigned POST stays valid for 15 minutes, so the source can be overwritten
-// after dispatch. The object's current size is charged, whatever order S3 events
-// arrive in, and the document's count moves in the same transaction.
+/** Charges the source's current size after dispatch, since a presigned POST can overwrite it
+ * for 15 minutes. The document's count moves in the same transaction. */
 async function recountStorage(
   documentId: string,
   doc: DocumentRow,
@@ -317,6 +321,7 @@ async function recountStorage(
   );
 }
 
+/** Returns a claimed document to UPLOADED when dispatch fails, so a retry can claim it. */
 async function rollbackQueueStatus(documentId: string, eventId: string) {
   const now = new Date().toISOString();
   await dynamo.send(
@@ -341,6 +346,7 @@ async function rollbackQueueStatus(documentId: string, eventId: string) {
   );
 }
 
+/** Stores the source bytes already charged to the user for this document. */
 async function setCountedBytes(documentId: string, countedBytes: number) {
   await dynamo.send(
     new UpdateCommand({
@@ -357,6 +363,7 @@ async function setCountedBytes(documentId: string, countedBytes: number) {
   );
 }
 
+/** Marks the document FAILED at the UPLOAD step with the given error. */
 async function updateFailure(documentId: string, error: string, now: string) {
   await dynamo.send(
     new UpdateCommand({
@@ -377,7 +384,7 @@ async function updateFailure(documentId: string, error: string, now: string) {
   );
 }
 
-// Dispatch already charged this document once, so later events only recount.
+/** Dispatch already charged this document once, so later events only recount. */
 function isDispatched(doc: DocumentRow): boolean {
   if (doc.status === "UPLOADED" || doc.status === "DELETING") return false;
   return doc.status !== "QUEUED" || doc.dispatchState === "SENT";

@@ -19,6 +19,7 @@ const TableName = process.env.TAGS_TABLE_NAME!;
 const MAX_TAG_LENGTH = 50;
 const MAX_TAGS_PER_USER = 200;
 
+/** API handler for POST /tags; creates a tag, or returns the existing one with that name. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;

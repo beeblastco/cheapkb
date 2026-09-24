@@ -82,6 +82,7 @@ interface CohereEmbeddingResponse {
   embeddings: number[][] | { float?: number[][] };
 }
 
+/** API handler for POST /query; embeds the text or image and searches the caller's vectors. */
 export async function handler(event: APIGatewayProxyEventV2) {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
@@ -139,7 +140,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     const query = typeof body.query === "string" ? body.query : undefined;
     const image = typeof body.image === "string" ? body.image : undefined;
     const topK = typeof body.topK === "number" ? body.topK : 10;
-    const filters = body.filters;
+    const { filters } = body;
     if (!query?.trim() && !image) {
       return {
         statusCode: 400,
@@ -284,8 +285,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
-// S3 Vectors rejects a filter with several top-level keys, so every condition
-// goes inside $and. The caller's userId is always replaced with their own.
+/** S3 Vectors rejects a filter with several top-level keys, so every condition
+ * goes inside $and. The caller's userId is always replaced with their own. */
 export function buildFilter(
   filters: Record<string, unknown> | undefined,
   userId: string,
@@ -336,6 +337,7 @@ export function buildFilter(
   return { $and: conditions };
 }
 
+/** Embeds the query with Cohere on Bedrock and records the input tokens as usage. */
 async function embedQuery(
   text: string,
   userId: string,
@@ -410,6 +412,7 @@ async function embedQuery(
   return embedding;
 }
 
+/** Builds the Cohere Embed v4 search_query request body for text, image or both. */
 function buildEmbeddingRequest(text: string, image?: string) {
   const content: Array<Record<string, unknown>> = [];
   if (text) content.push({ type: "text", text: text });
@@ -451,6 +454,7 @@ function isValidImageDataUri(value: string) {
   }
 }
 
+/** Checks that a filter operator's value has the type S3 Vectors accepts for it. */
 function isValidOperatorValue(operator: string, value: unknown): boolean {
   if (operator === "$gte" || operator === "$lte") {
     return typeof value === "number" && Number.isFinite(value);
@@ -475,6 +479,7 @@ function isValidOperatorValue(operator: string, value: unknown): boolean {
   );
 }
 
+/** Checks the leading magic bytes so a data URI cannot lie about its image type. */
 function matchesImageSignature(bytes: Uint8Array, mimeType: string) {
   if (mimeType === "image/jpeg") {
     return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
@@ -504,6 +509,7 @@ function matchesImageSignature(bytes: Uint8Array, mimeType: string) {
   return false;
 }
 
+/** Parses and validates a base64 image data URI, throwing when it is malformed or too large. */
 function parseImageDataUri(value: string) {
   const match = IMAGE_DATA_URI.exec(value);
   if (!match) throw new Error("Invalid image data URI");
