@@ -1,6 +1,7 @@
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -44,6 +45,7 @@ describe("upload validation", () => {
     dynamoMock.reset();
     dynamoMock.on(GetCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
     vi.clearAllMocks();
   });
 
@@ -194,5 +196,35 @@ describe("upload validation", () => {
       JSON.parse(second.body).documentId,
     );
     expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
+  });
+
+  it("rejects a new document while ten are still processing", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(QueryCommand).resolves({
+      Items: Array.from({ length: 10 }, () => ({
+        status: "EMBEDDING",
+        updatedAt: now,
+      })),
+    });
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(createPresignedPost).not.toHaveBeenCalled();
+  });
+
+  it("rejects a new document at the per-account document cap", async () => {
+    dynamoMock.on(QueryCommand).resolves({
+      Items: Array.from({ length: 1000 }, () => ({ status: "EMBEDDED" })),
+    });
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(createPresignedPost).not.toHaveBeenCalled();
   });
 });

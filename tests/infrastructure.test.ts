@@ -111,9 +111,9 @@ describe("infrastructure hardening", () => {
     expect(config).not.toContain("BEDROCK_LOGGING_OWNER_STAGE");
     expect(config).toContain("InvocationLoggingConfiguration");
     expect(config).toContain("s3Config:");
-    expect(config).toContain("embeddingDataDeliveryEnabled: true");
-    expect(config).toContain("imageDataDeliveryEnabled: true");
-    expect(config).toContain("textDataDeliveryEnabled: true");
+    expect(config).toContain("embeddingDataDeliveryEnabled: false");
+    expect(config).toContain("imageDataDeliveryEnabled: false");
+    expect(config).toContain("textDataDeliveryEnabled: false");
     expect(config).toContain("expiration: { days: 7 }");
     expect(config).not.toContain('new sst.aws.Function("BedrockUsage"');
     expect(config).not.toContain('name: "bedrock-usage"');

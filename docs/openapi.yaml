@@ -36,7 +36,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: Rate limit, monthly allowance, or storage limit reached
+          description: Rate limit, monthly allowance, storage limit, 1,000-document limit, or 10 documents already processing
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -154,12 +154,15 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Cannot edit while document is processing or concurrent edit
+          description: Only completed or failed documents can be edited, one edit at a time
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          $ref: "#/components/responses/RateLimited"
+          description: Rate limit (20 per hour) or monthly allowance reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalServerError"
       requestBody:
@@ -185,8 +188,13 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: A tag edit is still writing to the document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
-          description: Partial cleanup failure
+          description: Partial cleanup failure; warnings name the failed steps
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PartialDeleteResponse" }

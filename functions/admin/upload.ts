@@ -3,6 +3,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
@@ -37,6 +38,12 @@ const MAX_STORAGE_BYTES = parseInt(
   10,
 );
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+// Bounds GET /documents, which reads every document, and one account's share of
+// the pipeline queue. A document idle for an hour no longer counts as in flight.
+const MAX_DOCUMENTS = 1000;
+const MAX_IN_FLIGHT_DOCUMENTS = 10;
+const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
+const SETTLED_STATUSES = new Set(["DELETING", "EMBEDDED", "FAILED"]);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -121,17 +128,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
   const maxUploadBytes = mimeType.startsWith("image/")
     ? MAX_IMAGE_UPLOAD_BYTES
     : MAX_UPLOAD_BYTES;
-  // Bytes are counted when S3 accepts a file, so an account can pass the cap
-  // by the uploads already in flight.
-  if (summary.storageBytes >= MAX_STORAGE_BYTES) {
-    return {
-      statusCode: 429,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: "Storage limit reached. Delete documents to upload more.",
-      }),
-    };
-  }
 
   try {
     const filename = sanitizeFilename(body.filename as string);
@@ -152,6 +148,19 @@ export async function handler(event: APIGatewayProxyEventV2) {
     let sourceKey: string;
     let replacementToken: string | undefined;
     let reused = false;
+
+    const limitError = await checkAccountLimits(
+      userId,
+      summary.storageBytes,
+      !mapping?.Item,
+    );
+    if (limitError) {
+      return {
+        statusCode: 429,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: limitError }),
+      };
+    }
 
     if (mapping?.Item) {
       ({ documentId } = mapping.Item);
@@ -240,6 +249,58 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }),
     };
   }
+}
+
+/** Returns an error when the account is at its storage or in-flight cap, or at its
+ * document cap for a new document, else null. Concurrent requests can overshoot. */
+async function checkAccountLimits(
+  userId: string,
+  storageBytes: number,
+  isNew: boolean,
+): Promise<string | null> {
+  // Bytes are counted when S3 accepts a file, so an account can pass the cap
+  // by the uploads already in flight.
+  if (storageBytes >= MAX_STORAGE_BYTES) {
+    return "Storage limit reached. Delete documents to upload more.";
+  }
+  const inFlightSince = new Date(
+    Date.now() - IN_FLIGHT_WINDOW_MS,
+  ).toISOString();
+  let total = 0;
+  let inFlight = 0;
+  let lastKey: Record<string, unknown> | undefined;
+  do {
+    const result = await dynamo.send(
+      new QueryCommand({
+        TableName: TableName,
+        IndexName: "GSI2",
+        KeyConditionExpression: "gsi2pk = :pk",
+        ProjectionExpression: "#s, updatedAt",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: { ":pk": `USER#${userId}` },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    for (const item of result.Items ?? []) {
+      total += 1;
+      if (
+        !SETTLED_STATUSES.has(item.status as string) &&
+        (item.updatedAt as string) >= inFlightSince
+      ) {
+        inFlight += 1;
+      }
+    }
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  if (isNew && total >= MAX_DOCUMENTS) {
+    return "Document limit reached. Delete documents to upload more.";
+  }
+  if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
+    return "Too many documents processing. Try again when they finish.";
+  }
+
+  return null;
 }
 
 /** Claims an existing document for a re-upload; false when another upload holds it or it is busy. */

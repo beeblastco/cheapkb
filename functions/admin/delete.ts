@@ -29,6 +29,9 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
+// Matches the update handler's lease TTL; a live lease means chunk JSON and
+// vectors are still being rewritten and would outlive this delete.
+const UPDATE_LEASE_TTL_MS = 5 * 60 * 1000;
 
 /** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */
 export async function handler(event: APIGatewayProxyEventV2) {
@@ -73,11 +76,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     await markDeleting(documentId, null);
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
+    return markRefusedResponse(documentId);
   }
 
   // Older documents have no countedBytes, so the size is read and saved before
@@ -103,6 +102,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       );
     } catch (err) {
       if ((err as Error).name !== "NotFound") {
+        console.error("[delete] source size:", err);
         await markDeleting(documentId, "Delete did not finish, try again");
         return {
           statusCode: 500,
@@ -110,7 +110,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
           body: JSON.stringify({
             documentId: documentId,
             deleted: false,
-            warnings: [`source size: ${(err as Error).message}`],
+            warnings: ["source size"],
           }),
         };
       }
@@ -129,20 +129,23 @@ export async function handler(event: APIGatewayProxyEventV2) {
       VectorIndexName,
     );
   } catch (err) {
-    errors.push(`vectors: ${(err as Error).message}`);
+    console.error("[delete] vectors:", err);
+    errors.push("vectors");
   }
 
   try {
     await deleteDocumentS3Data(documentId, s3, StorageBucketName);
   } catch (err) {
-    errors.push(`derived data: ${(err as Error).message}`);
+    console.error("[delete] derived data:", err);
+    errors.push("derived data");
   }
 
   if (doc.sourceKey) {
     try {
       await deleteS3Prefix(doc.sourceKey, s3, StorageBucketName);
     } catch (err) {
-      errors.push(`source: ${(err as Error).message}`);
+      console.error("[delete] source:", err);
+      errors.push("source");
     }
   }
 
@@ -185,6 +188,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }),
     );
   } catch (err) {
+    console.error("[delete] dynamo:", err);
     await markDeleting(documentId, "Delete did not finish, try again");
     return {
       statusCode: 500,
@@ -192,7 +196,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({
         documentId: documentId,
         deleted: false,
-        warnings: [`dynamo: ${(err as Error).message}`],
+        warnings: ["dynamo"],
       }),
     };
   }
@@ -201,6 +205,30 @@ export async function handler(event: APIGatewayProxyEventV2) {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId: documentId, deleted: true }),
+  };
+}
+
+/** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */
+async function markRefusedResponse(documentId: string) {
+  const current = await dynamo.send(
+    new GetCommand({
+      TableName: TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!current.Item) {
+    return {
+      statusCode: 404,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document not found" }),
+    };
+  }
+
+  return {
+    statusCode: 409,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ error: "Document is being edited, try again" }),
   };
 }
 
@@ -216,9 +244,15 @@ async function markDeleting(documentId: string, lastError: string | null) {
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
-      ConditionExpression: "attribute_exists(pk)",
+      // Never take over a live edit lease; a DELETING row always passes.
+      ConditionExpression:
+        "attribute_exists(pk) AND (#s <> :updating OR updatedAt < :leaseCutoff)",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
+        ":leaseCutoff": new Date(
+          Date.now() - UPDATE_LEASE_TTL_MS,
+        ).toISOString(),
+        ":updating": "UPDATING",
         ":e": lastError,
         ":f": lastError ? "DELETE" : null,
         ":gsi1pk": "STATUS#DELETING",

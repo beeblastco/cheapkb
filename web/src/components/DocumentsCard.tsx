@@ -130,12 +130,7 @@ const SUPPORTED_EXTENSIONS = [
 ];
 // Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
 // have its tags overwritten by the run in progress.
-const EDITABLE_TAG_STATUSES = new Set([
-  "EMBEDDED",
-  "FAILED",
-  "CHUNKED",
-  "PARSED",
-]);
+const EDITABLE_TAG_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
 type DocumentTableRow =
   | { document: Document; kind: "document" }
