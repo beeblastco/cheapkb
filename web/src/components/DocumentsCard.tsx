@@ -166,18 +166,22 @@ const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
   },
   {
     id: "status",
+    // The global filter searches the whole row, so only the title column runs it.
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.status : row.item.state;
     },
   },
   {
     id: "createdAt",
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.createdAt || "" : "\uffff";
     },
   },
   {
     id: "updatedAt",
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.updatedAt || "" : "\uffff";
     },
@@ -393,6 +397,9 @@ export function DocumentsCard({
     [documents, items],
   );
   const table = useTable({
+    // Polling replaces the data every few seconds; the clamp effect below keeps
+    // the page valid instead of jumping back to page 1.
+    autoResetPageIndex: false,
     columns: DOCUMENT_COLUMNS,
     data: tableData,
     enableRowSelection: (row) => {
@@ -446,8 +453,19 @@ export function DocumentsCard({
     setRowSelection({});
   }, [query]);
 
+  /** Clears every row on this page, including rows that turned unselectable
+   * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
+  function clearPageSelection() {
+    const pageRowIds = new Set(visible.map((row) => row.id));
+    setRowSelection((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([id]) => !pageRowIds.has(id)),
+      ),
+    );
+  }
+
   useEffect(() => {
-    if (pagination.pageIndex < pageCount) return;
+    if (pageCount === 0 || pagination.pageIndex < pageCount) return;
     setPagination((current) => ({
       ...current,
       pageIndex: Math.max(0, pageCount - 1),
@@ -702,9 +720,14 @@ export function DocumentsCard({
                       aria-label="Select documents on this page"
                       checked={table.getIsAllPageRowsSelected()}
                       disabled={!hasSelectablePageRows}
-                      indeterminate={table.getIsSomePageRowsSelected()}
+                      indeterminate={
+                        table.getIsSomePageRowsSelected() &&
+                        !table.getIsAllPageRowsSelected()
+                      }
                       onCheckedChange={(checked) =>
-                        table.toggleAllPageRowsSelected(checked)
+                        checked
+                          ? table.toggleAllPageRowsSelected(true)
+                          : clearPageSelection()
                       }
                     />
                   </TableHead>

@@ -106,7 +106,8 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      # This job can mint an AWS OIDC token, so dependency install scripts never run here.
+      # Narrow guard: this job can mint an AWS OIDC token, so install hooks are skipped.
+      # sst deploy still runs dependency code; the lockfile and Dependabot cooldown cover that.
       - run: npm ci --ignore-scripts --legacy-peer-deps
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
