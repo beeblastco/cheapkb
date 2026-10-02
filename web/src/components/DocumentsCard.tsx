@@ -453,6 +453,13 @@ export function DocumentsCard({
     setRowSelection({});
   }, [query]);
 
+  // A new search or sort starts from the top; polling alone keeps the page.
+  useEffect(() => {
+    setPagination((current) =>
+      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
+    );
+  }, [query, sorting]);
+
   /** Clears every row on this page, including rows that turned unselectable
    * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
   function clearPageSelection() {
