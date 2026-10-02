@@ -88,14 +88,21 @@ import { formatBytes } from "@/lib/utils";
 import {
   type Column,
   type ColumnDef,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
+  columnFilteringFeature,
+  createFilteredRowModel,
+  createPaginatedRowModel,
+  createSortedRowModel,
+  filterFns,
+  globalFilteringFeature,
   type PaginationState,
+  rowPaginationFeature,
+  rowSelectionFeature,
   type RowSelectionState,
+  rowSortingFeature,
+  sortFns,
   type SortingState,
-  useReactTable,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import {
   ArrowDownUp,
@@ -134,7 +141,20 @@ type DocumentTableRow =
   | { document: Document; kind: "document" }
   | { item: UploadQueueItem; kind: "upload" };
 
-const DOCUMENT_COLUMNS: ColumnDef<DocumentTableRow>[] = [
+const TABLE_FEATURES = tableFeatures({
+  columnFilteringFeature: columnFilteringFeature,
+  filteredRowModel: createFilteredRowModel(),
+  filterFns: filterFns,
+  globalFilteringFeature: globalFilteringFeature,
+  paginatedRowModel: createPaginatedRowModel(),
+  rowPaginationFeature: rowPaginationFeature,
+  rowSelectionFeature: rowSelectionFeature,
+  rowSortingFeature: rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: sortFns,
+});
+
+const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
   { id: "select", enableSorting: false },
   {
     id: "title",
@@ -372,7 +392,7 @@ export function DocumentsCard({
     ],
     [documents, items],
   );
-  const table = useReactTable({
+  const table = useTable({
     columns: DOCUMENT_COLUMNS,
     data: tableData,
     enableRowSelection: (row) => {
@@ -380,15 +400,12 @@ export function DocumentsCard({
         ? row.original.document.status !== "DELETING"
         : row.original.item.state !== "SYNCING";
     },
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    features: TABLE_FEATURES,
     getRowId: (row) => {
       return row.kind === "document"
         ? `document-${row.document.documentId}`
         : `upload-${row.item.id}`;
     },
-    getSortedRowModel: getSortedRowModel(),
     globalFilterFn: (row, _columnId, value) =>
       getSearchValue(row.original).includes(String(value).trim().toLowerCase()),
     onGlobalFilterChange: setQuery,
@@ -843,7 +860,7 @@ function SortableHead({
   label,
 }: {
   className?: string;
-  column: Column<DocumentTableRow>;
+  column: Column<typeof TABLE_FEATURES, DocumentTableRow, unknown>;
   label: string;
 }) {
   const sorted = column.getIsSorted();

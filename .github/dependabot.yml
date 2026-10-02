@@ -4,6 +4,9 @@ updates:
     directories: ["/", "/web"]
     schedule:
       interval: weekly
+    # Skip releases younger than 3 days, so a hijacked publish is caught before it lands here.
+    cooldown:
+      default-days: 3
     groups:
       aws-sdk:
         patterns: ["@aws-sdk/*"]
@@ -22,3 +25,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Skip releases younger than 3 days, so a hijacked publish is caught before it lands here.
+    cooldown:
+      default-days: 3
