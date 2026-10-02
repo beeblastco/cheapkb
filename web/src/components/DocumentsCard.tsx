@@ -92,14 +92,14 @@ import {
   createFilteredRowModel,
   createPaginatedRowModel,
   createSortedRowModel,
-  filterFns,
   globalFilteringFeature,
   type PaginationState,
   rowPaginationFeature,
   rowSelectionFeature,
   type RowSelectionState,
   rowSortingFeature,
-  sortFns,
+  sortFn_alphanumeric,
+  sortFn_text,
   type SortingState,
   tableFeatures,
   useTable,
@@ -144,14 +144,14 @@ type DocumentTableRow =
 const TABLE_FEATURES = tableFeatures({
   columnFilteringFeature: columnFilteringFeature,
   filteredRowModel: createFilteredRowModel(),
-  filterFns: filterFns,
   globalFilteringFeature: globalFilteringFeature,
   paginatedRowModel: createPaginatedRowModel(),
   rowPaginationFeature: rowPaginationFeature,
   rowSelectionFeature: rowSelectionFeature,
   rowSortingFeature: rowSortingFeature,
   sortedRowModel: createSortedRowModel(),
-  sortFns: sortFns,
+  // Every column holds a string, so auto sort only ever resolves these two.
+  sortFns: { alphanumeric: sortFn_alphanumeric, text: sortFn_text },
 });
 
 const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
@@ -448,8 +448,11 @@ export function DocumentsCard({
 
   useEffect(() => {
     if (pagination.pageIndex < pageCount) return;
-    table.setPageIndex(Math.max(0, pageCount - 1));
-  }, [pageCount, pagination.pageIndex, table]);
+    setPagination((current) => ({
+      ...current,
+      pageIndex: Math.max(0, pageCount - 1),
+    }));
+  }, [pageCount, pagination.pageIndex]);
 
   /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
    * reloads documents and usage. Wired to the Sync button. */
@@ -748,7 +751,9 @@ export function DocumentsCard({
                         key={row.id}
                         onEdit={() => setSelectedItemId(original.item.id)}
                         onRemove={() => removeItem(original.item.id)}
-                        onSelectedChange={row.toggleSelected}
+                        onSelectedChange={(checked) =>
+                          row.toggleSelected(checked)
+                        }
                         selected={row.getIsSelected()}
                       />
                     ) : (
@@ -759,7 +764,9 @@ export function DocumentsCard({
                         onDelete={onDelete}
                         onEditTags={setEditingDocumentId}
                         onReindex={onReindex}
-                        onSelectedChange={row.toggleSelected}
+                        onSelectedChange={(checked) =>
+                          row.toggleSelected(checked)
+                        }
                         onView={onView}
                         selected={row.getIsSelected()}
                       />
