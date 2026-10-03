@@ -22,7 +22,7 @@ import {
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import type { DocumentType } from "@smithy/types";
 import { encode } from "gpt-tokenizer";
-import { recordUsage } from "../utils";
+import { fitFilterableMetadata, recordUsage } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -56,7 +56,6 @@ const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 const EMBED_CLAIM_LEASE_MS = 300_000;
 // S3 Vectors rejects a vector whose filterable metadata passes 2 KB. Measured as
 // JSON, which overcounts the raw values, so the stored size stays under the cap.
-const MAX_FILTERABLE_METADATA_BYTES = 2048;
 
 interface ChunkMetadata {
   documentId: string;
@@ -793,41 +792,6 @@ function embeddingDimension() {
 
 function embeddingModel() {
   return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
-}
-
-/** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
- * title, tags, authors and sourceKey are added back in that order while they fit. */
-function fitFilterableMetadata(metadata: ChunkMetadata): ChunkMetadata {
-  const fits = (candidate: ChunkMetadata): boolean =>
-    Buffer.byteLength(
-      JSON.stringify({
-        ...candidate,
-        chunkPreview: undefined,
-        s3ChunkKey: undefined,
-        text: undefined,
-      }),
-    ) <= MAX_FILTERABLE_METADATA_BYTES;
-  if (fits(metadata)) return metadata;
-  console.warn(
-    `[embed] Trimmed metadata of ${metadata.chunkId} to fit the filterable cap`,
-  );
-
-  const { authors, sourceKey, tags, title, ...required } = metadata;
-  const fitted: ChunkMetadata = { ...required };
-  if (title && fits({ ...fitted, title: title })) fitted.title = title;
-  for (const tag of tags ?? []) {
-    const next = [...(fitted.tags ?? []), tag];
-    if (fits({ ...fitted, tags: next })) fitted.tags = next;
-  }
-  for (const author of authors ?? []) {
-    const next = [...(fitted.authors ?? []), author];
-    if (fits({ ...fitted, authors: next })) fitted.authors = next;
-  }
-  if (sourceKey && fits({ ...fitted, sourceKey: sourceKey })) {
-    fitted.sourceKey = sourceKey;
-  }
-
-  return fitted;
 }
 
 function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {

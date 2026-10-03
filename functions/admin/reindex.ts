@@ -115,6 +115,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({ error: "Document not found" }),
     };
   }
+  if (Date.parse(doc.replacementExpiresAt ?? "") > Date.now()) {
+    return {
+      statusCode: 409,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "A replacement upload is pending; try again once it finishes",
+      }),
+    };
+  }
   const now = new Date().toISOString();
   const { status, failedStep } = doc;
 

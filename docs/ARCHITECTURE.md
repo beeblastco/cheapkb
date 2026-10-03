@@ -41,7 +41,7 @@ Documents and images use the same search experience. Content indexed with differ
 
 ## Updates, replacement, and deletion
 
-Editing a completed or failed document updates its searchable tags without uploading the file again. Names, authors, and other metadata are set during upload. An edit cannot start while a replacement upload is pending. A document deleted while an edit is still writing to it is deleted anyway, and the edit then removes the chunk content and vectors it rewrote.
+Editing a completed or failed document updates its searchable tags without uploading the file again. Names, authors, and other metadata are set during upload. An edit cannot start while a replacement upload is pending. A document cannot be deleted while an edit is still writing to it. If an account reset or an S3 removal deletes it anyway, the edit removes the chunk content and vectors it rewrote.
 
 Uploading a file with the same name and type replaces the existing document. Names keep their Unicode letters and digits, so differently named non-English files stay separate documents. Replacing a completed or failed document keeps the existing version searchable until S3 accepts the replacement. CheapKB then removes the old derived content and vectors before processing the new version; if an edit or reindex still holds the document, the S3 event is retried instead of dropped.
 

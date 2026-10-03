@@ -108,9 +108,19 @@ export async function handler(event: APIGatewayProxyEventV2) {
     });
   }
 
+  if (Date.parse(document.replacementExpiresAt ?? "") > Date.now()) {
+    return json(409, {
+      error: "A replacement upload is pending; try again once it finishes",
+    });
+  }
+
   const tags = normalizeTags(body.tags);
+  // Only an edit that grows the metadata is held to the budget, so documents
+  // stored before it can still be retagged or cleared.
+  const nextBytes = metadataBytes(document.title, tags, document.authors);
   if (
-    metadataBytes(document.title, tags, document.authors) > MAX_METADATA_BYTES
+    nextBytes > MAX_METADATA_BYTES &&
+    nextBytes > metadataBytes(document.title, document.tags, document.authors)
   ) {
     return json(400, {
       error: `Title, tags and authors together must be ${MAX_METADATA_BYTES} bytes or fewer`,
@@ -356,7 +366,6 @@ async function updateChunkObjects(
   if (failed) throw failed.reason;
 }
 
-/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
 /** UTF-8 size of the searchable metadata, measured the same way as the upload handler. */
 function metadataBytes(
   title: unknown,
@@ -368,6 +377,7 @@ function metadataBytes(
   );
 }
 
+/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
 function normalizeTags(tags: unknown): string[] | null {
   if (!Array.isArray(tags)) return null;
   const deduped = new Map<string, string>();

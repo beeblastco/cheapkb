@@ -34,6 +34,8 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
+// A POST that starts just before its form expires can finish minutes later.
+const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
@@ -97,7 +99,7 @@ export async function handler(event: S3Event) {
     }
 
     if (doc.replacementToken) {
-      const finalized = await finalizeReplacement(documentId, doc, now);
+      const finalized = await finalizeReplacement(documentId, doc, key, now);
       if (!finalized) {
         console.log(
           `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
@@ -222,8 +224,22 @@ async function claimDispatch(
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
+  key: string,
   now: string,
 ): Promise<boolean> {
+  // Checked before any delete: a replacement that can no longer claim the row must
+  // leave its data alone. A form that outlived its window is rolled back instead.
+  const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+    await revertReplacement(
+      documentId,
+      doc,
+      key,
+      "Replacement arrived too late",
+    );
+    return false;
+  }
+  if (doc.status !== doc.replacementPreviousStatus) return false;
   const chunkItems = await deleteDocumentVectors(
     documentId,
     dynamo,

@@ -553,6 +553,72 @@ describe("PATCH /documents/{id}", () => {
     });
   });
 
+  describe("legacy and pending documents", () => {
+    it("lets a document already over the metadata budget clear its tags", async () => {
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({
+          title: "報".repeat(200),
+          authors: Array.from({ length: 20 }, () => "a".repeat(100)),
+        });
+      });
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      const response = await update(patchEvent({ tags: null }));
+
+      expect(response.statusCode).toBe(200);
+    });
+
+    it("explains a pending replacement instead of asking for a retry", async () => {
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({
+          replacementToken: "token-1",
+          replacementExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      });
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toContain("replacement");
+    });
+
+    it("keeps retagged vector metadata under the 2 KB filterable cap", async () => {
+      vectorsMock.on(GetVectorsCommand).resolves({
+        vectors: [
+          {
+            ...storedVector(),
+            metadata: {
+              ...storedVector().metadata,
+              sourceKey: `raw/doc-1/${"報".repeat(255)}.pdf`,
+            },
+          },
+        ],
+      });
+
+      const response = await update(
+        patchEvent({
+          tags: Array.from({ length: 10 }, (_, i) => `${i}`.padEnd(90, "t")),
+        }),
+      );
+
+      expect(response.statusCode).toBe(200);
+      const metadata = vectorsMock.commandCalls(PutVectorsCommand)[0].args[0]
+        .input.vectors?.[0].metadata as Record<string, unknown>;
+      const filterable = Buffer.byteLength(
+        JSON.stringify({
+          ...metadata,
+          chunkPreview: undefined,
+          s3ChunkKey: undefined,
+          text: undefined,
+        }),
+      );
+      expect(filterable).toBeLessThanOrEqual(2048);
+      expect(metadata.tags).toHaveLength(10);
+    });
+  });
+
   describe("cost guards", () => {
     it("rejects tags that push the metadata past its byte budget", async () => {
       dynamoMock.on(GetCommand).callsFake((input) => {

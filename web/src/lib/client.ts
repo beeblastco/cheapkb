@@ -537,12 +537,7 @@ export async function uploadDocument(
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
     throw error;
   }
-  onProgress("Starting indexing…");
-  // The S3 event already queued the file, so a failed status check keeps it
-  // and the document poll reports its status instead.
-  await apiCall(token, "POST", "/ingest", {
-    documentId: metadata.documentId,
-  }).catch(() => undefined);
+  // The S3 event queues the file for indexing; the document poll reports progress.
 
   return metadata.documentId;
 }

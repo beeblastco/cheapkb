@@ -404,6 +404,54 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
+  it("rolls back a replacement that lands after its window instead of wiping data", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+        replacementExpiresAt: new Date(
+          Date.now() - 60 * 60 * 1000,
+        ).toISOString(),
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [{ Key: "raw/doc-1/sample.txt", VersionId: "v2" }],
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("leaves data alone when the document moved on before the replacement landed", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "QUEUED",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+        replacementExpiresAt: new Date(Date.now() + 60 * 1000).toISOString(),
+      },
+    });
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+
+    await handler(s3Event());
+
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+  });
+
   it("deletes a late upload whose document no longer exists", async () => {
     dynamoMock.on(GetCommand).resolves({});
     s3Mock.on(DeleteObjectCommand).resolves({});

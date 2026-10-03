@@ -197,7 +197,7 @@ describe("frontend", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("uploads through the constrained POST form and starts ingestion", async () => {
+    it("uploads through the constrained POST form and leaves ingestion to S3", async () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(
@@ -208,8 +208,7 @@ describe("frontend", () => {
             uploadFields: { key: "raw/doc-1/file.txt" },
           }),
         )
-        .mockResolvedValueOnce(new Response(null, { status: 204 }))
-        .mockResolvedValueOnce(jsonResponse({ queued: true }));
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       const file = new window.File(["hello"], "file.txt", {
         type: "text/plain",
@@ -223,13 +222,7 @@ describe("frontend", () => {
         "https://storage.example.com",
         expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
       );
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        3,
-        `${API_URL}/ingest`,
-        expect.objectContaining({
-          body: JSON.stringify({ documentId: "doc-1" }),
-        }),
-      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("deletes the document record when storage rejects the upload", async () => {
@@ -260,34 +253,6 @@ describe("frontend", () => {
         3,
         `${API_URL}/documents/doc-1`,
         expect.objectContaining({ method: "DELETE" }),
-      );
-    });
-
-    it("keeps an uploaded document when the ingest status check fails", async () => {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce(
-          jsonResponse({
-            documentId: "doc-1",
-            maxUploadBytes: 100,
-            uploadUrl: "https://storage.example.com",
-            uploadFields: {},
-          }),
-        )
-        .mockResolvedValueOnce(new Response(null, { status: 204 }))
-        .mockRejectedValueOnce(new DOMException("Timed out", "TimeoutError"));
-      globalThis.fetch = fetchMock as unknown as typeof fetch;
-      const file = new window.File(["hello"], "file.txt", {
-        type: "text/plain",
-      });
-
-      await expect(
-        uploadDocument("token", file, { title: "File" }, vi.fn()),
-      ).resolves.toBe("doc-1");
-      expect(fetchMock).toHaveBeenCalledTimes(3);
-      expect(fetchMock).not.toHaveBeenCalledWith(
-        `${API_URL}/documents/doc-1`,
-        expect.anything(),
       );
     });
 

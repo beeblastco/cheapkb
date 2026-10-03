@@ -481,11 +481,19 @@ function splitIntoChunks(
 
   for (const page of pages) {
     if (!page.text.trim()) continue;
-    const text = buffer.length > 0 ? `\n\n${page.text}` : page.text;
-    const tokens = encode(text, { disallowedSpecial: new Set() });
-    for (const tok of tokens) {
+    // The separator belongs to the page before it, so a window that fills on it
+    // does not claim a page it has no text from.
+    const separatorPage = bufferPages[bufferPages.length - 1];
+    const separator =
+      separatorPage === undefined
+        ? []
+        : encode("\n\n", { disallowedSpecial: new Set() });
+    const tokens = encode(page.text, { disallowedSpecial: new Set() });
+    for (const [index, tok] of [...separator, ...tokens].entries()) {
       buffer.push(tok);
-      bufferPages.push(page.pageNumber);
+      bufferPages.push(
+        index < separator.length ? separatorPage! : page.pageNumber,
+      );
       fresh += 1;
       if (buffer.length >= maxTokens) flush();
     }
