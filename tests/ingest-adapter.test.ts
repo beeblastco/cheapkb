@@ -244,7 +244,7 @@ describe("S3 ingest adapter", () => {
           userId: "user-1",
           countedBytes: 20,
           dispatchState: "CLAIMED",
-          dispatchLeaseUntil: new Date(Date.now() - 1).toISOString(),
+          dispatchLeaseUntil: new Date(Date.now() - 60_000).toISOString(),
         },
       };
     });
