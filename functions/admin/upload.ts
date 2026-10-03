@@ -43,7 +43,13 @@ const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 const MAX_DOCUMENTS = 1000;
 const MAX_IN_FLIGHT_DOCUMENTS = 10;
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
-const SETTLED_STATUSES = new Set(["DELETING", "EMBEDDED", "FAILED"]);
+// UPDATING is a tag edit, not pipeline work.
+const SETTLED_STATUSES = new Set([
+  "DELETING",
+  "EMBEDDED",
+  "FAILED",
+  "UPDATING",
+]);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -263,9 +269,7 @@ async function checkAccountLimits(
   if (storageBytes >= MAX_STORAGE_BYTES) {
     return "Storage limit reached. Delete documents to upload more.";
   }
-  const inFlightSince = new Date(
-    Date.now() - IN_FLIGHT_WINDOW_MS,
-  ).toISOString();
+  const nowMs = Date.now();
   let total = 0;
   let inFlight = 0;
   let lastKey: Record<string, unknown> | undefined;
@@ -275,7 +279,7 @@ async function checkAccountLimits(
         TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
-        ProjectionExpression: "#s, updatedAt",
+        ProjectionExpression: "#s, updatedAt, replacementExpiresAt",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },
         ExclusiveStartKey: lastKey,
@@ -283,12 +287,7 @@ async function checkAccountLimits(
     );
     for (const item of result.Items ?? []) {
       total += 1;
-      if (
-        !SETTLED_STATUSES.has(item.status as string) &&
-        (item.updatedAt as string) >= inFlightSince
-      ) {
-        inFlight += 1;
-      }
+      if (isInFlight(item, nowMs)) inFlight += 1;
     }
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
@@ -459,6 +458,17 @@ function createDedupeKey(userId: string, filename: string, mimeType: string) {
   return createHash("sha256")
     .update(`${userId}\0${filename}\0${mimeType}`)
     .digest("hex");
+}
+
+/** A pending replacement counts until its form expires. An unused upload form
+ * stops counting after its 15 minutes, other pipeline work after an hour. */
+function isInFlight(item: Record<string, unknown>, nowMs: number): boolean {
+  if (Date.parse(String(item.replacementExpiresAt ?? "")) > nowMs) return true;
+  if (SETTLED_STATUSES.has(String(item.status))) return false;
+  const windowMs =
+    item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
+
+  return nowMs - Date.parse(String(item.updatedAt ?? "")) < windowMs;
 }
 
 function isShortStringArray(value: unknown): boolean {

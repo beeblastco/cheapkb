@@ -955,6 +955,7 @@ export default $config({
         {
           actions: [
             "s3:GetObject",
+            "s3:GetObjectVersion",
             "s3:ListBucketVersions",
             "s3:DeleteObject",
             "s3:DeleteObjectVersion",

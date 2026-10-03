@@ -215,6 +215,45 @@ describe("upload validation", () => {
     expect(createPresignedPost).not.toHaveBeenCalled();
   });
 
+  it("does not count abandoned upload forms or tag edits as processing", async () => {
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    dynamoMock.on(QueryCommand).resolves({
+      Items: [
+        ...Array.from({ length: 10 }, () => ({
+          status: "UPLOADED",
+          updatedAt: stale,
+        })),
+        ...Array.from({ length: 10 }, () => ({
+          status: "UPDATING",
+          updatedAt: now,
+        })),
+      ],
+    });
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("counts a pending replacement as processing", async () => {
+    const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    dynamoMock.on(QueryCommand).resolves({
+      Items: Array.from({ length: 10 }, () => ({
+        status: "EMBEDDED",
+        replacementExpiresAt: expires,
+      })),
+    });
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+  });
+
   it("rejects a new document at the per-account document cap", async () => {
     dynamoMock.on(QueryCommand).resolves({
       Items: Array.from({ length: 1000 }, () => ({ status: "EMBEDDED" })),

@@ -429,7 +429,7 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
-  it("keeps the old version searchable when a replacement is over the allowance", async () => {
+  it("reverts a replacement refused for allowance to the previous source", async () => {
     usage.checkUsageLimit.mockResolvedValue({ allowed: false });
     dynamoMock.on(GetCommand).resolves({
       Item: {
@@ -443,13 +443,17 @@ describe("S3 ingest adapter", () => {
     });
     s3Mock.on(HeadObjectCommand).resolves({
       Metadata: { "upload-token": "token-1" },
-      ContentLength: 20,
     });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const event = s3Event();
+    event.Records[0].s3.object.versionId = "v2";
 
-    await handler(s3Event());
+    await handler(event);
 
+    expect(
+      s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.VersionId,
+    ).toBe("v2");
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
-    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
@@ -496,19 +500,42 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
-  it("fails a new upload once the monthly allowance is spent", async () => {
+  it("fails and charges a new upload once the monthly allowance is spent", async () => {
+    const now = new Date().toISOString();
     usage.checkUsageLimit.mockResolvedValue({ allowed: false });
-    dynamoMock.on(GetCommand).resolves({
-      Item: { status: "UPLOADED", mimeType: "text/plain", userId: "user-1" },
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk === "ACCOUNT#user-1" && input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            storageBytes: 0,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: { status: "UPLOADED", mimeType: "text/plain", userId: "user-1" },
+      };
     });
     dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 50 });
 
-    await handler(s3Event());
+    await handler(s3Event("raw/doc-1/sample.txt", 50));
 
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
-    expect(
-      dynamoMock.commandCalls(UpdateCommand)[0].args[0].input
-        .ExpressionAttributeValues?.[":s"],
-    ).toBe("FAILED");
+    const failure = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(failure.ExpressionAttributeValues?.[":s"]).toBe("FAILED");
+    expect(failure.ConditionExpression).toBe("#s = :uploaded");
+    const storageUpdate = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems?.[0].Update)
+      .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
+    expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(50);
   });
 });

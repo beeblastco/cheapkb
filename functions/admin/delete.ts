@@ -208,30 +208,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
-/** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */
-async function markRefusedResponse(documentId: string) {
-  const current = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  if (!current.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  return {
-    statusCode: 409,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ error: "Document is being edited, try again" }),
-  };
-}
-
 /**
  * A failed delete stays DELETING so in-flight pipeline work still cannot write
  * to it; lastError tells the user to delete again.
@@ -261,4 +237,32 @@ async function markDeleting(documentId: string, lastError: string | null) {
       },
     }),
   );
+}
+
+/** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */
+async function markRefusedResponse(documentId: string): Promise<{
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+}> {
+  const current = await dynamo.send(
+    new GetCommand({
+      TableName: TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
+    }),
+  );
+  if (!current.Item) {
+    return {
+      statusCode: 404,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document not found" }),
+    };
+  }
+
+  return {
+    statusCode: 409,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ error: "Document is being edited, try again" }),
+  };
 }

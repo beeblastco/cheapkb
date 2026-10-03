@@ -95,7 +95,12 @@ export async function handler(event: S3Event) {
       continue;
     }
 
-    if (await refuseOverAllowance(documentId, doc, key, eventId, now)) continue;
+    const { versionId } = record.s3.object;
+    if (
+      await refuseOverAllowance(documentId, doc, key, eventId, versionId, now)
+    ) {
+      continue;
+    }
 
     if (doc.replacementToken) {
       const finalized = await finalizeReplacement(documentId, doc, now);
@@ -163,7 +168,7 @@ async function chargeStaleOverwrite(
   doc: DocumentRow,
   key: string,
   eventId: string,
-) {
+): Promise<void> {
   if (!isDispatched(doc)) return;
   await recountStorage(documentId, doc, key, eventId);
 }
@@ -341,47 +346,28 @@ async function refuseOverAllowance(
   doc: DocumentRow,
   key: string,
   eventId: string,
+  versionId: string | undefined,
   now: string,
 ): Promise<boolean> {
   if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
   const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
   if (allowed) return false;
 
-  // A refused replacement keeps the old version searchable; only its bytes are charged.
   if (doc.replacementToken) {
-    await chargeStaleOverwrite(documentId, doc, key, eventId);
+    await revertReplacement(doc, key, versionId);
     return true;
   }
-  try {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
-        ConditionExpression: "#s = :uploaded",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":e": "Monthly usage allowance reached. Upgrade to continue.",
-          ":f": "UPLOAD",
-          ":gsi1pk": "STATUS#FAILED",
-          ":s": "FAILED",
-          ":t": now,
-          ":uploaded": "UPLOADED",
-        },
-      }),
-    );
-  } catch (error) {
-    // Another event already claimed it; leave that dispatch alone.
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  const message = "Monthly usage allowance reached. Upgrade to continue.";
+  // A failed upload keeps its source, so its bytes are charged like any other.
+  if (await updateFailure(documentId, message, now, true)) {
+    await recountStorage(documentId, doc, key, eventId);
   }
 
   return true;
 }
 
-/** A presigned POST outlives its document, so an upload landing after or during
- * a delete would sit in raw/ uncounted forever. Removes that one version; a
- * consistent read rules out a document created moments ago. */
+/** Removes an upload that landed after or during its document's delete, since a
+ * presigned POST outlives the document. Reads consistently to spare a new one. */
 async function removeLateUpload(
   documentId: string,
   key: string,
@@ -403,6 +389,31 @@ async function removeLateUpload(
     }),
   );
   console.log(`[ingest-adapter] Removed late upload for ${documentId}`);
+}
+
+/** Removes a refused replacement's version so S3 falls back to the previous
+ * source, keeping the source in step with the searchable version. */
+async function revertReplacement(
+  doc: DocumentRow,
+  key: string,
+  versionId: string | undefined,
+): Promise<void> {
+  if (!versionId) return;
+  const object = await s3.send(
+    new HeadObjectCommand({
+      Bucket: StorageBucketName,
+      Key: key,
+      VersionId: versionId,
+    }),
+  );
+  if (object.Metadata?.["upload-token"] !== doc.replacementToken) return;
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: StorageBucketName,
+      Key: key,
+      VersionId: versionId,
+    }),
+  );
 }
 
 /** Returns a claimed document to UPLOADED when dispatch fails, so a retry can claim it. */
@@ -430,6 +441,23 @@ async function rollbackQueueStatus(documentId: string, eventId: string) {
   );
 }
 
+/** Stores the source bytes already charged to the user for this document. */
+async function setCountedBytes(documentId: string, countedBytes: number) {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET countedBytes = :counted",
+      ConditionExpression: "#s = :queued",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":counted": countedBytes,
+        ":queued": "QUEUED",
+      },
+    }),
+  );
+}
+
 /** Returns true when this event wrote through an old token-less POST while a
  * replacement is pending; its bytes are charged and dispatch is skipped. */
 async function skipStaleReplacement(
@@ -451,42 +479,41 @@ async function skipStaleReplacement(
   return true;
 }
 
-/** Stores the source bytes already charged to the user for this document. */
-async function setCountedBytes(documentId: string, countedBytes: number) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression: "SET countedBytes = :counted",
-      ConditionExpression: "#s = :queued",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":counted": countedBytes,
-        ":queued": "QUEUED",
-      },
-    }),
-  );
-}
-
 /** Marks the document FAILED at the UPLOAD step with the given error. */
-async function updateFailure(documentId: string, error: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":s": "FAILED",
-        ":e": error,
-        ":f": "UPLOAD",
-        ":t": now,
-        ":gsi1pk": "STATUS#FAILED",
-        ":gsi1sk": now,
-      },
-    }),
-  );
+async function updateFailure(
+  documentId: string,
+  error: string,
+  now: string,
+  onlyIfUploaded = false,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        // Another event may have claimed the upload since it was read.
+        ConditionExpression: onlyIfUploaded ? "#s = :uploaded" : undefined,
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "FAILED",
+          ":e": error,
+          ":f": "UPLOAD",
+          ":t": now,
+          ":gsi1pk": "STATUS#FAILED",
+          ":gsi1sk": now,
+          ...(onlyIfUploaded ? { ":uploaded": "UPLOADED" } : {}),
+        },
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (onlyIfUploaded && err instanceof ConditionalCheckFailedException) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 /** Dispatch already charged this document once, so later events only recount. */
