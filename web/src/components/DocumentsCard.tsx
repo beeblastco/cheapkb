@@ -88,14 +88,21 @@ import { formatBytes } from "@/lib/utils";
 import {
   type Column,
   type ColumnDef,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
+  columnFilteringFeature,
+  createFilteredRowModel,
+  createPaginatedRowModel,
+  createSortedRowModel,
+  globalFilteringFeature,
   type PaginationState,
+  rowPaginationFeature,
+  rowSelectionFeature,
   type RowSelectionState,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_text,
   type SortingState,
-  useReactTable,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import {
   ArrowDownUp,
@@ -134,7 +141,20 @@ type DocumentTableRow =
   | { document: Document; kind: "document" }
   | { item: UploadQueueItem; kind: "upload" };
 
-const DOCUMENT_COLUMNS: ColumnDef<DocumentTableRow>[] = [
+const TABLE_FEATURES = tableFeatures({
+  columnFilteringFeature: columnFilteringFeature,
+  filteredRowModel: createFilteredRowModel(),
+  globalFilteringFeature: globalFilteringFeature,
+  paginatedRowModel: createPaginatedRowModel(),
+  rowPaginationFeature: rowPaginationFeature,
+  rowSelectionFeature: rowSelectionFeature,
+  rowSortingFeature: rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  // Every column holds a string, so auto sort only ever resolves these two.
+  sortFns: { alphanumeric: sortFn_alphanumeric, text: sortFn_text },
+});
+
+const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
   { id: "select", enableSorting: false },
   {
     id: "title",
@@ -146,18 +166,22 @@ const DOCUMENT_COLUMNS: ColumnDef<DocumentTableRow>[] = [
   },
   {
     id: "status",
+    // The global filter searches the whole row, so only the title column runs it.
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.status : row.item.state;
     },
   },
   {
     id: "createdAt",
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.createdAt || "" : "\uffff";
     },
   },
   {
     id: "updatedAt",
+    enableGlobalFilter: false,
     accessorFn: (row) => {
       return row.kind === "document" ? row.document.updatedAt || "" : "\uffff";
     },
@@ -372,7 +396,10 @@ export function DocumentsCard({
     ],
     [documents, items],
   );
-  const table = useReactTable({
+  const table = useTable({
+    // Polling replaces the data every few seconds; the clamp effect below keeps
+    // the page valid instead of jumping back to page 1.
+    autoResetPageIndex: false,
     columns: DOCUMENT_COLUMNS,
     data: tableData,
     enableRowSelection: (row) => {
@@ -380,15 +407,12 @@ export function DocumentsCard({
         ? row.original.document.status !== "DELETING"
         : row.original.item.state !== "SYNCING";
     },
-    getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    features: TABLE_FEATURES,
     getRowId: (row) => {
       return row.kind === "document"
         ? `document-${row.document.documentId}`
         : `upload-${row.item.id}`;
     },
-    getSortedRowModel: getSortedRowModel(),
     globalFilterFn: (row, _columnId, value) =>
       getSearchValue(row.original).includes(String(value).trim().toLowerCase()),
     onGlobalFilterChange: setQuery,
@@ -429,10 +453,31 @@ export function DocumentsCard({
     setRowSelection({});
   }, [query]);
 
+  // A new search or sort starts from the top; polling alone keeps the page.
   useEffect(() => {
-    if (pagination.pageIndex < pageCount) return;
-    table.setPageIndex(Math.max(0, pageCount - 1));
-  }, [pageCount, pagination.pageIndex, table]);
+    setPagination((current) =>
+      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
+    );
+  }, [query, sorting]);
+
+  /** Clears every row on this page, including rows that turned unselectable
+   * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
+  function clearPageSelection() {
+    const pageRowIds = new Set(visible.map((row) => row.id));
+    setRowSelection((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([id]) => !pageRowIds.has(id)),
+      ),
+    );
+  }
+
+  useEffect(() => {
+    if (pageCount === 0 || pagination.pageIndex < pageCount) return;
+    setPagination((current) => ({
+      ...current,
+      pageIndex: Math.max(0, pageCount - 1),
+    }));
+  }, [pageCount, pagination.pageIndex]);
 
   /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
    * reloads documents and usage. Wired to the Sync button. */
@@ -682,9 +727,14 @@ export function DocumentsCard({
                       aria-label="Select documents on this page"
                       checked={table.getIsAllPageRowsSelected()}
                       disabled={!hasSelectablePageRows}
-                      indeterminate={table.getIsSomePageRowsSelected()}
+                      indeterminate={
+                        table.getIsSomePageRowsSelected() &&
+                        !table.getIsAllPageRowsSelected()
+                      }
                       onCheckedChange={(checked) =>
-                        table.toggleAllPageRowsSelected(checked)
+                        checked
+                          ? table.toggleAllPageRowsSelected(true)
+                          : clearPageSelection()
                       }
                     />
                   </TableHead>
@@ -731,7 +781,9 @@ export function DocumentsCard({
                         key={row.id}
                         onEdit={() => setSelectedItemId(original.item.id)}
                         onRemove={() => removeItem(original.item.id)}
-                        onSelectedChange={row.toggleSelected}
+                        onSelectedChange={(checked) =>
+                          row.toggleSelected(checked)
+                        }
                         selected={row.getIsSelected()}
                       />
                     ) : (
@@ -742,7 +794,9 @@ export function DocumentsCard({
                         onDelete={onDelete}
                         onEditTags={setEditingDocumentId}
                         onReindex={onReindex}
-                        onSelectedChange={row.toggleSelected}
+                        onSelectedChange={(checked) =>
+                          row.toggleSelected(checked)
+                        }
                         onView={onView}
                         selected={row.getIsSelected()}
                       />
@@ -843,7 +897,7 @@ function SortableHead({
   label,
 }: {
   className?: string;
-  column: Column<DocumentTableRow>;
+  column: Column<typeof TABLE_FEATURES, DocumentTableRow, unknown>;
   label: string;
 }) {
   const sorted = column.getIsSorted();
