@@ -69,8 +69,8 @@ export async function handler(event: S3Event) {
 
     let doc = await getDocument(documentId, dynamo, TableName);
     if (!doc || doc.status === "DELETING") {
-      await removeLateUpload(documentId, key, record.s3.object.versionId);
-      continue;
+      doc = await removeLateUpload(documentId, key, record.s3.object.versionId);
+      if (!doc) continue;
     }
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
@@ -353,26 +353,28 @@ async function refuseOverAllowance(
   const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
   if (allowed) return false;
 
+  const message = "Monthly usage allowance reached. Upgrade to continue.";
   if (doc.replacementToken) {
-    await revertReplacement(doc, key, versionId);
+    await revertReplacement(documentId, doc, key, versionId, message);
     return true;
   }
-  const message = "Monthly usage allowance reached. Upgrade to continue.";
-  // A failed upload keeps its source, so its bytes are charged like any other.
-  if (await updateFailure(documentId, message, now, true)) {
-    await recountStorage(documentId, doc, key, eventId);
+  // Another event claimed the upload first; a retry recounts it as dispatched.
+  if (!(await updateFailure(documentId, message, now, true))) {
+    throw new Error(`Upload ${documentId} was claimed concurrently`);
   }
+  // A failed upload keeps its source, so its bytes are charged like any other.
+  await recountStorage(documentId, doc, key, eventId);
 
   return true;
 }
 
-/** Removes an upload that landed after or during its document's delete, since a
- * presigned POST outlives the document. Reads consistently to spare a new one. */
+/** Removes an upload that landed after or during its document's delete. Returns
+ * the document instead when a consistent read shows it is live after all. */
 async function removeLateUpload(
   documentId: string,
   key: string,
   versionId: string | undefined,
-): Promise<void> {
+): Promise<DocumentRow | null> {
   const existing = await dynamo.send(
     new GetCommand({
       TableName: TableName,
@@ -380,7 +382,8 @@ async function removeLateUpload(
       ConsistentRead: true,
     }),
   );
-  if (existing.Item && existing.Item.status !== "DELETING") return;
+  const live = existing.Item as DocumentRow | undefined;
+  if (live && live.status !== "DELETING") return live;
   await s3.send(
     new DeleteObjectCommand({
       Bucket: StorageBucketName,
@@ -389,14 +392,18 @@ async function removeLateUpload(
     }),
   );
   console.log(`[ingest-adapter] Removed late upload for ${documentId}`);
+
+  return null;
 }
 
-/** Removes a refused replacement's version so S3 falls back to the previous
- * source, keeping the source in step with the searchable version. */
+/** Removes a refused replacement's version so S3 falls back to the source the
+ * search data came from, then clears the pending replacement with the reason. */
 async function revertReplacement(
+  documentId: string,
   doc: DocumentRow,
   key: string,
   versionId: string | undefined,
+  reason: string,
 ): Promise<void> {
   if (!versionId) return;
   const object = await s3.send(
@@ -414,6 +421,23 @@ async function revertReplacement(
       VersionId: versionId,
     }),
   );
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET lastError = :e REMOVE replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+        ConditionExpression: "replacementToken = :token",
+        ExpressionAttributeValues: {
+          ":e": reason,
+          ":token": doc.replacementToken,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
 }
 
 /** Returns a claimed document to UPLOADED when dispatch fails, so a retry can claim it. */

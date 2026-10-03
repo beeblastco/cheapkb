@@ -417,6 +417,20 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
+  it("queues a new upload that the first read missed", async () => {
+    dynamoMock
+      .on(GetCommand)
+      .resolvesOnce({})
+      .resolves({ Item: { status: "UPLOADED", mimeType: "text/plain" } });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+  });
+
   it("deletes an upload that lands while its document is being deleted", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { status: "DELETING", mimeType: "text/plain", userId: "user-1" },
@@ -453,6 +467,9 @@ describe("S3 ingest adapter", () => {
     expect(
       s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.VersionId,
     ).toBe("v2");
+    const cleared = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(cleared.UpdateExpression).toContain("REMOVE replacementToken");
+    expect(cleared.ExpressionAttributeValues?.[":e"]).toContain("allowance");
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
