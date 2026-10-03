@@ -109,5 +109,32 @@ describe("document read APIs", () => {
         },
       ]);
     });
+
+    it("follows chunk query pages past the first 1 MB", async () => {
+      dynamoMock.on(GetCommand).resolves({
+        Item: { pk: "DOC#doc-1", sk: "META", userId: "owner" },
+      });
+      dynamoMock
+        .on(QueryCommand)
+        .resolvesOnce({
+          Items: [{ pk: "DOC#doc-1", sk: "CHUNK#chunk-1" }],
+          LastEvaluatedKey: { pk: "DOC#doc-1", sk: "CHUNK#chunk-1" },
+        })
+        .resolvesOnce({ Items: [{ pk: "DOC#doc-1", sk: "CHUNK#chunk-2" }] });
+
+      const response = await getDocument(
+        apiEvent({ pathParameters: { id: "doc-1" } }),
+      );
+      const body = JSON.parse(response.body);
+
+      expect(body.chunkCount).toBe(2);
+      expect(
+        body.chunks.map((chunk: { chunkId: string }) => chunk.chunkId),
+      ).toEqual(["chunk-1", "chunk-2"]);
+      expect(
+        dynamoMock.commandCalls(QueryCommand)[1].args[0].input
+          .ExclusiveStartKey,
+      ).toEqual({ pk: "DOC#doc-1", sk: "CHUNK#chunk-1" });
+    });
   });
 });

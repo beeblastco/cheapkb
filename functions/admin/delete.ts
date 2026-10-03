@@ -29,8 +29,8 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-// Matches the update handler's lease TTL; a live lease means chunk JSON and
-// vectors are still being rewritten and would outlive this delete.
+// Matches the update handler's lease TTL. A live edit could outlive this delete if
+// its handler times out, so delete waits; reset and S3 removal rely on its cleanup.
 const UPDATE_LEASE_TTL_MS = 5 * 60 * 1000;
 
 /** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */

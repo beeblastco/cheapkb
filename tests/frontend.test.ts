@@ -197,7 +197,7 @@ describe("frontend", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it("uploads through the constrained POST form and starts ingestion", async () => {
+    it("uploads through the constrained POST form and leaves ingestion to S3", async () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(
@@ -208,8 +208,7 @@ describe("frontend", () => {
             uploadFields: { key: "raw/doc-1/file.txt" },
           }),
         )
-        .mockResolvedValueOnce(new Response(null, { status: 204 }))
-        .mockResolvedValueOnce(jsonResponse({ queued: true }));
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       const file = new window.File(["hello"], "file.txt", {
         type: "text/plain",
@@ -223,13 +222,7 @@ describe("frontend", () => {
         "https://storage.example.com",
         expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
       );
-      expect(fetchMock).toHaveBeenNthCalledWith(
-        3,
-        `${API_URL}/ingest`,
-        expect.objectContaining({
-          body: JSON.stringify({ documentId: "doc-1" }),
-        }),
-      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("deletes the document record when storage rejects the upload", async () => {
@@ -261,6 +254,68 @@ describe("frontend", () => {
         `${API_URL}/documents/doc-1`,
         expect.objectContaining({ method: "DELETE" }),
       );
+    });
+
+    it("trims upload metadata to the upload handler's limits", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 400 }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const file = new window.File(["hello"], "file.txt", {
+        type: "text/plain",
+      });
+
+      await expect(
+        uploadDocument(
+          "token",
+          file,
+          {
+            authors: [" ", "a".repeat(150), ...Array(25).fill("Ada")],
+            tags: Array(25).fill("research"),
+            title: ` ${"t".repeat(250)} `,
+            year: 12,
+          },
+          vi.fn(),
+        ),
+      ).rejects.toThrow();
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.title).toBe("t".repeat(200));
+      expect(body.authors).toHaveLength(20);
+      expect(body.authors[0]).toBe("a".repeat(100));
+      expect(body.tags).toHaveLength(20);
+      expect(body).not.toHaveProperty("year");
+    });
+
+    it("drops authors from the end to fit the shared metadata budget", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 400 }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      const file = new window.File(["hello"], "file.txt", {
+        type: "text/plain",
+      });
+
+      await expect(
+        uploadDocument(
+          "token",
+          file,
+          {
+            authors: Array.from({ length: 20 }, (_, i) =>
+              `${i}`.padEnd(100, "a"),
+            ),
+            tags: ["research"],
+            title: "Title",
+          },
+          vi.fn(),
+        ),
+      ).rejects.toThrow();
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const bytes = new TextEncoder().encode(
+        JSON.stringify([body.title, body.tags, body.authors]),
+      ).length;
+      expect(bytes).toBeLessThanOrEqual(1200);
+      expect(body.tags).toEqual(["research"]);
+      expect(body.authors[0]).toBe("0".padEnd(100, "a"));
     });
 
     it("preserves a reused document when storage rejects the replacement", async () => {

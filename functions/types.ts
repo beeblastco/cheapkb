@@ -94,6 +94,7 @@ export interface DocumentRow {
   updatedAt?: string;
   previousStatus?: string;
   replacementToken?: string;
+  replacementExpiresAt?: string;
   replacementPreviousStatus?: string;
   pendingFilename?: string;
   pendingTitle?: string;

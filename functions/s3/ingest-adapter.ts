@@ -11,11 +11,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   checkUsageLimit,
   deleteDocumentChunkRecords,
@@ -38,6 +34,9 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
+// A POST that starts just before its form expires can finish minutes later; edits
+// and reindex wait out the same grace, so nothing races a replacement before it.
+const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
@@ -70,8 +69,8 @@ export async function handler(event: S3Event) {
 
     let doc = await getDocument(documentId, dynamo, TableName);
     if (!doc || doc.status === "DELETING") {
-      doc = await removeLateUpload(documentId, key, record.s3.object.versionId);
-      if (!doc) continue;
+      await removeLateUpload(documentId, key, record.s3.object.versionId);
+      continue;
     }
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
@@ -101,7 +100,7 @@ export async function handler(event: S3Event) {
     }
 
     if (doc.replacementToken) {
-      const finalized = await finalizeReplacement(documentId, doc, now);
+      const finalized = await finalizeReplacement(documentId, doc, key, now);
       if (!finalized) {
         console.log(
           `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
@@ -221,12 +220,27 @@ async function claimDispatch(
   }
 }
 
-/** Deletes the old derived data and promotes the pending replacement metadata. */
+/** Deletes the old derived data and promotes the pending replacement metadata. Returns
+ * false for a stale event. Edits and reindex wait out the window, so only a delete or a
+ * stray write from the old version's pipeline can change the row meanwhile. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
+  key: string,
   now: string,
-) {
+): Promise<boolean> {
+  // Past the grace, edits and reindex may run again, so even a redriven event for a
+  // timely upload is rolled back rather than reset a document mid-operation.
+  const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+    await revertReplacement(
+      documentId,
+      doc,
+      key,
+      "Replacement arrived too late",
+    );
+    return false;
+  }
   const chunkItems = await deleteDocumentVectors(
     documentId,
     dynamo,
@@ -245,8 +259,7 @@ async function finalizeReplacement(
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
-        ConditionExpression:
-          "replacementToken = :token AND #s = :previousStatus",
+        ConditionExpression: "replacementToken = :token AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
           ":uploaded": "UPLOADED",
@@ -258,14 +271,13 @@ async function finalizeReplacement(
           ":now": now,
           ":gsi1pk": "STATUS#UPLOADED",
           ":token": doc.replacementToken,
-          ":previousStatus": doc.replacementPreviousStatus,
+          ":deleting": "DELETING",
         },
       }),
     );
     return true;
   } catch (error) {
-    // A duplicate/concurrent S3 event for the same replacement loses the
-    // conditional write; treat it as a stale event rather than crashing.
+    // Another event already finished this replacement, or a delete took the row.
     if (error instanceof ConditionalCheckFailedException) return false;
     throw error;
   }
@@ -365,22 +377,12 @@ async function refuseOverAllowance(
   return true;
 }
 
-/** Removes an upload that landed after or during its document's delete. Returns
- * the document instead when a consistent read shows it is live after all. */
+/** Removes an upload that landed after or during its document's delete. */
 async function removeLateUpload(
   documentId: string,
   key: string,
   versionId: string | undefined,
-): Promise<DocumentRow | null> {
-  const existing = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  const live = existing.Item as DocumentRow | undefined;
-  if (live && live.status !== "DELETING") return live;
+): Promise<void> {
   await s3.send(
     new DeleteObjectCommand({
       Bucket: StorageBucketName,
@@ -389,8 +391,6 @@ async function removeLateUpload(
     }),
   );
   console.log(`[ingest-adapter] Removed late upload for ${documentId}`);
-
-  return null;
 }
 
 /** Removes every version a refused replacement form wrote, so S3 falls back to the

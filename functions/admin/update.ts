@@ -8,12 +8,17 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
+import {
+  DeleteVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
+  chunkId,
+  deleteS3Prefix,
   extractUserId,
   getDocument,
   listDocumentChunkItems,
@@ -37,9 +42,17 @@ const UPDATING_STATUS = "UPDATING";
 // A handler killed mid-propagation cannot release its lease, so an abandoned
 // one must expire or the document stays uneditable. It times out at 60s.
 const LEASE_TTL_MS = 5 * 60 * 1000;
+// Matches the ingest adapter's grace for a POST that started just before its form
+// expired, so no edit can race a replacement that may still land.
+const REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
+// Matches the upload handler: title, tags and authors share the 2 KB filterable
+// metadata budget of a vector.
+const MAX_METADATA_BYTES = 1200;
 // Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
 // timeout if run one at a time.
 const CHUNK_REWRITE_CONCURRENCY = 8;
+// DeleteVectors accepts up to 500 keys per call.
+const VECTOR_DELETE_BATCH = 500;
 
 interface Lease {
   restoreTo: string;
@@ -98,7 +111,27 @@ export async function handler(event: APIGatewayProxyEventV2) {
     });
   }
 
+  if (
+    Date.parse(document.replacementExpiresAt ?? "") + REPLACEMENT_GRACE_MS >
+    Date.now()
+  ) {
+    return json(409, {
+      error: "A replacement upload is pending; try again once it finishes",
+    });
+  }
+
   const tags = normalizeTags(body.tags);
+  // Only an edit that grows the metadata is held to the budget, so documents
+  // stored before it can still be retagged or cleared.
+  const nextBytes = metadataBytes(document.title, tags, document.authors);
+  if (
+    nextBytes > MAX_METADATA_BYTES &&
+    nextBytes > metadataBytes(document.title, document.tags, document.authors)
+  ) {
+    return json(400, {
+      error: `Title, tags and authors together must be ${MAX_METADATA_BYTES} bytes or fewer`,
+    });
+  }
   // Held across propagation to serialize edits: a revision check alone lets one
   // that read mid-propagation pass and split chunks between two edits' tags.
   const lease = await acquireLease(document, userId);
@@ -106,14 +139,11 @@ export async function handler(event: APIGatewayProxyEventV2) {
     return json(409, { error: "Document changed while updating; retry" });
   }
 
+  let chunkItems: ChunkItem[] = [];
   try {
     // Tags live in the META row, the chunk JSON a re-embed reads, and the vector
     // metadata search filters on. All three must agree or a reindex undoes this.
-    const chunkItems = await listDocumentChunkItems(
-      documentId,
-      dynamo,
-      TableName,
-    );
+    chunkItems = await listDocumentChunkItems(documentId, dynamo, TableName);
     await updateChunkObjects(chunkItems, tags);
     const updatedVectors = await retagDocumentVectors(
       chunkItems,
@@ -135,6 +165,11 @@ export async function handler(event: APIGatewayProxyEventV2) {
     // edit as not applied. Retrying re-propagates and converges.
     console.error("[update]", error);
     await releaseLease(document, lease);
+    try {
+      await removeWritesAfterDelete(documentId, chunkItems);
+    } catch (cleanupError) {
+      console.error("[update] cleanup after delete:", cleanupError);
+    }
     return json(500, { error: "Failed to update document tags" });
   }
 }
@@ -188,13 +223,18 @@ async function acquireLease(
         // behind would hand a stale status to the first query that uses it.
         UpdateExpression:
           "SET #s = :updating, gsi1pk = :gsi1pk, gsi1sk = :now, previousStatus = :restoreTo, updatedAt = :now",
-        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches}`,
+        // A pending replacement deletes chunks and vectors when it lands, so it
+        // must not run under an edit; reserveReplacement refuses UPDATING likewise.
+        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)`,
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":updating": UPDATING_STATUS,
           ":gsi1pk": `STATUS#${UPDATING_STATUS}`,
           ":restoreTo": restoreTo,
           ":now": heldSince,
+          ":replacementCutoff": new Date(
+            Date.now() - REPLACEMENT_GRACE_MS,
+          ).toISOString(),
           ":userId": userId,
           ":expected": document.status,
           ...(document.updatedAt ? { ":revision": document.updatedAt } : {}),
@@ -270,6 +310,28 @@ async function releaseWith(
   );
 }
 
+/** Deleting or resetting a document does not wait for an edit lease, so a cleanup can
+ * run mid-edit; the chunk JSON and vectors this edit rewrote after it are removed here. */
+async function removeWritesAfterDelete(
+  documentId: string,
+  chunkItems: ChunkItem[],
+): Promise<void> {
+  const current = await getDocument(documentId, dynamo, TableName);
+  if (current && current.status !== "DELETING") return;
+
+  const vectorKeys = chunkItems.map((item) => chunkId(item.sk)).filter(Boolean);
+  for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
+    await vectors.send(
+      new DeleteVectorsCommand({
+        vectorBucketName: VectorBucketName,
+        indexName: VectorIndexName,
+        keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
+      }),
+    );
+  }
+  await deleteS3Prefix(`chunks/${documentId}/`, s3, StorageBucketName);
+}
+
 /** Rewrites the tags in every chunk JSON, CHUNK_REWRITE_CONCURRENCY objects at a time. */
 async function updateChunkObjects(
   chunkItems: ChunkItem[],
@@ -301,11 +363,26 @@ async function updateChunkObjects(
     }
   }
 
-  await Promise.all(
+  // Every worker settles before a failure is thrown, so no chunk write lands
+  // after the caller releases its lease or cleans up.
+  const results = await Promise.allSettled(
     Array.from(
       { length: Math.min(CHUNK_REWRITE_CONCURRENCY, pending.length) },
       worker,
     ),
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+}
+
+/** UTF-8 size of the searchable metadata, measured the same way as the upload handler. */
+function metadataBytes(
+  title: unknown,
+  tags: unknown,
+  authors: unknown,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
   );
 }
 

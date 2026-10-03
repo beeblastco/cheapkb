@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { mockClient } from "aws-sdk-client-mock";
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("sst", () => ({
@@ -198,6 +199,45 @@ describe("upload validation", () => {
     expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
   });
 
+  it("keeps distinct non-ASCII filenames as distinct documents", async () => {
+    for (const filename of [
+      "報告.pdf",
+      "資料.pdf",
+      "báo cáo.pdf",
+      "bìo cùo.pdf",
+    ]) {
+      await handler(
+        jsonApiEvent({ filename: filename, mimeType: "application/pdf" }),
+      );
+    }
+
+    const created = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems![1].Put!.Item!);
+    // A shared dedupe key would make the second upload replace the first.
+    expect(new Set(created.map((item) => item.dedupeKey)).size).toBe(4);
+    expect(created[0].sourceKey).toMatch(/^raw\/doc_[^/]+\/報告\.pdf$/);
+    expect(created[2].filename).toBe("báo_cáo.pdf");
+  });
+
+  it("maps an ASCII filename to the same dedupe key as before", async () => {
+    await handler(
+      jsonApiEvent({
+        filename: " my report (1).pdf",
+        mimeType: "application/pdf",
+      }),
+    );
+
+    const mapping =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![0].Put!.Item!;
+    // Existing mappings were keyed on this exact sanitized name.
+    const expected = createHash("sha256")
+      .update("user-1\0my_report__1_.pdf\0application/pdf")
+      .digest("hex");
+    expect(mapping.sk).toBe(`DOCUMENT#${expected}`);
+  });
+
   it("rejects a new document while ten are still processing", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(QueryCommand).resolves({
@@ -252,6 +292,53 @@ describe("upload validation", () => {
     );
 
     expect(response.statusCode).toBe(429);
+  });
+
+  it("rejects title, tags and authors over the shared metadata budget", async () => {
+    const response = await handler(
+      jsonApiEvent({
+        filename: "paper.pdf",
+        mimeType: "application/pdf",
+        tags: Array.from({ length: 20 }, (_, i) => `${i}`.padEnd(90, "t")),
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toContain("1200 bytes");
+    expect(createPresignedPost).not.toHaveBeenCalled();
+  });
+
+  it("counts a filename used as the title against the metadata budget", async () => {
+    const response = await handler(
+      jsonApiEvent({
+        filename: `${"報".repeat(250)}.pdf`,
+        mimeType: "application/pdf",
+        authors: Array.from({ length: 5 }, (_, i) => `${i}`.padEnd(100, "a")),
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(createPresignedPost).not.toHaveBeenCalled();
+  });
+
+  it("never matches a new Unicode name to an old ASCII-only mapping", async () => {
+    const legacyKey = createHash("sha256")
+      .update("user-1\0__.pdf\0application/pdf")
+      .digest("hex");
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.sk === `DOCUMENT#${legacyKey}`
+          ? { Item: { documentId: "doc-old" } }
+          : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "总结.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).reused).toBe(false);
   });
 
   it("rejects a new document at the per-account document cap", async () => {

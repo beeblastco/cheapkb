@@ -214,24 +214,30 @@ export async function handler(event: APIGatewayProxyEventV2) {
     );
     const matches =
       (searchResponse as unknown as { vectors?: VectorMatch[] }).vectors ?? [];
-    const texts = await Promise.all(
-      matches.map(async (match) => {
-        const metadata = match.metadata ?? {};
-        const chunkKey = metadata.s3ChunkKey;
-        if (!chunkKey) return "";
-        try {
-          const resp = await s3.send(
-            new GetObjectCommand({
-              Bucket: env("STORAGE_BUCKET_NAME"),
-              Key: chunkKey,
-            }),
-          );
-          const chunkData = JSON.parse(await resp.Body!.transformToString());
-          return chunkData.text ?? "";
-        } catch {
-          return metadata.text ?? "";
-        }
-      }),
+    // The chunk JSON also carries sourceKey, which the 2 KB metadata fit can drop.
+    const chunks = await Promise.all(
+      matches.map(
+        async (match): Promise<{ text: string; sourceKey?: string }> => {
+          const metadata = match.metadata ?? {};
+          const chunkKey = metadata.s3ChunkKey;
+          if (!chunkKey) return { text: "" };
+          try {
+            const resp = await s3.send(
+              new GetObjectCommand({
+                Bucket: env("STORAGE_BUCKET_NAME"),
+                Key: chunkKey,
+              }),
+            );
+            const chunkData = JSON.parse(await resp.Body!.transformToString());
+            return {
+              text: chunkData.text ?? "",
+              sourceKey: chunkData.sourceKey,
+            };
+          } catch {
+            return { text: metadata.text ?? "" };
+          }
+        },
+      ),
     );
 
     const results: QueryResult[] = matches.map((match, i) => {
@@ -245,10 +251,13 @@ export async function handler(event: APIGatewayProxyEventV2) {
         pageEnd: metadata.pageEnd,
         modality: metadata.modality,
         mimeType: metadata.mimeType,
-        text: texts[i],
+        text: chunks[i].text,
         source: {
           bucket: env("STORAGE_BUCKET_NAME"),
-          key: metadata.sourceKey ?? `raw/${metadata.documentId}/`,
+          key:
+            metadata.sourceKey ??
+            chunks[i].sourceKey ??
+            `raw/${metadata.documentId}/`,
         },
       };
     });

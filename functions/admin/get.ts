@@ -1,12 +1,13 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  QueryCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEventV2 } from "aws-lambda";
 import type { DocumentRow } from "../types";
-import { docId, chunkId, extractUserId } from "../utils";
+import {
+  chunkId,
+  docId,
+  extractUserId,
+  listDocumentChunkItems,
+} from "../utils";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
@@ -47,29 +48,25 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const chunksResult = await dynamo.send(
-    new QueryCommand({
-      TableName: TableName,
-      KeyConditionExpression: "pk = :pk AND begins_with(sk, :sk)",
-      ExpressionAttributeValues: {
-        ":pk": `DOC#${documentId}`,
-        ":sk": "CHUNK#",
-      },
-    }),
+  // A large document's chunk rows span several 1 MB query pages.
+  const chunkItems = await listDocumentChunkItems(
+    documentId,
+    dynamo,
+    TableName,
   );
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       document: pickDocumentFields(result.Item as DocumentRow),
-      chunks: (chunksResult.Items ?? []).map((c) => ({
+      chunks: chunkItems.map((c) => ({
         chunkId: chunkId(c.sk),
         pageStart: c.pageStart,
         pageEnd: c.pageEnd,
         tokenCount: c.tokenCount,
         status: c.status,
       })),
-      chunkCount: chunksResult.Count ?? 0,
+      chunkCount: chunkItems.length,
     }),
   };
 }

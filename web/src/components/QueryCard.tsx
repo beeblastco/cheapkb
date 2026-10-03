@@ -78,8 +78,8 @@ export function QueryCard({
   const [imageError, setImageError] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [topK, setTopK] = useState("5");
-  const [loading, setLoading] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
+  const loading = currentQuestion !== "";
 
   /** Sends the question and optional image to /query and appends the answer turn. */
   async function submit() {
@@ -90,7 +90,6 @@ export function QueryCard({
       .join("\n");
     setCurrentQuestion(displayQuestion);
     setQuery("");
-    setLoading(true);
     try {
       const data = await request("POST", "/query", {
         ...(question ? { query: question } : {}),
@@ -115,14 +114,13 @@ export function QueryCard({
         {
           error: (requestError as Error).message,
           id: crypto.randomUUID(),
-          question: question,
+          question: displayQuestion,
           results: [],
         },
       ]);
     } finally {
       setCurrentQuestion("");
       setImage(null);
-      setLoading(false);
     }
   }
 

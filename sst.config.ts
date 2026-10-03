@@ -727,9 +727,22 @@ export default $config({
       environment: baseEnv,
       permissions: [
         {
-          // Only chunk JSON is rewritten; raw uploads and parsed pages are not.
-          actions: ["s3:GetObject", "s3:PutObject"],
+          // Only chunk JSON is rewritten, and removed again when a delete ran
+          // mid-edit; raw uploads and parsed pages are never touched.
+          actions: [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ],
           resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+        },
+        {
+          actions: ["s3:ListBucketVersions"],
+          resources: [storage.arn],
+          conditions: [
+            { test: "StringLike", variable: "s3:prefix", values: ["chunks/*"] },
+          ],
         },
         {
           actions: [
@@ -753,7 +766,11 @@ export default $config({
         },
         { actions: ["dynamodb:GetItem"], resources: [plansTable.arn] },
         {
-          actions: ["s3vectors:GetVectors", "s3vectors:PutVectors"],
+          actions: [
+            "s3vectors:DeleteVectors",
+            "s3vectors:GetVectors",
+            "s3vectors:PutVectors",
+          ],
           resources: [vectorIndexArn],
         },
       ],

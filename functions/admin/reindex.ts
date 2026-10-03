@@ -28,6 +28,9 @@ const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 // SQS gives a message 3 receives at 900s visibility, so a document still in a
 // processing status after an hour is stuck and safe to restart.
 const STALE_PROCESSING_MS = 60 * 60 * 1000;
+// Matches the ingest adapter's grace for a late replacement POST, so a reindex
+// never races a replacement that may still land.
+const REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 const PROCESSING_STATUSES = new Set([
   "QUEUED",
   "PARSING",
@@ -115,6 +118,18 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({ error: "Document not found" }),
     };
   }
+  if (
+    Date.parse(doc.replacementExpiresAt ?? "") + REPLACEMENT_GRACE_MS >
+    Date.now()
+  ) {
+    return {
+      statusCode: 409,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: "A replacement upload is pending; try again once it finishes",
+      }),
+    };
+  }
   const now = new Date().toISOString();
   const { status, failedStep } = doc;
 
@@ -185,7 +200,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  // The status and updatedAt match makes a second concurrent reindex lose.
+  // The status and updatedAt match makes a second concurrent reindex lose. A pending
+  // replacement deletes the chunks it would re-embed, so it refuses that too.
   try {
     await dynamo.send(
       new UpdateCommand({
@@ -194,8 +210,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
         UpdateExpression:
           "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
         ConditionExpression: doc.updatedAt
-          ? "#s = :current AND updatedAt = :updatedAt"
-          : "#s = :current AND attribute_not_exists(updatedAt)",
+          ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)"
+          : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":s": "QUEUED",
@@ -204,6 +220,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
           ":null": null,
           ":zero": 0,
           ":t": now,
+          ":replacementCutoff": new Date(
+            Date.parse(now) - REPLACEMENT_GRACE_MS,
+          ).toISOString(),
           ":gsi1pk": "STATUS#QUEUED",
           ":gsi1sk": now,
         },

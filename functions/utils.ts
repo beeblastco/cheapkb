@@ -44,6 +44,8 @@ const jwks = createRemoteJWKSet(
 );
 
 // GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
+// S3 Vectors caps the filterable part of a vector's metadata at 2 KB.
+const MAX_FILTERABLE_METADATA_BYTES = 2048;
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
@@ -91,6 +93,46 @@ export function chunkId(sk: string) {
 
 export function docId(pk: string) {
   return pk.replace("DOC#", "");
+}
+
+/** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
+ * title, tags, authors and then sourceKey are added back while they fit. */
+export function fitFilterableMetadata<T extends Record<string, unknown>>(
+  metadata: T,
+): T {
+  const fits = (candidate: Record<string, unknown>): boolean =>
+    Buffer.byteLength(
+      JSON.stringify({
+        ...candidate,
+        chunkPreview: undefined,
+        s3ChunkKey: undefined,
+        text: undefined,
+      }),
+    ) <= MAX_FILTERABLE_METADATA_BYTES;
+  if (fits(metadata)) return metadata;
+  console.warn(
+    `Trimmed metadata of ${String(metadata.chunkId)} to fit the filterable cap`,
+  );
+
+  const { authors, sourceKey, tags, title, ...required } = metadata;
+  const fitted: Record<string, unknown> = { ...required };
+  if (title !== undefined && fits({ ...fitted, title: title })) {
+    fitted.title = title;
+  }
+  for (const [field, values] of [
+    ["tags", tags],
+    ["authors", authors],
+  ] as const) {
+    for (const value of Array.isArray(values) ? values : []) {
+      const next = [...((fitted[field] as unknown[] | undefined) ?? []), value];
+      if (fits({ ...fitted, [field]: next })) fitted[field] = next;
+    }
+  }
+  if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {
+    fitted.sourceKey = sourceKey;
+  }
+
+  return fitted as T;
 }
 
 /** Verifies a Shoo ID token for the app origin and returns its payload.
@@ -287,8 +329,8 @@ export async function retagDocumentVectors(
   );
 }
 
-/** Loads a document's META row, or null when the document does not exist.
- * Used by the update handler and the S3 ingest and cleanup adapters. */
+/** Consistently loads a document's META row, or null when the document does not exist.
+ * Used by the update handler and the S3 ingest and cleanup adapters to decide on writes. */
 export async function getDocument(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
@@ -298,6 +340,7 @@ export async function getDocument(
     new GetCommand({
       TableName: tableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
     }),
   );
   return (result.Item as DocumentRow | undefined) ?? null;
@@ -840,7 +883,8 @@ function applyTags(
   // retagged vectors keep the same shape as freshly built ones.
   if (tags && tags.length > 0) next.tags = tags;
   else delete next.tags;
-  return next;
+
+  return fitFilterableMetadata(next);
 }
 
 // embedTokens tracks input tokens (not chunk count) so cost is based on

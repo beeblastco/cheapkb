@@ -22,7 +22,7 @@ import {
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import type { DocumentType } from "@smithy/types";
 import { encode } from "gpt-tokenizer";
-import { recordUsage } from "../utils";
+import { fitFilterableMetadata, recordUsage } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -346,8 +346,10 @@ async function batchProcess(
       attempt: item.attempt,
       messageId: item.messageId,
       metadata: {
-        ...meta,
-        embeddingModel: embeddingModel(),
+        ...fitFilterableMetadata({
+          ...meta,
+          embeddingModel: embeddingModel(),
+        }),
         text: preview.substring(0, 500),
         chunkPreview: preview.substring(0, 200),
       },
@@ -652,10 +654,12 @@ async function markChunkEmbedded(
 /** Marks the document EMBEDDED once every chunk has been embedded. */
 async function markEmbedded(documentId: string) {
   const now = new Date().toISOString();
+  // Read strongly so the count includes the increment this call just committed.
   const result = await dynamo.send(
     new GetCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
     }),
   );
   const doc = result.Item;

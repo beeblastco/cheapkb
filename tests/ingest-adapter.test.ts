@@ -244,7 +244,7 @@ describe("S3 ingest adapter", () => {
           userId: "user-1",
           countedBytes: 20,
           dispatchState: "CLAIMED",
-          dispatchLeaseUntil: new Date(Date.now() - 1).toISOString(),
+          dispatchLeaseUntil: new Date(Date.now() - 60_000).toISOString(),
         },
       };
     });
@@ -404,6 +404,66 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
+  it("rolls back a replacement that lands after its window instead of wiping data", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+        replacementExpiresAt: new Date(
+          Date.now() - 60 * 60 * 1000,
+        ).toISOString(),
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [{ Key: "raw/doc-1/sample.txt", VersionId: "v2" }],
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    const event = s3Event();
+    event.Records[0].eventTime = new Date().toISOString();
+
+    await handler(event);
+
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("replaces a document whose status a stray old-version write changed", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "QUEUED",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "FAILED",
+        replacementExpiresAt: new Date(Date.now() + 60 * 1000).toISOString(),
+        pendingFilename: "sample.txt",
+        pendingTitle: "Replacement",
+      },
+    });
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event());
+
+    const promoted = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(promoted.ConditionExpression).toBe(
+      "replacementToken = :token AND #s <> :deleting",
+    );
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+  });
+
   it("deletes a late upload whose document no longer exists", async () => {
     dynamoMock.on(GetCommand).resolves({});
     s3Mock.on(DeleteObjectCommand).resolves({});
@@ -417,18 +477,74 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
-  it("queues a new upload that the first read missed", async () => {
-    dynamoMock
-      .on(GetCommand)
-      .resolvesOnce({})
-      .resolves({ Item: { status: "UPLOADED", mimeType: "text/plain" } });
+  it("reads the document consistently so a fresh upload is never dropped", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "UPLOADED", mimeType: "text/plain" },
+    });
     dynamoMock.on(UpdateCommand).resolves({});
     sqsMock.on(SendMessageCommand).resolves({});
 
     await handler(s3Event());
 
+    const read = dynamoMock.commandCalls(GetCommand)[0].args[0].input;
+    expect(read.Key).toEqual({ pk: "DOC#doc-1", sk: "META" });
+    expect(read.ConsistentRead).toBe(true);
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+  });
+
+  it("drops a replacement whose row a delete took meanwhile", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+      },
+    });
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(UpdateCommand).rejects(
+      new ConditionalCheckFailedException({
+        message: "row is DELETING",
+        $metadata: {},
+      }),
+    );
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+
+    await expect(handler(s3Event())).resolves.toBeUndefined();
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("drops a replacement event another event already finalized", async () => {
+    dynamoMock
+      .on(GetCommand)
+      .resolvesOnce({
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          replacementToken: "token-1",
+          replacementPreviousStatus: "EMBEDDED",
+        },
+      })
+      .resolves({ Item: { status: "QUEUED", mimeType: "text/plain" } });
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(UpdateCommand).rejects(
+      new ConditionalCheckFailedException({
+        message: "token changed",
+        $metadata: {},
+      }),
+    );
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
   it("deletes an upload that lands while its document is being deleted", async () => {

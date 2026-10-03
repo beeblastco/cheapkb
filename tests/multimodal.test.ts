@@ -324,6 +324,119 @@ describe("multimodal pipeline", () => {
     expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
   });
 
+  it("reads the embedded count strongly before marking the document EMBEDDED", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            documentId: "doc-1",
+            userId: "user-1",
+            chunkId: "chunk-1",
+            modality: "text",
+            text: "hello",
+            pageStart: 1,
+            pageEnd: 1,
+          }),
+      } as any,
+    });
+    bedrockMock.on(InvokeModelCommand).resolves({
+      $metadata: { bedrockInputTokenCount: 1 } as any,
+      body: new TextEncoder().encode(
+        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
+      ),
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({
+      Item: { chunkCount: 1, embeddedCount: 1 },
+    });
+
+    await embed(
+      sqsEvent(
+        "embed-strong",
+        JSON.stringify({
+          documentId: "doc-1",
+          s3ChunkKey: "chunks/doc-1/chunk-1.json",
+        }),
+      ),
+    );
+
+    const metaReads = dynamoMock
+      .commandCalls(GetCommand)
+      .filter((call) => call.args[0].input.Key?.sk === "META");
+    expect(metaReads).toHaveLength(1);
+    expect(metaReads[0].args[0].input.ConsistentRead).toBe(true);
+  });
+
+  it("keeps filterable vector metadata under 2 KB for the largest inputs", async () => {
+    const long = (char: string, length: number): string => char.repeat(length);
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({
+            documentId: "doc-1",
+            userId: "user-1",
+            chunkId: "chunk-1",
+            modality: "text",
+            text: "hello",
+            title: long("t", 200),
+            tags: Array.from({ length: 20 }, (_, i) => `${i}${long("g", 99)}`),
+            authors: Array.from({ length: 20 }, () => long("a", 100)),
+            year: 2024,
+            mimeType: "application/pdf",
+            sourceKey: `raw/doc-1/${long("f", 255)}`,
+            pageStart: 1,
+            pageEnd: 1,
+          }),
+      } as any,
+    });
+    bedrockMock.on(InvokeModelCommand).resolves({
+      $metadata: { bedrockInputTokenCount: 1 } as any,
+      body: new TextEncoder().encode(
+        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
+      ),
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: {} });
+
+    await embed(
+      sqsEvent(
+        "embed-large",
+        JSON.stringify({
+          documentId: "doc-1",
+          s3ChunkKey: "chunks/doc-1/chunk-1.json",
+        }),
+      ),
+    );
+
+    const metadata = vectorsMock.commandCalls(PutVectorsCommand)[0].args[0]
+      .input.vectors?.[0].metadata as Record<string, unknown>;
+    const filterable = {
+      ...metadata,
+      chunkPreview: undefined,
+      s3ChunkKey: undefined,
+      text: undefined,
+    };
+    expect(Buffer.byteLength(JSON.stringify(filterable))).toBeLessThanOrEqual(
+      2048,
+    );
+    expect(metadata).toEqual(
+      expect.objectContaining({
+        documentId: "doc-1",
+        userId: "user-1",
+        embeddingModel: "us.cohere.embed-v4:0",
+        title: long("t", 200),
+        year: 2024,
+        s3ChunkKey: "chunks/doc-1/chunk-1.json",
+      }),
+    );
+    // Tags are kept in order until the budget runs out.
+    expect((metadata.tags as string[])[0]).toBe(`0${long("g", 99)}`);
+  });
+
   it("drops a duplicate delivery while another one holds the chunk claim", async () => {
     s3Mock.on(GetObjectCommand).resolves({
       Body: {
