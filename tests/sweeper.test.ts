@@ -93,6 +93,19 @@ describe("dead-letter sweeper", () => {
     expect(sqsMock.commandCalls(DeleteMessageCommand)).toHaveLength(1);
   });
 
+  it("drops the message of a document held by an abandoned tag edit", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "UPDATING", updatedAt: "2026-01-01T00:00:00.000Z" },
+    });
+    queueOnce("pipeline-dlq", { stage: "embed", documentId: "doc-1" });
+
+    await handler();
+
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(DeleteMessageCommand)).toHaveLength(1);
+  });
+
   it("leaves the message while a reindex is moving the document", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { status: "PARSING", updatedAt: new Date().toISOString() },

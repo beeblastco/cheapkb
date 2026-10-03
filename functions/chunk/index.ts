@@ -436,51 +436,61 @@ async function writeError(documentId: string, err: unknown, attempt: number) {
   console.log(`[chunk] Retry ${attempt}/3 for ${documentId}`);
 }
 
-/** Splits page text into overlapping token windows, capped at maxChunks. */
+/** Splits page text into overlapping token windows, capped at maxChunks. Windows
+ * span pages, and each token remembers its page so the range stays exact. */
 function splitIntoChunks(
   pages: Array<{ pageNumber: number; text: string }>,
   maxTokens: number,
   overlapTokens: number,
   maxChunks: number,
-) {
+): Array<{
+  chunk: { text: string; pageStart: number; pageEnd: number };
+  i: number;
+}> {
   const out: Array<{
     chunk: { text: string; pageStart: number; pageEnd: number };
     i: number;
   }> = [];
-  let i = 0;
-  let pageStart = 0;
-  let pageEnd = 0;
   let buffer: number[] = [];
+  let bufferPages: number[] = [];
+  let fresh = 0;
 
-  /** Emits the buffered tokens as a chunk and keeps the overlap tail. */
-  const flush = () => {
-    if (buffer.length === 0) return;
+  /** Emits the buffered tokens as a chunk and keeps the overlap tail. A tail
+   * with no new tokens after it was already emitted, so it is skipped. */
+  const flush = (): void => {
+    if (fresh === 0) return;
     const text = decode(buffer).trim();
     if (text) {
       out.push({
-        chunk: { text: text, pageStart: pageStart, pageEnd: pageEnd },
-        i: i,
+        chunk: {
+          text: text,
+          pageStart: bufferPages[0],
+          pageEnd: bufferPages[bufferPages.length - 1],
+        },
+        i: out.length,
       });
-      i += 1;
       if (out.length > maxChunks) {
         throw new ContentError(`Document exceeds the ${maxChunks} chunk limit`);
       }
     }
-    const keep = buffer.slice(Math.max(0, buffer.length - overlapTokens));
-    buffer = keep;
-    pageStart = pageEnd;
+    const keepFrom = Math.max(0, buffer.length - overlapTokens);
+    buffer = buffer.slice(keepFrom);
+    bufferPages = bufferPages.slice(keepFrom);
+    fresh = 0;
   };
 
   for (const page of pages) {
-    if (buffer.length > 0) flush();
-    pageStart = page.pageNumber;
-    pageEnd = page.pageNumber;
-    const tokens = encode(page.text, { disallowedSpecial: new Set() });
+    if (!page.text.trim()) continue;
+    const text = buffer.length > 0 ? `\n\n${page.text}` : page.text;
+    const tokens = encode(text, { disallowedSpecial: new Set() });
     for (const tok of tokens) {
       buffer.push(tok);
+      bufferPages.push(page.pageNumber);
+      fresh += 1;
       if (buffer.length >= maxTokens) flush();
     }
   }
   flush();
+
   return out;
 }

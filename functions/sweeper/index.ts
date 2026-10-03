@@ -24,7 +24,13 @@ const PipelineDlqUrl = process.env.PIPELINE_DLQ_URL!;
 const AdapterDlqUrl = process.env.ADAPTER_DLQ_URL!;
 const MAX_BATCHES = 50;
 const QUIET_MS = 30 * 60 * 1000;
-const SETTLED_STATUSES = new Set(["DELETING", "EMBEDDED", "FAILED"]);
+// UPDATING is a tag-edit lease over a settled document, so it never needs a redrive.
+const SETTLED_STATUSES = new Set([
+  "DELETING",
+  "EMBEDDED",
+  "FAILED",
+  "UPDATING",
+]);
 const STAGE_STEPS: Record<string, string> = {
   chunk: "CHUNKING",
   embed: "EMBEDDING",
@@ -81,7 +87,7 @@ async function markFailed(documentId: string, step: string): Promise<void> {
         UpdateExpression:
           "SET #s = :failed, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
         ConditionExpression:
-          "attribute_exists(pk) AND NOT #s IN (:deleting, :embedded, :failed)",
+          "attribute_exists(pk) AND NOT #s IN (:deleting, :embedded, :failed, :updating)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":deleting": "DELETING",
@@ -91,6 +97,7 @@ async function markFailed(documentId: string, step: string): Promise<void> {
           ":failed": "FAILED",
           ":gsi1pk": "STATUS#FAILED",
           ":t": now,
+          ":updating": "UPDATING",
         },
       }),
     );

@@ -54,6 +54,9 @@ const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 // Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
 // before SQS redelivers its message (visibility timeout 900 seconds).
 const EMBED_CLAIM_LEASE_MS = 300_000;
+// S3 Vectors rejects a vector whose filterable metadata passes 2 KB. Measured as
+// JSON, which overcounts the raw values, so the stored size stays under the cap.
+const MAX_FILTERABLE_METADATA_BYTES = 2048;
 
 interface ChunkMetadata {
   documentId: string;
@@ -346,8 +349,10 @@ async function batchProcess(
       attempt: item.attempt,
       messageId: item.messageId,
       metadata: {
-        ...meta,
-        embeddingModel: embeddingModel(),
+        ...fitFilterableMetadata({
+          ...meta,
+          embeddingModel: embeddingModel(),
+        }),
         text: preview.substring(0, 500),
         chunkPreview: preview.substring(0, 200),
       },
@@ -652,10 +657,12 @@ async function markChunkEmbedded(
 /** Marks the document EMBEDDED once every chunk has been embedded. */
 async function markEmbedded(documentId: string) {
   const now = new Date().toISOString();
+  // Read strongly so the count includes the increment this call just committed.
   const result = await dynamo.send(
     new GetCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
     }),
   );
   const doc = result.Item;
@@ -786,6 +793,41 @@ function embeddingDimension() {
 
 function embeddingModel() {
   return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
+}
+
+/** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
+ * title, tags, authors and sourceKey are added back in that order while they fit. */
+function fitFilterableMetadata(metadata: ChunkMetadata): ChunkMetadata {
+  const fits = (candidate: ChunkMetadata): boolean =>
+    Buffer.byteLength(
+      JSON.stringify({
+        ...candidate,
+        chunkPreview: undefined,
+        s3ChunkKey: undefined,
+        text: undefined,
+      }),
+    ) <= MAX_FILTERABLE_METADATA_BYTES;
+  if (fits(metadata)) return metadata;
+  console.warn(
+    `[embed] Trimmed metadata of ${metadata.chunkId} to fit the filterable cap`,
+  );
+
+  const { authors, sourceKey, tags, title, ...required } = metadata;
+  const fitted: ChunkMetadata = { ...required };
+  if (title && fits({ ...fitted, title: title })) fitted.title = title;
+  for (const tag of tags ?? []) {
+    const next = [...(fitted.tags ?? []), tag];
+    if (fits({ ...fitted, tags: next })) fitted.tags = next;
+  }
+  for (const author of authors ?? []) {
+    const next = [...(fitted.authors ?? []), author];
+    if (fits({ ...fitted, authors: next })) fitted.authors = next;
+  }
+  if (sourceKey && fits({ ...fitted, sourceKey: sourceKey })) {
+    fitted.sourceKey = sourceKey;
+  }
+
+  return fitted;
 }
 
 function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {
