@@ -138,6 +138,8 @@ const SUPPORTED_EXTENSIONS = [
 // Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
 // have its tags overwritten by the run in progress.
 const EDITABLE_TAG_STATUSES = new Set(["EMBEDDED", "FAILED"]);
+// An edit whose handler died keeps UPDATING; the API takes it over after this.
+const EDIT_LEASE_TTL_MS = 5 * 60 * 1000;
 
 type DocumentTableRow =
   | { document: Document; kind: "document" }
@@ -1170,7 +1172,7 @@ function DocumentRow({
       >
         <div className="flex justify-end gap-1">
           <ActionButton
-            disabled={!EDITABLE_TAG_STATUSES.has(document.status)}
+            disabled={!canEditTags(document)}
             label="Edit tags"
             onClick={() => onEditTags(document.documentId)}
           >
@@ -1466,6 +1468,13 @@ function getSearchValue(row: DocumentTableRow): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function canEditTags(document: Document): boolean {
+  if (EDITABLE_TAG_STATUSES.has(document.status)) return true;
+  if (document.status !== "UPDATING") return false;
+
+  return Date.now() - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
 }
 
 function delay(ms: number): Promise<void> {
