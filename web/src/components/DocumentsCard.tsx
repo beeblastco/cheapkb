@@ -486,6 +486,10 @@ export function DocumentsCard({
     }));
   }, [pageCount, pagination.pageIndex]);
 
+  function isStillQueued(itemId: string): boolean {
+    return itemsRef.current.some((current) => current.id === itemId);
+  }
+
   /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
    * reloads documents and usage. Wired to the Sync button. */
   async function syncAll() {
@@ -510,6 +514,9 @@ export function DocumentsCard({
           const item = pending[nextIndex];
           nextIndex += 1;
           let counted = false;
+          // Files wait their turn as READY and can be removed before a worker
+          // reaches them, which now takes minutes under the processing cap.
+          if (!isStillQueued(item.id)) continue;
           updateItem(item.id, {
             error: "",
             progress: "Requesting upload URL",
