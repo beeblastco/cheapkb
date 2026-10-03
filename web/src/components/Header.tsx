@@ -58,20 +58,21 @@ const MENU_CONTENT = {
   },
 } as const;
 
+/** Sticky top bar with the account menu and its settings, terms and privacy dialogs. */
 export function Header({
   identity,
   usage,
   onSignOut,
   onDeleteAllData,
 }: {
-  identity?: ShooIdentity | null;
-  usage?: UsageSummary | null;
-  onSignOut?: () => void;
-  onDeleteAllData?: () => Promise<void>;
-}) {
+  identity: ShooIdentity;
+  usage: UsageSummary | null;
+  onSignOut: () => void;
+  onDeleteAllData: () => Promise<void>;
+}): React.JSX.Element {
   const [dialog, setDialog] = useState<keyof typeof MENU_CONTENT | null>(null);
   const [deletingData, setDeletingData] = useState(false);
-  const profile = identity?.token ? getUserProfile(identity) : null;
+  const profile = getUserProfile(identity);
   const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
 
   return (
@@ -81,62 +82,60 @@ export function Header({
           <CardContent className="flex items-center justify-between">
             <p className="font-semibold">cheapkb</p>
 
-            {profile ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger className="cursor-pointer">
-                  <span className="flex items-center gap-2">
-                    <span className="hidden max-w-48 truncate sm:block">
-                      {profile.email || profile.name}
-                    </span>
-                    <Avatar size="sm">
-                      {profile.picture ? (
-                        <AvatarImage alt={profile.name} src={profile.picture} />
-                      ) : null}
-                      <AvatarFallback>{profile.initials}</AvatarFallback>
-                    </Avatar>
+            <DropdownMenu>
+              <DropdownMenuTrigger className="cursor-pointer">
+                <span className="flex items-center gap-2">
+                  <span className="hidden max-w-48 truncate sm:block">
+                    {profile.email || profile.name}
                   </span>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-auto min-w-56">
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>
-                      <div className="flex flex-col gap-1">
-                        <span className="truncate">{profile.name}</span>
-                        <span className="truncate font-normal text-muted-foreground">
-                          {profile.email || "Google account"}
-                        </span>
-                      </div>
-                    </DropdownMenuLabel>
-                    <DropdownMenuItem onClick={() => setDialog("settings")}>
-                      <Settings /> Settings
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem onClick={() => setDialog("terms")}>
-                      <Scale /> Terms and conditions
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setDialog("privacy")}>
-                      <Shield /> Privacy policy
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      render={
-                        <a
-                          href="https://github.com/beeblastco/cheapkb/issues"
-                          rel="noreferrer"
-                          target="_blank"
-                        />
-                      }
-                    >
-                      <HelpCircle /> Help
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem onClick={onSignOut} variant="destructive">
-                      <LogOut /> Log out
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
+                  <Avatar size="sm">
+                    {profile.picture ? (
+                      <AvatarImage alt={profile.name} src={profile.picture} />
+                    ) : null}
+                    <AvatarFallback>{profile.initials}</AvatarFallback>
+                  </Avatar>
+                </span>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-auto min-w-56">
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>
+                    <div className="flex flex-col gap-1">
+                      <span className="truncate">{profile.name}</span>
+                      <span className="truncate font-normal text-muted-foreground">
+                        {profile.email || "Google account"}
+                      </span>
+                    </div>
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem onClick={() => setDialog("settings")}>
+                    <Settings /> Settings
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onClick={() => setDialog("terms")}>
+                    <Scale /> Terms and conditions
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setDialog("privacy")}>
+                    <Shield /> Privacy policy
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    render={
+                      <a
+                        href="https://github.com/beeblastco/cheapkb/issues"
+                        rel="noreferrer"
+                        target="_blank"
+                      />
+                    }
+                  >
+                    <HelpCircle /> Help
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onClick={onSignOut} variant="destructive">
+                    <LogOut /> Log out
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </CardContent>
         </Card>
       </header>
@@ -217,7 +216,7 @@ export function Header({
                             onClick={async () => {
                               setDeletingData(true);
                               try {
-                                await onDeleteAllData?.();
+                                await onDeleteAllData();
                                 setDialog(null);
                               } finally {
                                 setDeletingData(false);

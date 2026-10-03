@@ -1,6 +1,7 @@
+import type { Document as ApiDocument } from "../../../functions/types";
+
 export { DEFAULT_TAG_COLOR, TAG_COLORS } from "../../../functions/types";
 export type {
-  Document,
   DocumentStatus,
   QueryResult,
   ResultGroup,
@@ -8,6 +9,9 @@ export type {
   TagColor,
   UsageSummary,
 } from "../../../functions/types";
+
+// GET /documents marks each document the upload cap counts as in flight.
+export type Document = ApiDocument & { inFlight?: boolean };
 
 export interface ShooIdentity {
   token: string;
