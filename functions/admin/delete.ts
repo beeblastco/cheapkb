@@ -29,9 +29,6 @@ const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-// Matches the update handler's lease TTL; a live lease means chunk JSON and
-// vectors are still being rewritten and would outlive this delete.
-const UPDATE_LEASE_TTL_MS = 5 * 60 * 1000;
 
 /** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */
 export async function handler(event: APIGatewayProxyEventV2) {
@@ -70,13 +67,17 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  // Pipeline stages refuse to write to a DELETING document, so nothing they
-  // write after this point outlives the cleanup below.
+  // Pipeline stages refuse to write to a DELETING document, and a tag edit
+  // removes its own writes once it sees one, so nothing outlives the cleanup.
   try {
     await markDeleting(documentId, null);
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
-    return markRefusedResponse(documentId);
+    return {
+      statusCode: 404,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Document not found" }),
+    };
   }
 
   // Older documents have no countedBytes, so the size is read and saved before
@@ -220,15 +221,9 @@ async function markDeleting(documentId: string, lastError: string | null) {
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
         "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
-      // Never take over a live edit lease; a DELETING row always passes.
-      ConditionExpression:
-        "attribute_exists(pk) AND (#s <> :updating OR updatedAt < :leaseCutoff)",
+      ConditionExpression: "attribute_exists(pk)",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
-        ":leaseCutoff": new Date(
-          Date.now() - UPDATE_LEASE_TTL_MS,
-        ).toISOString(),
-        ":updating": "UPDATING",
         ":e": lastError,
         ":f": lastError ? "DELETE" : null,
         ":gsi1pk": "STATUS#DELETING",
@@ -237,32 +232,4 @@ async function markDeleting(documentId: string, lastError: string | null) {
       },
     }),
   );
-}
-
-/** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */
-async function markRefusedResponse(documentId: string): Promise<{
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string;
-}> {
-  const current = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  if (!current.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  return {
-    statusCode: 409,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ error: "Document is being edited, try again" }),
-  };
 }

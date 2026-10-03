@@ -1,10 +1,13 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
+  ListObjectVersionsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import {
+  DeleteVectorsCommand,
   GetVectorsCommand,
   PutVectorsCommand,
   S3VectorsClient,
@@ -411,6 +414,69 @@ describe("PATCH /documents/{id}", () => {
       expect(release.ExpressionAttributeValues!).not.toHaveProperty(":tags");
     });
 
+    it("refuses the lease while a replacement upload is pending", async () => {
+      await update(patchEvent({ tags: ["research"] }));
+
+      const acquire = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+      // Landing the replacement deletes the chunks and vectors this edit rewrites.
+      expect(acquire.ConditionExpression).toContain(
+        "attribute_not_exists(replacementToken) OR replacementExpiresAt < :now",
+      );
+    });
+
+    it("removes its own writes when the document was deleted mid-edit", async () => {
+      let reads = 0;
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        reads += 1;
+        // The first read starts the edit; a delete marks the row before it finishes.
+        return reads === 1
+          ? embeddedDocument()
+          : embeddedDocument({ status: "DELETING" });
+      });
+      dynamoMock
+        .on(UpdateCommand)
+        .resolvesOnce({})
+        .rejects(
+          new ConditionalCheckFailedException({
+            $metadata: {},
+            message: "status is DELETING",
+          }),
+        );
+      s3Mock.on(ListObjectVersionsCommand).resolves({
+        Versions: [
+          { Key: "chunks/doc-1/chunk_doc-1_0.json", VersionId: "version-1" },
+        ],
+      });
+      s3Mock.on(DeleteObjectsCommand).resolves({});
+      vectorsMock.on(DeleteVectorsCommand).resolves({});
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(500);
+      const reread = dynamoMock
+        .commandCalls(GetCommand)
+        .map((call) => call.args[0].input)
+        .filter((input) => input.Key?.pk === "DOC#doc-1");
+      expect(reread.at(-1)?.ConsistentRead).toBe(true);
+      expect(
+        vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
+      ).toEqual(["chunk_doc-1_0"]);
+      expect(
+        s3Mock.commandCalls(ListObjectVersionsCommand)[0].args[0].input.Prefix,
+      ).toBe("chunks/doc-1/");
+      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
+    });
+
+    it("leaves chunk data alone when a failed edit's document is still live", async () => {
+      vectorsMock.on(PutVectorsCommand).rejects(new Error("vector store down"));
+
+      await update(patchEvent({ tags: ["research"] }));
+
+      expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+      expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
+    });
+
     it("only releases a lease it still owns", async () => {
       await update(patchEvent({ tags: ["research"] }));
 
@@ -488,6 +554,25 @@ describe("PATCH /documents/{id}", () => {
   });
 
   describe("cost guards", () => {
+    it("rejects tags that push the metadata past its byte budget", async () => {
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({
+          title: "T".repeat(200),
+          authors: Array.from({ length: 10 }, () => "a".repeat(60)),
+        });
+      });
+
+      const response = await update(
+        patchEvent({
+          tags: Array.from({ length: 10 }, (_, i) => `${i}`.padEnd(60, "t")),
+        }),
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
     it("refuses an account past its monthly allowance", async () => {
       usage.checkUsageLimit.mockResolvedValue({ allowed: false });
 

@@ -287,8 +287,8 @@ export async function retagDocumentVectors(
   );
 }
 
-/** Loads a document's META row, or null when the document does not exist.
- * Used by the update handler and the S3 ingest and cleanup adapters. */
+/** Consistently loads a document's META row, or null when the document does not exist.
+ * Used by the update handler and the S3 ingest and cleanup adapters to decide on writes. */
 export async function getDocument(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
@@ -298,6 +298,7 @@ export async function getDocument(
     new GetCommand({
       TableName: tableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
     }),
   );
   return (result.Item as DocumentRow | undefined) ?? null;

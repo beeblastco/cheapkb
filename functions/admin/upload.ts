@@ -38,6 +38,9 @@ const MAX_STORAGE_BYTES = parseInt(
   10,
 );
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+// S3 Vectors caps filterable metadata at 2 KB per vector; title, tags and authors
+// share this budget so the rest of a chunk's metadata always fits.
+const MAX_METADATA_BYTES = 1200;
 // Bounds GET /documents, which reads every document, and one account's share of
 // the pipeline queue. A document idle for an hour no longer counts as in flight.
 const MAX_DOCUMENTS = 1000;
@@ -422,7 +425,10 @@ function validateBody(body: Record<string, unknown>): string | null {
   if (typeof filename !== "string" || !filename.trim()) {
     return "Filename is required";
   }
-  if (filename.length > 255) return "Filename must be 255 characters or fewer";
+  // NFC can lengthen a name, so the bound holds after normalizing to keep the S3 key short.
+  if (filename.normalize("NFC").length > 255) {
+    return "Filename must be 255 characters or fewer";
+  }
   const { mimeType } = body;
   if (typeof mimeType !== "string" || !ALLOWED_MIME_TYPES.has(mimeType)) {
     return `MIME type must be one of: ${[...ALLOWED_MIME_TYPES].join(", ")}`;
@@ -448,11 +454,30 @@ function validateBody(body: Record<string, unknown>): string | null {
   ) {
     return "Year must be an integer from 1000 to 9999";
   }
+  if (metadataBytes(body.title, body.tags, body.authors) > MAX_METADATA_BYTES) {
+    return `Title, tags and authors together must be ${MAX_METADATA_BYTES} bytes or fewer`;
+  }
   return null;
 }
 
+/** UTF-8 size of the searchable metadata, measured the same way as the web client. */
+function metadataBytes(
+  title: unknown,
+  tags: unknown,
+  authors: unknown,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
+  );
+}
+
+/** Feeds the S3 key and the dedupe key. Unicode letters, marks and digits are kept so
+ * distinct non-ASCII names stay distinct; an ASCII name maps exactly as before. */
 function sanitizeFilename(filename: string): string {
-  return filename.trim().replace(/[^a-zA-Z0-9._-]/g, "_");
+  return filename
+    .trim()
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{M}\p{N}._-]/gu, "_");
 }
 
 function createDedupeKey(userId: string, filename: string, mimeType: string) {

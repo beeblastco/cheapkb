@@ -87,6 +87,32 @@ describe("reindex migration", () => {
     );
   });
 
+  it("refuses to claim a document with a pending replacement upload", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "owner",
+          status: "FAILED",
+          failedStep: "PARSING",
+          sourceKey: "raw/doc-1/file.pdf",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(apiEvent({ pathParameters: { id: "doc-1" } }));
+
+    const claim = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    // Landing the replacement deletes the chunks this reindex would process.
+    expect(claim.ConditionExpression).toContain(
+      "attribute_not_exists(replacementToken) OR replacementExpiresAt < :t",
+    );
+  });
+
   it("restarts failed image chunking from the image manifest", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {

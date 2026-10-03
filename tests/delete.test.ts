@@ -137,10 +137,10 @@ describe("document deletion", () => {
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 
-  it("refuses while an edit holds the document's lease", async () => {
+  it("returns 404 when the document vanished before it was marked", async () => {
     dynamoMock.on(UpdateCommand).rejects(
       new ConditionalCheckFailedException({
-        message: "lease is live",
+        message: "row is gone",
         $metadata: {},
       }),
     );
@@ -149,10 +149,10 @@ describe("document deletion", () => {
       apiEvent({ pathParameters: { id: "doc-1" } }),
     );
 
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(404);
+    // An edit lease no longer blocks a delete; the edit removes its own writes.
     const mark = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
-    expect(mark.ConditionExpression).toContain("#s <> :updating");
-    expect(mark.ExpressionAttributeValues?.[":updating"]).toBe("UPDATING");
+    expect(mark.ConditionExpression).toBe("attribute_exists(pk)");
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 

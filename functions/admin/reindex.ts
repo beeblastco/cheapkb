@@ -185,7 +185,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  // The status and updatedAt match makes a second concurrent reindex lose.
+  // The status and updatedAt match makes a second concurrent reindex lose. A pending
+  // replacement deletes the chunks it would re-embed, so it refuses that too.
   try {
     await dynamo.send(
       new UpdateCommand({
@@ -194,8 +195,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
         UpdateExpression:
           "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
         ConditionExpression: doc.updatedAt
-          ? "#s = :current AND updatedAt = :updatedAt"
-          : "#s = :current AND attribute_not_exists(updatedAt)",
+          ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :t)"
+          : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :t)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":s": "QUEUED",

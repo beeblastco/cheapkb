@@ -11,11 +11,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   checkUsageLimit,
   deleteDocumentChunkRecords,
@@ -70,8 +66,8 @@ export async function handler(event: S3Event) {
 
     let doc = await getDocument(documentId, dynamo, TableName);
     if (!doc || doc.status === "DELETING") {
-      doc = await removeLateUpload(documentId, key, record.s3.object.versionId);
-      if (!doc) continue;
+      await removeLateUpload(documentId, key, record.s3.object.versionId);
+      continue;
     }
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
@@ -221,12 +217,13 @@ async function claimDispatch(
   }
 }
 
-/** Deletes the old derived data and promotes the pending replacement metadata. */
+/** Deletes the old derived data and promotes the pending replacement metadata. Returns
+ * false for a stale event; throws so S3 retries while the same replacement is still blocked. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
   now: string,
-) {
+): Promise<boolean> {
   const chunkItems = await deleteDocumentVectors(
     documentId,
     dynamo,
@@ -264,11 +261,16 @@ async function finalizeReplacement(
     );
     return true;
   } catch (error) {
-    // A duplicate/concurrent S3 event for the same replacement loses the
-    // conditional write; treat it as a stale event rather than crashing.
-    if (error instanceof ConditionalCheckFailedException) return false;
-    throw error;
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
+  // The old data is already gone, so a replacement blocked by an edit or reindex
+  // must retry until it lands; a changed token means another event finalized it.
+  const current = await getDocument(documentId, dynamo, TableName);
+  if (current?.replacementToken === doc.replacementToken) {
+    throw new Error(`Replacement for ${documentId} is blocked, retrying`);
+  }
+
+  return false;
 }
 
 /** Marks the claimed dispatch as sent once the parse message is on the queue. */
@@ -365,22 +367,12 @@ async function refuseOverAllowance(
   return true;
 }
 
-/** Removes an upload that landed after or during its document's delete. Returns
- * the document instead when a consistent read shows it is live after all. */
+/** Removes an upload that landed after or during its document's delete. */
 async function removeLateUpload(
   documentId: string,
   key: string,
   versionId: string | undefined,
-): Promise<DocumentRow | null> {
-  const existing = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  const live = existing.Item as DocumentRow | undefined;
-  if (live && live.status !== "DELETING") return live;
+): Promise<void> {
   await s3.send(
     new DeleteObjectCommand({
       Bucket: StorageBucketName,
@@ -389,8 +381,6 @@ async function removeLateUpload(
     }),
   );
   console.log(`[ingest-adapter] Removed late upload for ${documentId}`);
-
-  return null;
 }
 
 /** Removes every version a refused replacement form wrote, so S3 falls back to the

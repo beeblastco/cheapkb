@@ -154,7 +154,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Only completed or failed documents can be edited, one edit at a time
+          description: Only completed or failed documents can be edited, one edit at a time and not while a replacement upload is pending
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -188,11 +188,6 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          description: A tag edit is still writing to the document
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
         "500":
           description: Partial cleanup failure; warnings name the failed steps
           content:
@@ -220,7 +215,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Document is still processing, failed at upload, or changed during the request
+          description: Document is still processing, failed at upload, has a replacement upload pending, or changed during the request
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -433,6 +428,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+          description: Unicode letters, digits, dots, underscores and hyphens are kept; any other character becomes an underscore. The same sanitized name and MIME type replace the existing document.
         mimeType:
           type: string
           enum:

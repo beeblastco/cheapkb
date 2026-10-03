@@ -65,6 +65,9 @@ describe("infrastructure hardening", () => {
     );
     expect(adminUpdateFn).toContain("${storage.arn}/chunks/*");
     expect(adminUpdateFn).not.toContain("${storage.arn}/*");
+    // Listing versions to remove chunks after a mid-edit delete stays on chunks/.
+    expect(adminUpdateFn).toContain('values: ["chunks/*"]');
+    expect(adminUpdateFn).toContain('"s3vectors:DeleteVectors"');
   });
 
   it("refuses to provision into the wrong AWS account", () => {
