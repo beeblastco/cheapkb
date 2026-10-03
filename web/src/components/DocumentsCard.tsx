@@ -542,18 +542,22 @@ export function DocumentsCard({
               (progress) => updateItem(item.id, { progress: progress }),
             );
             const now = new Date().toISOString();
+            const queued: Document = {
+              createdAt: now,
+              documentId: documentId,
+              mimeType: getFileMimeType(item.file),
+              status: "QUEUED",
+              title: item.title.trim() || item.file.name,
+              updatedAt: now,
+            };
+            // The ref catches up only after a render, and this worker checks the
+            // cap again right away, so count the new document now.
+            documentsRef.current = [...documentsRef.current, queued];
             setDocuments((current) => {
               const byId = new Map(
                 current.map((document) => [document.documentId, document]),
               );
-              byId.set(documentId, {
-                createdAt: now,
-                documentId: documentId,
-                mimeType: getFileMimeType(item.file),
-                status: "QUEUED",
-                title: item.title.trim() || item.file.name,
-                updatedAt: now,
-              });
+              byId.set(documentId, queued);
               const next = Array.from(byId.values());
               writePendingDocuments(next);
               return next;
