@@ -1,19 +1,22 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import {
   DEFAULT_TAG_COLOR,
   TAG_COLORS,
   type Tag,
   type TagColor,
 } from "../types";
-import { extractUserId } from "../utils";
+import { dynamo, extractUserId } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TAGS_TABLE_NAME!;
 
 /** API handler for GET /tags; returns the caller's tags sorted by name. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 

@@ -1,19 +1,22 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import type { DocumentRow } from "../types";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import {
   chunkId,
   docId,
+  dynamo,
   extractUserId,
+  getDocument,
   listDocumentChunkItems,
 } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 
 /** GET /documents/{id}: returns one owned document and its chunk statuses. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -26,21 +29,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  if (!result.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  if (result.Item.userId !== userId) {
+  const doc = await getDocument(documentId, dynamo, TableName);
+  if (!doc || doc.userId !== userId) {
     return {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },
@@ -58,7 +48,20 @@ export async function handler(event: APIGatewayProxyEventV2) {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      document: pickDocumentFields(result.Item as DocumentRow),
+      document: {
+        documentId: docId(doc.pk),
+        title: doc.title,
+        status: doc.status,
+        lastError: doc.lastError ?? null,
+        retryCount: doc.retryCount ?? 0,
+        failedStep: doc.failedStep ?? null,
+        mimeType: doc.mimeType,
+        tags: doc.tags ?? null,
+        authors: doc.authors ?? null,
+        year: doc.year ?? null,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+      },
       chunks: chunkItems.map((c) => ({
         chunkId: chunkId(c.sk),
         pageStart: c.pageStart,
@@ -68,23 +71,5 @@ export async function handler(event: APIGatewayProxyEventV2) {
       })),
       chunkCount: chunkItems.length,
     }),
-  };
-}
-
-/** Maps a META row to the document fields the API returns. */
-function pickDocumentFields(item: DocumentRow) {
-  return {
-    documentId: docId(item.pk),
-    title: item.title,
-    status: item.status,
-    lastError: item.lastError ?? null,
-    retryCount: item.retryCount ?? 0,
-    failedStep: item.failedStep ?? null,
-    mimeType: item.mimeType,
-    tags: item.tags ?? null,
-    authors: item.authors ?? null,
-    year: item.year ?? null,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
   };
 }

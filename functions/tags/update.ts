@@ -1,18 +1,21 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import { TAG_COLORS, type Tag, type TagColor } from "../types";
-import { extractUserId } from "../utils";
+import { dynamo, extractUserId } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TAGS_TABLE_NAME!;
 
 /** API handler for PATCH /tags/{name}; changes the color of the caller's tag. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const name = decodeTagName(event);
+  const name = decodeTagName(event.pathParameters);
   if (typeof name !== "string") return name;
 
   let body: Record<string, unknown>;
@@ -87,12 +90,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
 }
 
 /** Reads the tag name from the path, or returns a 400 response when it is invalid. */
-function decodeTagName(event: {
-  pathParameters?: Record<string, string | undefined>;
-}):
-  | string
-  | { statusCode: number; headers: Record<string, string>; body: string } {
-  const raw = event.pathParameters?.name;
+function decodeTagName(
+  pathParameters: APIGatewayProxyEventV2["pathParameters"],
+): string | APIGatewayProxyStructuredResultV2 {
+  const raw = pathParameters?.name;
   let decoded: string;
   try {
     decoded = raw ? decodeURIComponent(raw) : "";
@@ -111,6 +112,7 @@ function decodeTagName(event: {
       body: JSON.stringify({ error: "Tag name is required" }),
     };
   }
+
   return name;
 }
 

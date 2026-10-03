@@ -64,7 +64,7 @@ describe("tag APIs", () => {
           },
         }),
       );
-      expect(JSON.parse(response.body)).toEqual({
+      expect(JSON.parse(response.body!)).toEqual({
         count: 2,
         tags: [
           {
@@ -88,7 +88,7 @@ describe("tag APIs", () => {
 
       const response = await listTags(apiEvent());
 
-      expect(JSON.parse(response.body).tags[0]).toEqual({
+      expect(JSON.parse(response.body!).tags[0]).toEqual({
         name: "legacy",
         color: "gray",
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -102,7 +102,7 @@ describe("tag APIs", () => {
 
       const response = await listTags(apiEvent());
 
-      expect(JSON.parse(response.body).tags[0].color).toBe("gray");
+      expect(JSON.parse(response.body!).tags[0].color).toBe("gray");
     });
   });
 
@@ -129,7 +129,7 @@ describe("tag APIs", () => {
         }),
       );
       expect(put.ConditionExpression).toBe("attribute_not_exists(pk)");
-      expect(JSON.parse(response.body).tag.name).toBe("Research");
+      expect(JSON.parse(response.body!).tag.name).toBe("Research");
     });
 
     it("stores the requested color", async () => {
@@ -148,7 +148,7 @@ describe("tag APIs", () => {
         dynamoMock.commandCalls(PutCommand).find((c) => !isRateLimitCall(c))!
           .args[0].input.Item,
       ).toEqual(expect.objectContaining({ color: "purple" }));
-      expect(JSON.parse(response.body).tag.color).toBe("purple");
+      expect(JSON.parse(response.body!).tag.color).toBe("purple");
     });
 
     it("rejects a color outside the palette", async () => {
@@ -180,7 +180,7 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).tag).toEqual({
+      expect(JSON.parse(response.body!).tag).toEqual({
         name: "Research",
         color: "green",
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -213,7 +213,7 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).tag.name).toBe("Research");
+      expect(JSON.parse(response.body!).tag.name).toBe("Research");
     });
 
     it("reports a conflict when the raced tag is gone rather than claiming success", async () => {
@@ -285,7 +285,7 @@ describe("tag APIs", () => {
       });
       expect(update.ExpressionAttributeValues).toEqual({ ":color": "blue" });
       expect(update.ConditionExpression).toBe("attribute_exists(pk)");
-      expect(JSON.parse(response.body).tag).toEqual({
+      expect(JSON.parse(response.body!).tag).toEqual({
         name: "Machine Learning",
         color: "blue",
         createdAt: "2026-01-01T00:00:00.000Z",

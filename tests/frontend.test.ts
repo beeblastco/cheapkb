@@ -151,6 +151,24 @@ describe("frontend", () => {
       );
     });
 
+    it("attaches the server's error code to a failed request", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: "PROCESSING_LIMIT",
+            error: "Too many documents processing. Try again when they finish.",
+          }),
+          { status: 429, headers: { "Content-Type": "application/json" } },
+        ),
+      ) as unknown as typeof fetch;
+
+      await expect(apiCall("token", "POST", "/upload")).rejects.toMatchObject({
+        code: "PROCESSING_LIMIT",
+        message: "Too many documents processing. Try again when they finish.",
+        status: 429,
+      });
+    });
+
     it("rejects requests without an identity token", async () => {
       await expect(apiCall("", "GET", "/documents")).rejects.toThrow(
         "Not signed in",
@@ -366,15 +384,16 @@ describe("frontend", () => {
       });
     });
 
-    it("discards temporary and expired pending documents", () => {
+    it("discards expired pending documents", () => {
+      const recent = {
+        documentId: "doc-new",
+        status: "QUEUED",
+        updatedAt: new Date().toISOString(),
+      };
       localStorage.setItem(
         PENDING_DOCUMENTS_KEY,
         JSON.stringify([
-          {
-            documentId: "temp_1",
-            status: "UPLOADING",
-            updatedAt: new Date().toISOString(),
-          },
+          recent,
           {
             documentId: "doc-old",
             status: "FAILED",
@@ -383,7 +402,7 @@ describe("frontend", () => {
         ]),
       );
 
-      expect(readPendingDocuments()).toEqual([]);
+      expect(readPendingDocuments()).toEqual([recent]);
     });
 
     it("removes a stale local failure that no longer exists on the server", () => {
@@ -408,7 +427,6 @@ describe("frontend", () => {
         [
           { documentId: "doc-1", status: "QUEUED" },
           { documentId: "doc-1", status: "UPLOADED" },
-          { documentId: "temp_1", status: "UPLOADING" },
         ],
         [{ documentId: "doc-1", status: "PARSING" }],
       );
@@ -417,24 +435,32 @@ describe("frontend", () => {
         expect.objectContaining({ documentId: "doc-1", status: "PARSING" }),
       ]);
     });
+
+    it("returns the current list when a poll changes nothing", () => {
+      const current: Document[] = [
+        {
+          documentId: "doc-1",
+          inFlight: true,
+          status: "PARSING",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ];
+
+      expect(mergeDocuments(current, [{ ...current[0] }])).toBe(current);
+      expect(
+        mergeDocuments(current, [{ ...current[0], inFlight: false }]),
+      ).not.toBe(current);
+    });
   });
 
   describe("document helpers", () => {
-    it("counts processing documents the way the upload cap does", () => {
-      const now = Date.parse("2026-10-03T12:00:00Z");
-      const at = (minutesAgo: number) =>
-        new Date(now - minutesAgo * 60 * 1000).toISOString();
-
-      const count = countProcessingDocuments(
-        [
-          { documentId: "a", status: "EMBEDDING", updatedAt: at(30) },
-          { documentId: "b", status: "UPLOADED", updatedAt: at(5) },
-          { documentId: "c", status: "UPLOADED", updatedAt: at(20) },
-          { documentId: "d", status: "PARSING", updatedAt: at(90) },
-          { documentId: "e", status: "EMBEDDED", updatedAt: at(1) },
-        ] as Document[],
-        now,
-      );
+    it("counts the documents the server marks as in flight", () => {
+      const count = countProcessingDocuments([
+        { documentId: "a", inFlight: true, status: "EMBEDDING" },
+        { documentId: "b", inFlight: true, status: "QUEUED" },
+        { documentId: "c", inFlight: false, status: "PARSING" },
+        { documentId: "d", status: "EMBEDDED" },
+      ]);
 
       expect(count).toBe(2);
     });

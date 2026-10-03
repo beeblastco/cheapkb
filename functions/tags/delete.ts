@@ -1,17 +1,20 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DeleteCommand, DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { extractUserId } from "../utils";
+import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import { dynamo, extractUserId } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TAGS_TABLE_NAME!;
 
 /** API handler for DELETE /tags/{name}; removes the caller's tag. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  const name = decodeTagName(event);
+  const name = decodeTagName(event.pathParameters);
   if (typeof name !== "string") return name;
 
   await dynamo.send(
@@ -29,12 +32,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
 }
 
 /** Reads the tag name from the path, or returns a 400 response when it is invalid. */
-function decodeTagName(event: {
-  pathParameters?: Record<string, string | undefined>;
-}):
-  | string
-  | { statusCode: number; headers: Record<string, string>; body: string } {
-  const raw = event.pathParameters?.name;
+function decodeTagName(
+  pathParameters: APIGatewayProxyEventV2["pathParameters"],
+): string | APIGatewayProxyStructuredResultV2 {
+  const raw = pathParameters?.name;
   let decoded: string;
   try {
     decoded = raw ? decodeURIComponent(raw) : "";
@@ -53,5 +54,6 @@ function decodeTagName(event: {
       body: JSON.stringify({ error: "Tag name is required" }),
     };
   }
+
   return name;
 }

@@ -69,6 +69,11 @@ export default $config({
           resources: embeddingModelResources,
         };
 
+    // Every function keeps a month of logs, set explicitly so no log group grows forever.
+    $transform(sst.aws.Function, (args) => {
+      args.logging = { retention: "1 month" };
+    });
+
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
         allowOrigins: ["*"],
@@ -180,14 +185,11 @@ export default $config({
       fields: {
         pk: "string",
         sk: "string",
-        gsi1pk: "string",
-        gsi1sk: "string",
         gsi2pk: "string",
         gsi2sk: "string",
       },
       primaryIndex: { hashKey: "pk", rangeKey: "sk" },
       globalIndexes: {
-        GSI1: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
         GSI2: { hashKey: "gsi2pk", rangeKey: "gsi2sk" },
       },
       ttl: "ttl",
@@ -323,7 +325,13 @@ export default $config({
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
       MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "52428800",
-      MAX_IMAGE_UPLOAD_BYTES: process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880",
+      // Cohere embeds an image of at most 5 MB, so a larger setting is clamped once here.
+      MAX_IMAGE_UPLOAD_BYTES: String(
+        Math.min(
+          parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+          5 * 1024 * 1024,
+        ),
+      ),
       MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000",
       MAX_STORAGE_BYTES: process.env.MAX_STORAGE_BYTES ?? "1073741824",
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
@@ -496,8 +504,8 @@ export default $config({
         handler: "./functions/pipeline/index.handler",
         runtime: "nodejs22.x",
         timeout: "300 seconds",
-        // Parsing a 50 MB PDF holds the whole document in memory.
-        memory: "2048 MB",
+        // Parsing a 50 MB PDF holds the whole document in memory; the prod peak is ~210 MB.
+        memory: "1024 MB",
         description:
           "Route pipeline messages to the parse, chunk and embed stages",
         environment: {
@@ -579,7 +587,7 @@ export default $config({
             "dynamodb:Query",
             "dynamodb:UpdateItem",
           ],
-          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+          resources: [accountsTable.arn, rateLimitsTable.arn],
         },
         {
           actions: ["dynamodb:GetItem"],
@@ -1005,7 +1013,7 @@ export default $config({
       handler: "./functions/s3/cleanup-adapter.handler",
       runtime: "nodejs22.x",
       timeout: "300 seconds",
-      memory: "512 MB",
+      memory: "256 MB",
       description:
         "Delete all derived data when a source file is removed from S3",
       environment: baseEnv,

@@ -35,6 +35,12 @@ describe("document read APIs", () => {
             status: "EMBEDDED",
             createdAt: "2026-01-01T00:00:00.000Z",
           },
+          {
+            pk: "DOC#doc-2",
+            sk: "META",
+            status: "QUEUED",
+            updatedAt: new Date().toISOString(),
+          },
         ],
       });
 
@@ -47,9 +53,12 @@ describe("document read APIs", () => {
           ExpressionAttributeValues: { ":pk": "USER#owner" },
         }),
       );
-      expect(JSON.parse(response.body)).toMatchObject({
-        count: 1,
-        documents: [{ documentId: "doc-1" }],
+      expect(JSON.parse(response.body!)).toMatchObject({
+        count: 2,
+        documents: [
+          { documentId: "doc-1", inFlight: false },
+          { documentId: "doc-2", inFlight: true },
+        ],
       });
     });
   });
@@ -95,7 +104,7 @@ describe("document read APIs", () => {
       const response = await getDocument(
         apiEvent({ pathParameters: { id: "doc-1" } }),
       );
-      const body = JSON.parse(response.body);
+      const body = JSON.parse(response.body!);
 
       expect(response.statusCode).toBe(200);
       expect(body.chunkCount).toBe(1);
@@ -125,7 +134,7 @@ describe("document read APIs", () => {
       const response = await getDocument(
         apiEvent({ pathParameters: { id: "doc-1" } }),
       );
-      const body = JSON.parse(response.body);
+      const body = JSON.parse(response.body!);
 
       expect(body.chunkCount).toBe(2);
       expect(

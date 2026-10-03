@@ -235,7 +235,7 @@ describe("PATCH /documents/{id}", () => {
       const response = await update(patchEvent({ tags: ["research"] }));
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).updatedVectors).toBe(0);
+      expect(JSON.parse(response.body!).updatedVectors).toBe(0);
       expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
   });
@@ -326,22 +326,6 @@ describe("PATCH /documents/{id}", () => {
         "EMBEDDED",
       );
       expect(finalize.UpdateExpression).toContain("REMOVE previousStatus");
-    });
-
-    it("keeps gsi1pk in step with status through the lease", async () => {
-      await update(patchEvent({ tags: ["research"] }));
-
-      const [acquire, finalize] = dynamoMock
-        .commandCalls(UpdateCommand)
-        .map((call) => call.args[0].input);
-      // Every status write in the pipeline mirrors status into gsi1pk. Nothing
-      // queries that index yet, so only this test would catch them diverging.
-      expect(acquire.ExpressionAttributeValues![":gsi1pk"]).toBe(
-        "STATUS#UPDATING",
-      );
-      expect(finalize.ExpressionAttributeValues![":gsi1pk"]).toBe(
-        "STATUS#EMBEDDED",
-      );
     });
 
     it("restores the original status rather than assuming EMBEDDED", async () => {

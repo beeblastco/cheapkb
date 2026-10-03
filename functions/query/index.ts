@@ -1,22 +1,26 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import type { DocumentType } from "@smithy/types";
-import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
+import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   QueryVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
+import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
+import type { DocumentType } from "@smithy/types";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import type { QueryResult } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
+  embeddingDimension,
+  embeddingModel,
   extractUserId,
+  invokeEmbeddingModel,
+  matchesImageSignature,
   recordUsage,
 } from "../utils";
-import type { QueryResult } from "../types";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -37,7 +41,6 @@ const bedrock = new BedrockRuntimeClient({
       }
     : {}),
 });
-const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 const FILTER_KEYS = new Set([
   "authors",
   "documentId",
@@ -69,21 +72,12 @@ interface VectorMetadata {
   sourceKey?: string;
   modality?: "image" | "text";
   mimeType?: string;
-  [key: string]: unknown;
-}
-
-interface VectorMatch {
-  key?: string;
-  distance?: number;
-  metadata?: VectorMetadata;
-}
-
-interface CohereEmbeddingResponse {
-  embeddings: number[][] | { float?: number[][] };
 }
 
 /** API handler for POST /query; embeds the text or image and searches the caller's vectors. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
   const { allowed: rateAllowed, remaining } = await checkRateLimit(
@@ -200,7 +194,15 @@ export async function handler(event: APIGatewayProxyEventV2) {
       };
     }
     const queryText = query?.trim() ?? "";
-    const queryVector = await embedQuery(queryText, userId, image);
+    const inputModality = image ? (queryText ? "mixed" : "image") : "text";
+    const [queryVector] = await invokeEmbeddingModel(
+      bedrock,
+      buildEmbeddingRequest(queryText, image),
+      userId,
+      env("ACCOUNTS_TABLE_NAME"),
+      "query",
+      inputModality,
+    );
     const searchResponse = await vectors.send(
       new QueryVectorsCommand({
         vectorBucketName: env("VECTOR_BUCKET_NAME"),
@@ -212,13 +214,12 @@ export async function handler(event: APIGatewayProxyEventV2) {
         returnDistance: true,
       }),
     );
-    const matches =
-      (searchResponse as unknown as { vectors?: VectorMatch[] }).vectors ?? [];
+    const matches = searchResponse.vectors ?? [];
     // The chunk JSON also carries sourceKey, which the 2 KB metadata fit can drop.
     const chunks = await Promise.all(
       matches.map(
         async (match): Promise<{ text: string; sourceKey?: string }> => {
-          const metadata = match.metadata ?? {};
+          const metadata = (match.metadata ?? {}) as VectorMetadata;
           const chunkKey = metadata.s3ChunkKey;
           if (!chunkKey) return { text: "" };
           try {
@@ -241,7 +242,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     );
 
     const results: QueryResult[] = matches.map((match, i) => {
-      const metadata = match.metadata ?? {};
+      const metadata = (match.metadata ?? {}) as VectorMetadata;
       return {
         documentId: metadata.documentId ?? "",
         chunkId: match.key ?? "",
@@ -278,7 +279,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
       },
       body: JSON.stringify({
         query: queryText,
-        inputModality: image ? (queryText ? "mixed" : "image") : "text",
+        inputModality: inputModality,
         topK: topK,
         resultCount: results.length,
         results: results,
@@ -347,106 +348,24 @@ export function buildFilter(
   return { $and: conditions };
 }
 
-/** Embeds the query with Cohere on Bedrock and records the input tokens as usage. */
-async function embedQuery(
+/** Builds the Cohere Embed v4 search_query request body for text, image or both.
+ * The handler already validated the image data URI, so it is sent as given. */
+function buildEmbeddingRequest(
   text: string,
-  userId: string,
-  image?: string,
-): Promise<number[]> {
-  const modality = image ? (text ? "mixed" : "image") : "text";
-  const dimension = parseInt(process.env.EMBEDDING_DIMENSION ?? "1024", 10);
-  let responseInputTokenCount: number | undefined;
-  const command = new InvokeModelCommand({
-    modelId: embeddingModel(),
-    contentType: "application/json",
-    accept: "application/json",
-    requestMetadata: JSON.stringify({
-      cheapkbEmbeddingModel: embeddingModel(),
-      cheapkbInputModality: modality,
-      cheapkbOperation: "query",
-      cheapkbStage: process.env.DEPLOYMENT_STAGE ?? "unknown",
-      cheapkbUsageCategory: "embed",
-      cheapkbUserId: userId,
-    }),
-    trace: "ENABLED",
-    body: JSON.stringify(buildEmbeddingRequest(text, image)),
-  });
-  command.middlewareStack.add(
-    (next) => async (args) => {
-      const result = await next(args);
-      const headers = (
-        result as typeof result & {
-          response?: { headers?: Record<string, string> };
-        }
-      ).response?.headers;
-      const tokenHeader = headers?.["x-amzn-bedrock-input-token-count"];
-      const parsed = tokenHeader ? Number.parseInt(tokenHeader, 10) : NaN;
-      responseInputTokenCount =
-        Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-      return result;
-    },
-    {
-      name: "captureBedrockInputTokens",
-      priority: "low",
-      step: "deserialize",
-    },
-  );
-  const response = await bedrock.send(command);
-  const metadata = response.$metadata as typeof response.$metadata & {
-    bedrockInputTokenCount?: number;
-  };
-  const inputTokenCount =
-    responseInputTokenCount ?? metadata.bedrockInputTokenCount;
-  if (inputTokenCount) {
-    await recordUsage(
-      userId,
-      env("ACCOUNTS_TABLE_NAME"),
-      "embed",
-      inputTokenCount,
-    );
-  } else {
-    console.warn("[query] Bedrock response omitted its input token count", {
-      requestId: response.$metadata.requestId,
-    });
-  }
-  const payload = JSON.parse(
-    new TextDecoder().decode(response.body),
-  ) as CohereEmbeddingResponse;
-  const embeddings = Array.isArray(payload.embeddings)
-    ? payload.embeddings
-    : payload.embeddings?.float;
-  const embedding = embeddings?.[0];
-  if (!embedding || embedding.length !== dimension) {
-    throw new Error(`Cohere Embed v4 returned a non-${dimension}D vector`);
-  }
-  return embedding;
-}
-
-/** Builds the Cohere Embed v4 search_query request body for text, image or both. */
-function buildEmbeddingRequest(text: string, image?: string) {
+  image: string | undefined,
+): Record<string, unknown> {
   const content: Array<Record<string, unknown>> = [];
   if (text) content.push({ type: "text", text: text });
-  if (image) {
-    const parsed = parseImageDataUri(image);
-    content.push({
-      type: "image_url",
-      image_url: {
-        url: `data:image/${parsed.format};base64,${parsed.base64}`,
-      },
-    });
-  }
+  if (image) content.push({ type: "image_url", image_url: { url: image } });
+
   return {
     input_type: "search_query",
     inputs: [{ content: content }],
     embedding_types: ["float"],
-    output_dimension: parseInt(process.env.EMBEDDING_DIMENSION ?? "1024", 10),
+    output_dimension: embeddingDimension(),
     max_tokens: 128000,
     truncate: "RIGHT",
   };
-}
-
-function embeddingModel() {
-  return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
 }
 
 function env(name: string): string {
@@ -455,13 +374,17 @@ function env(name: string): string {
   return value;
 }
 
-function isValidImageDataUri(value: string) {
-  try {
-    parseImageDataUri(value);
-    return true;
-  } catch {
-    return false;
-  }
+/** Checks a base64 image data URI is well formed, at most 5 MB, and that its
+ * magic bytes match the type it names. */
+function isValidImageDataUri(value: string): boolean {
+  const match = IMAGE_DATA_URI.exec(value);
+  if (!match) return false;
+  const bytes = Buffer.from(match[2], "base64");
+
+  return (
+    bytes.byteLength <= 5 * 1024 * 1024 &&
+    matchesImageSignature(bytes, match[1])
+  );
 }
 
 /** Checks that a filter operator's value has the type S3 Vectors accepts for it. */
@@ -487,50 +410,4 @@ function isValidOperatorValue(operator: string, value: unknown): boolean {
     (typeof value === "number" && Number.isFinite(value)) ||
     typeof value === "boolean"
   );
-}
-
-/** Checks the leading magic bytes so a data URI cannot lie about its image type. */
-function matchesImageSignature(bytes: Uint8Array, mimeType: string) {
-  if (mimeType === "image/jpeg") {
-    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  }
-  if (mimeType === "image/png") {
-    return (
-      bytes[0] === 0x89 &&
-      bytes[1] === 0x50 &&
-      bytes[2] === 0x4e &&
-      bytes[3] === 0x47 &&
-      bytes[4] === 0x0d &&
-      bytes[5] === 0x0a &&
-      bytes[6] === 0x1a &&
-      bytes[7] === 0x0a
-    );
-  }
-  if (mimeType === "image/gif") {
-    const signature = new TextDecoder().decode(bytes.slice(0, 6));
-    return signature === "GIF87a" || signature === "GIF89a";
-  }
-  if (mimeType === "image/webp") {
-    return (
-      new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" &&
-      new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP"
-    );
-  }
-  return false;
-}
-
-/** Parses and validates a base64 image data URI, throwing when it is malformed or too large. */
-function parseImageDataUri(value: string) {
-  const match = IMAGE_DATA_URI.exec(value);
-  if (!match) throw new Error("Invalid image data URI");
-  const bytes = Buffer.from(match[2], "base64");
-  if (
-    bytes.byteLength > 5 * 1024 * 1024 ||
-    !matchesImageSignature(bytes, match[1])
-  ) {
-    throw new Error("Invalid image data URI");
-  }
-  const format = match[1].replace("image/", "") as
-    "gif" | "jpeg" | "png" | "webp";
-  return { base64: match[2], format: format };
 }

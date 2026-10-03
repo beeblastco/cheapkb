@@ -1,21 +1,18 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { DocumentRow } from "../types";
-import { extractUserId } from "../utils";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import { dynamo, extractUserId, getDocument } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
-
-interface IngestBody {
-  documentId?: unknown;
-}
 
 /**
  * The S3 upload event is the only path that queues and charges a document, so
  * this endpoint reports status and never starts processing itself.
  */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -26,9 +23,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
       body: JSON.stringify({ error: "Request body is required" }),
     };
   }
-  let body: IngestBody;
+  let body: { documentId?: unknown };
   try {
-    body = JSON.parse(event.body) as IngestBody;
+    body = JSON.parse(event.body) as { documentId?: unknown };
   } catch (err) {
     return {
       statusCode: 400,
@@ -48,22 +45,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  if (!result.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  const doc = result.Item as DocumentRow;
-  if (doc.userId !== userId) {
+  const doc = await getDocument(documentId, dynamo, TableName);
+  if (!doc || doc.userId !== userId) {
     return {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },

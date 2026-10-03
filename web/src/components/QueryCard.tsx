@@ -68,8 +68,8 @@ export function QueryCard({
     body?: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
   onView: (documentId: string) => void;
-  onUsageChange?: () => void;
-}) {
+  onUsageChange: () => void;
+}): React.JSX.Element {
   const [query, setQuery] = useState("");
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [image, setImage] = useState<{ dataUri: string; name: string } | null>(
@@ -81,8 +81,27 @@ export function QueryCard({
   const imageInput = useRef<HTMLInputElement>(null);
   const loading = currentQuestion !== "";
 
+  /** Validates a picked image and attaches it to the next query as a data URI. */
+  async function selectImage(file: File | undefined): Promise<void> {
+    setImageError("");
+    if (!file) return;
+    if (!QUERY_IMAGE_TYPES.has(file.type)) {
+      setImageError("Choose a JPEG, PNG, WebP, or GIF image.");
+      return;
+    }
+    if (file.size > MAX_QUERY_IMAGE_BYTES) {
+      setImageError("Query images must be 5 MB or smaller.");
+      return;
+    }
+    try {
+      setImage({ dataUri: await readDataUri(file), name: file.name });
+    } catch {
+      setImageError("Could not read the query image.");
+    }
+  }
+
   /** Sends the question and optional image to /query and appends the answer turn. */
-  async function submit() {
+  async function submit(): Promise<void> {
     const question = query.trim();
     if ((!question && !image) || loading) return;
     const displayQuestion = [image ? `Image: ${image.name}` : "", question]
@@ -105,9 +124,7 @@ export function QueryCard({
           results: (data.results as QueryResult[]) || [],
         },
       ]);
-      // Refresh usage after a billed query. Future backend can push usage
-      // updates here instead of polling from the parent.
-      onUsageChange?.();
+      onUsageChange();
     } catch (requestError) {
       setTurns((current) => [
         ...current,
@@ -121,25 +138,6 @@ export function QueryCard({
     } finally {
       setCurrentQuestion("");
       setImage(null);
-    }
-  }
-
-  /** Validates a picked image and attaches it to the next query as a data URI. */
-  async function selectImage(file: File | undefined) {
-    setImageError("");
-    if (!file) return;
-    if (!QUERY_IMAGE_TYPES.has(file.type)) {
-      setImageError("Choose a JPEG, PNG, WebP, or GIF image.");
-      return;
-    }
-    if (file.size > MAX_QUERY_IMAGE_BYTES) {
-      setImageError("Query images must be 5 MB or smaller.");
-      return;
-    }
-    try {
-      setImage({ dataUri: await readDataUri(file), name: file.name });
-    } catch {
-      setImageError("Could not read the query image.");
     }
   }
 
@@ -289,15 +287,6 @@ export function QueryCard({
   );
 }
 
-function readDataUri(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read query image"));
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsDataURL(file);
-  });
-}
-
 /** One question and its results or error in the chat history. */
 function MessageGroup({
   turn,
@@ -305,7 +294,7 @@ function MessageGroup({
 }: {
   turn: ChatTurn;
   onView: (documentId: string) => void;
-}) {
+}): React.JSX.Element {
   const groups = groupResults(turn.results);
   return (
     <div className="flex flex-col gap-8">
@@ -359,4 +348,13 @@ function MessageGroup({
       </Message>
     </div>
   );
+}
+
+function readDataUri(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read query image"));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
 }

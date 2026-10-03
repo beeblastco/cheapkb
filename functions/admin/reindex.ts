@@ -1,25 +1,25 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
   SendMessageBatchCommand,
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
-import type { DocumentRow } from "../types";
-import { checkRateLimit, checkUsageLimit, extractUserId } from "../utils";
+  checkRateLimit,
+  checkUsageLimit,
+  dynamo,
+  extractUserId,
+  getDocument,
+} from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
@@ -40,16 +40,10 @@ const PROCESSING_STATUSES = new Set([
   "EMBEDDING",
 ]);
 
-interface ReindexMessage {
-  documentId: string;
-  chunkKeys?: string[];
-  parsedKey?: string;
-  sourceKey?: string;
-  mimeType?: string;
-}
-
 /** POST /documents/{id}/reindex: requeues a settled or stuck document from its last good stage. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -96,22 +90,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  if (!result.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  const doc = result.Item as DocumentRow;
-  if (doc.userId !== userId) {
+  const doc = await getDocument(documentId, dynamo, TableName);
+  if (!doc || doc.userId !== userId) {
     return {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },
@@ -156,17 +136,19 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  let targetStage: string;
-  let targetStep: string;
-  let messageBody: ReindexMessage;
-
-  if (
+  const reembed =
     status === "EMBEDDED" ||
     status === "CHUNKED" ||
     status === "EMBEDDING" ||
-    (status === "FAILED" && failedStep === "EMBEDDING")
-  ) {
-    const chunkKeys = await listChunkKeys(documentId);
+    (status === "FAILED" && failedStep === "EMBEDDING");
+  const rechunk =
+    status === "PARSED" ||
+    status === "CHUNKING" ||
+    (status === "FAILED" && failedStep === "CHUNKING");
+  let targetStep = "PARSING";
+  let chunkKeys: string[] = [];
+  if (reembed) {
+    chunkKeys = await listChunkKeys(documentId);
     if (chunkKeys.length === 0) {
       return {
         statusCode: 400,
@@ -176,28 +158,9 @@ export async function handler(event: APIGatewayProxyEventV2) {
         }),
       };
     }
-    targetStage = "embed";
     targetStep = "EMBEDDING";
-    messageBody = { documentId: documentId, chunkKeys: chunkKeys };
-  } else if (
-    status === "PARSED" ||
-    status === "CHUNKING" ||
-    (status === "FAILED" && failedStep === "CHUNKING")
-  ) {
-    targetStage = "chunk";
+  } else if (rechunk) {
     targetStep = "CHUNKING";
-    messageBody = {
-      documentId: documentId,
-      parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
-    };
-  } else {
-    targetStage = "parse";
-    targetStep = "PARSING";
-    messageBody = {
-      documentId: documentId,
-      sourceKey: doc.sourceKey,
-      mimeType: doc.mimeType ?? undefined,
-    };
   }
 
   // The status and updatedAt match makes a second concurrent reindex lose. A pending
@@ -208,7 +171,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+          "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t",
         ConditionExpression: doc.updatedAt
           ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)"
           : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)",
@@ -223,8 +186,6 @@ export async function handler(event: APIGatewayProxyEventV2) {
           ":replacementCutoff": new Date(
             Date.parse(now) - REPLACEMENT_GRACE_MS,
           ).toISOString(),
-          ":gsi1pk": "STATUS#QUEUED",
-          ":gsi1sk": now,
         },
       }),
     );
@@ -237,16 +198,14 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  if (targetStep === "EMBEDDING") {
-    const reindexChunkKeys = messageBody.chunkKeys ?? [];
-    await resetChunkStatuses(documentId, reindexChunkKeys);
-    for (let i = 0; i < reindexChunkKeys.length; i += 10) {
-      const chunkKeys = reindexChunkKeys.slice(i, i + 10);
+  if (reembed) {
+    await resetChunkStatuses(documentId, chunkKeys);
+    for (let i = 0; i < chunkKeys.length; i += 10) {
       try {
         const response = await sqs.send(
           new SendMessageBatchCommand({
             QueueUrl: PipelineQueueUrl,
-            Entries: chunkKeys.map((s3ChunkKey: string, index: number) => ({
+            Entries: chunkKeys.slice(i, i + 10).map((s3ChunkKey, index) => ({
               Id: String(index),
               MessageBody: JSON.stringify({
                 stage: "embed",
@@ -276,11 +235,23 @@ export async function handler(event: APIGatewayProxyEventV2) {
       }
     }
   } else {
+    const message = rechunk
+      ? {
+          stage: "chunk",
+          documentId: documentId,
+          parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
+        }
+      : {
+          stage: "parse",
+          documentId: documentId,
+          sourceKey: doc.sourceKey,
+          mimeType: doc.mimeType ?? undefined,
+        };
     try {
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: PipelineQueueUrl,
-          MessageBody: JSON.stringify({ stage: targetStage, ...messageBody }),
+          MessageBody: JSON.stringify(message),
         }),
       );
     } catch {
@@ -323,11 +294,15 @@ async function listChunkKeys(documentId: string): Promise<string[]> {
     }
     token = list.IsTruncated ? list.NextContinuationToken : undefined;
   } while (token);
+
   return keys;
 }
 
 /** Marks chunk rows QUEUED, 25 at a time so a 1,000-chunk document resets inside the timeout. */
-async function resetChunkStatuses(documentId: string, chunkKeys: string[]) {
+async function resetChunkStatuses(
+  documentId: string,
+  chunkKeys: string[],
+): Promise<void> {
   const chunkIds = chunkKeys
     .map((chunkKey) =>
       chunkKey
