@@ -42,6 +42,9 @@ const UPDATING_STATUS = "UPDATING";
 // A handler killed mid-propagation cannot release its lease, so an abandoned
 // one must expire or the document stays uneditable. It times out at 60s.
 const LEASE_TTL_MS = 5 * 60 * 1000;
+// Matches the ingest adapter's grace for a POST that started just before its form
+// expired, so no edit can race a replacement that may still land.
+const REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 // Matches the upload handler: title, tags and authors share the 2 KB filterable
 // metadata budget of a vector.
 const MAX_METADATA_BYTES = 1200;
@@ -108,7 +111,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
     });
   }
 
-  if (Date.parse(document.replacementExpiresAt ?? "") > Date.now()) {
+  if (
+    Date.parse(document.replacementExpiresAt ?? "") + REPLACEMENT_GRACE_MS >
+    Date.now()
+  ) {
     return json(409, {
       error: "A replacement upload is pending; try again once it finishes",
     });
@@ -219,13 +225,16 @@ async function acquireLease(
           "SET #s = :updating, gsi1pk = :gsi1pk, gsi1sk = :now, previousStatus = :restoreTo, updatedAt = :now",
         // A pending replacement deletes chunks and vectors when it lands, so it
         // must not run under an edit; reserveReplacement refuses UPDATING likewise.
-        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :now)`,
+        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff)`,
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":updating": UPDATING_STATUS,
           ":gsi1pk": `STATUS#${UPDATING_STATUS}`,
           ":restoreTo": restoreTo,
           ":now": heldSince,
+          ":replacementCutoff": new Date(
+            Date.now() - REPLACEMENT_GRACE_MS,
+          ).toISOString(),
           ":userId": userId,
           ":expected": document.status,
           ...(document.updatedAt ? { ":revision": document.updatedAt } : {}),

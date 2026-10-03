@@ -637,7 +637,6 @@ components:
           enum:
             [
               UPLOADED,
-              REPLACING,
               UPDATING,
               QUEUED,
               PARSING,

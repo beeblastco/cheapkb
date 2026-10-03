@@ -420,8 +420,14 @@ describe("PATCH /documents/{id}", () => {
       const acquire = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
       // Landing the replacement deletes the chunks and vectors this edit rewrites.
       expect(acquire.ConditionExpression).toContain(
-        "attribute_not_exists(replacementToken) OR replacementExpiresAt < :now",
+        "attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff",
       );
+      // The cutoff includes the adapter's 15-minute grace for a late POST.
+      const cutoff = Date.parse(
+        String(acquire.ExpressionAttributeValues?.[":replacementCutoff"]),
+      );
+      expect(Date.now() - cutoff).toBeGreaterThanOrEqual(15 * 60 * 1000 - 1000);
+      expect(Date.now() - cutoff).toBeLessThan(15 * 60 * 1000 + 60_000);
     });
 
     it("removes its own writes when the document was deleted mid-edit", async () => {
