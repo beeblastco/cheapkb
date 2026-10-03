@@ -46,8 +46,13 @@ jobs:
       - run: npm run bundle:check
       # Advisories published upstream should not block a deploy of main;
       # PRs still fail on them and Dependabot opens the fix.
+      # GHSA-ch52-4w7c-c8xp (http-cache-semantics) has no fixed release and only reaches
+      # deploy-time npm tooling under @pulumi/pulumi. Drop it once a fix ships.
       - if: github.event_name == 'pull_request'
-        run: npm audit --audit-level=high
+        run: |
+          npm audit --json > audit.json || true
+          jq -r '[.vulnerabilities[].via[] | objects | select(.severity == "high" or .severity == "critical") | .url] | unique | map(select(test("GHSA-ch52-4w7c-c8xp") | not)) | .[]' audit.json > blocking.txt
+          if [ -s blocking.txt ]; then cat blocking.txt; exit 1; fi
       - if: github.event_name == 'pull_request'
         run: npm --prefix web audit --audit-level=high
 
