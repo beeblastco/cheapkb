@@ -51,8 +51,10 @@ const jwks = createRemoteJWKSet(
 );
 
 // GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
-// S3 Vectors caps the filterable part of a vector's metadata at 2 KB.
+// S3 Vectors caps the filterable part of a vector's metadata at 2 KB. Title, tags
+// and authors share MAX_METADATA_BYTES of it, so the rest of a chunk's metadata fits.
 const MAX_FILTERABLE_METADATA_BYTES = 2048;
+export const MAX_METADATA_BYTES = 1200;
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
@@ -1112,6 +1114,18 @@ export function matchesImageSignature(
   }
 
   return false;
+}
+
+/** UTF-8 size of the searchable metadata, measured the same way as the web client.
+ * Used by the upload and update handlers to hold title, tags and authors to budget. */
+export function metadataBytes(
+  title: unknown,
+  tags: unknown,
+  authors: unknown,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
+  );
 }
 
 export function storageCostNanoUsd(bytes: number, seconds: number): number {

@@ -23,6 +23,8 @@ import {
   extractUserId,
   getDocument,
   listDocumentChunkItems,
+  MAX_METADATA_BYTES,
+  metadataBytes,
   retagDocumentVectors,
 } from "../utils";
 
@@ -45,9 +47,6 @@ const LEASE_TTL_MS = 5 * 60 * 1000;
 // Matches the ingest adapter's grace for a POST that started just before its form
 // expired, so no edit can race a replacement that may still land.
 const REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
-// Matches the upload handler: title, tags and authors share the 2 KB filterable
-// metadata budget of a vector.
-const MAX_METADATA_BYTES = 1200;
 // Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
 // timeout if run one at a time.
 const CHUNK_REWRITE_CONCURRENCY = 8;
@@ -377,17 +376,6 @@ function json(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
-}
-
-/** UTF-8 size of the searchable metadata, measured the same way as the upload handler. */
-function metadataBytes(
-  title: unknown,
-  tags: unknown,
-  authors: unknown,
-): number {
-  return Buffer.byteLength(
-    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
-  );
 }
 
 /** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */

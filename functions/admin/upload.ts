@@ -20,6 +20,8 @@ import {
   extractUserId,
   getDocument,
   isDocumentInFlight,
+  MAX_METADATA_BYTES,
+  metadataBytes,
   recordUsage,
 } from "../utils";
 
@@ -32,9 +34,6 @@ const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES);
 const MAX_IMAGE_UPLOAD_BYTES = Number(process.env.MAX_IMAGE_UPLOAD_BYTES);
 const MAX_STORAGE_BYTES = Number(process.env.MAX_STORAGE_BYTES);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
-// S3 Vectors caps filterable metadata at 2 KB per vector; title, tags and authors
-// share this budget so the rest of a chunk's metadata always fits.
-const MAX_METADATA_BYTES = 1200;
 // Bounds GET /documents, which reads every document, and one account's share of
 // the pipeline queue.
 const MAX_DOCUMENTS = 1000;
@@ -417,17 +416,6 @@ function isShortStringArray(value: unknown): boolean {
     Array.isArray(value) &&
     value.length <= 20 &&
     value.every((item) => typeof item === "string" && item.length <= 100)
-  );
-}
-
-/** UTF-8 size of the searchable metadata, measured the same way as the web client. */
-function metadataBytes(
-  title: unknown,
-  tags: unknown,
-  authors: unknown,
-): number {
-  return Buffer.byteLength(
-    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
   );
 }
 
