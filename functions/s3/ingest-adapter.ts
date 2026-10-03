@@ -100,13 +100,7 @@ export async function handler(event: S3Event) {
     }
 
     if (doc.replacementToken) {
-      const finalized = await finalizeReplacement(
-        documentId,
-        doc,
-        key,
-        record.eventTime,
-        now,
-      );
+      const finalized = await finalizeReplacement(documentId, doc, key, now);
       if (!finalized) {
         console.log(
           `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
@@ -233,13 +227,12 @@ async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
   key: string,
-  uploadedAt: string,
   now: string,
 ): Promise<boolean> {
-  // A form that outlived its window is rolled back instead of replacing newer work.
-  // Lateness is judged by when S3 accepted the file, so a retry never changes it.
+  // Past the grace, edits and reindex may run again, so even a redriven event for a
+  // timely upload is rolled back rather than reset a document mid-operation.
   const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
-  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(uploadedAt)) {
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
     await revertReplacement(
       documentId,
       doc,
