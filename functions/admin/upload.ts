@@ -145,30 +145,13 @@ export async function handler(event: APIGatewayProxyEventV2) {
       pk: `USER#${userId}`,
       sk: `DOCUMENT#${dedupeKey}`,
     };
-    let mapping = await dynamo.send(
+    const mapping = await dynamo.send(
       new GetCommand({
         TableName: TableName,
         Key: mappingKey,
         ConsistentRead: true,
       }),
     );
-    // Documents stored before Unicode letters were kept are mapped under the old
-    // ASCII-only name, so a re-upload must still find them instead of duplicating.
-    const legacyFilename = (body.filename as string)
-      .trim()
-      .replace(/[^a-zA-Z0-9._-]/g, "_");
-    if (!mapping.Item && legacyFilename !== filename) {
-      mapping = await dynamo.send(
-        new GetCommand({
-          TableName: TableName,
-          Key: {
-            pk: `USER#${userId}`,
-            sk: `DOCUMENT#${createDedupeKey(userId, legacyFilename, mimeType)}`,
-          },
-          ConsistentRead: true,
-        }),
-      );
-    }
     const now = new Date().toISOString();
     let documentId: string;
     let sourceKey: string;

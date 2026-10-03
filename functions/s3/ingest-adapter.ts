@@ -239,7 +239,15 @@ async function finalizeReplacement(
     );
     return false;
   }
-  if (doc.status !== doc.replacementPreviousStatus) return false;
+  if (doc.status !== doc.replacementPreviousStatus) {
+    await revertReplacement(
+      documentId,
+      doc,
+      key,
+      "Replacement skipped because the document changed; upload it again",
+    );
+    return false;
+  }
   const chunkItems = await deleteDocumentVectors(
     documentId,
     dynamo,

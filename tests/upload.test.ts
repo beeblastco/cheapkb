@@ -321,39 +321,24 @@ describe("upload validation", () => {
     expect(createPresignedPost).not.toHaveBeenCalled();
   });
 
-  it("finds a document stored under the old ASCII-only filename", async () => {
+  it("never matches a new Unicode name to an old ASCII-only mapping", async () => {
     const legacyKey = createHash("sha256")
-      .update("user-1\0r_sum_.pdf\0application/pdf")
+      .update("user-1\0__.pdf\0application/pdf")
       .digest("hex");
-    dynamoMock.on(GetCommand).callsFake((input) => {
-      if (input.Key?.sk === `DOCUMENT#${legacyKey}`) {
-        return { Item: { documentId: "doc-old" } };
-      }
-      if (input.Key?.pk === "DOC#doc-old") {
-        return {
-          Item: {
-            pk: "DOC#doc-old",
-            sk: "META",
-            userId: "user-1",
-            status: "EMBEDDED",
-            sourceKey: "raw/doc-old/r_sum_.pdf",
-            updatedAt: "2026-01-01T00:00:00.000Z",
-          },
-        };
-      }
-      return {};
-    });
-    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.sk === `DOCUMENT#${legacyKey}`
+          ? { Item: { documentId: "doc-old" } }
+          : {},
+      );
 
     const response = await handler(
-      jsonApiEvent({ filename: "résumé.pdf", mimeType: "application/pdf" }),
+      jsonApiEvent({ filename: "总结.pdf", mimeType: "application/pdf" }),
     );
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toMatchObject({
-      documentId: "doc-old",
-      reused: true,
-    });
+    expect(JSON.parse(response.body).reused).toBe(false);
   });
 
   it("rejects a new document at the per-account document cap", async () => {

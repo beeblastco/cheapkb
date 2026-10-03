@@ -432,7 +432,7 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
-  it("leaves data alone when the document moved on before the replacement landed", async () => {
+  it("rolls back a replacement when the document moved on before it landed", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {
         status: "QUEUED",
@@ -446,10 +446,18 @@ describe("S3 ingest adapter", () => {
       Metadata: { "upload-token": "token-1" },
     });
 
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [{ Key: "raw/doc-1/sample.txt", VersionId: "v2" }],
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+
     await handler(s3Event());
 
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    // The new file is rolled back so the source keeps matching what search holds.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
   });
 
   it("deletes a late upload whose document no longer exists", async () => {
