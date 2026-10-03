@@ -36,6 +36,7 @@ const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
 // A POST that starts just before its form expires can finish minutes later.
 const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
+const REPLACING_STATUS = "REPLACING";
 const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
@@ -219,35 +220,71 @@ async function claimDispatch(
   }
 }
 
-/** Deletes the old derived data and promotes the pending replacement metadata. Returns
- * false for a stale event; throws so S3 retries while the same replacement is still blocked. */
+/** Moves the row to REPLACING while the token and previous status still hold, so the
+ * old data is only deleted once nothing else can claim the document. */
+async function claimReplacement(
+  documentId: string,
+  doc: DocumentRow,
+  now: string,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression: "SET #s = :replacing, updatedAt = :now",
+        ConditionExpression:
+          "replacementToken = :token AND #s = :previousStatus",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":now": now,
+          ":previousStatus": doc.replacementPreviousStatus,
+          ":replacing": REPLACING_STATUS,
+          ":token": doc.replacementToken,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
+  }
+}
+
+/** Claims the row as REPLACING, deletes the old derived data, then promotes the pending
+ * metadata. Returns false for a stale event; a retry after the claim resumes the cleanup. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
   key: string,
   now: string,
 ): Promise<boolean> {
-  // Checked before any delete: a replacement that can no longer claim the row must
-  // leave its data alone. A form that outlived its window is rolled back instead.
-  const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
-  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
-    await revertReplacement(
-      documentId,
-      doc,
-      key,
-      "Replacement arrived too late",
-    );
-    return false;
+  if (doc.status !== REPLACING_STATUS) {
+    // A form that outlived its window, or a document that moved on, keeps its
+    // current data and gets the new file rolled back instead.
+    const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
+    if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+      await revertReplacement(
+        documentId,
+        doc,
+        key,
+        "Replacement arrived too late",
+      );
+      return false;
+    }
+    if (!(await claimReplacement(documentId, doc, now))) {
+      await revertReplacement(
+        documentId,
+        doc,
+        key,
+        "Replacement skipped because the document changed; upload it again",
+      );
+      return false;
+    }
   }
-  if (doc.status !== doc.replacementPreviousStatus) {
-    await revertReplacement(
-      documentId,
-      doc,
-      key,
-      "Replacement skipped because the document changed; upload it again",
-    );
-    return false;
-  }
+
+  // The row is REPLACING, so edits, reindex and other events stay out while the
+  // old data goes; a crash here is resumed by the S3 retry.
   const chunkItems = await deleteDocumentVectors(
     documentId,
     dynamo,
@@ -266,8 +303,7 @@ async function finalizeReplacement(
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
-        ConditionExpression:
-          "replacementToken = :token AND #s = :previousStatus",
+        ConditionExpression: "replacementToken = :token AND #s = :replacing",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
           ":uploaded": "UPLOADED",
@@ -279,22 +315,16 @@ async function finalizeReplacement(
           ":now": now,
           ":gsi1pk": "STATUS#UPLOADED",
           ":token": doc.replacementToken,
-          ":previousStatus": doc.replacementPreviousStatus,
+          ":replacing": REPLACING_STATUS,
         },
       }),
     );
     return true;
   } catch (error) {
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    // Another event finished this replacement, or a delete took the row.
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
   }
-  // The old data is already gone, so a replacement blocked by an edit or reindex
-  // must retry until it lands; a changed token means another event finalized it.
-  const current = await getDocument(documentId, dynamo, TableName);
-  if (current?.replacementToken === doc.replacementToken) {
-    throw new Error(`Replacement for ${documentId} is blocked, retrying`);
-  }
-
-  return false;
 }
 
 /** Marks the claimed dispatch as sent once the parse message is on the queue. */
@@ -373,6 +403,8 @@ async function refuseOverAllowance(
   now: string,
 ): Promise<boolean> {
   if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
+  // A replacement already claimed may have deleted the old data, so it must finish.
+  if (doc.status === REPLACING_STATUS) return false;
   const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
   if (allowed) return false;
 

@@ -450,7 +450,16 @@ describe("S3 ingest adapter", () => {
       Versions: [{ Key: "raw/doc-1/sample.txt", VersionId: "v2" }],
     });
     s3Mock.on(DeleteObjectCommand).resolves({});
-    dynamoMock.on(UpdateCommand).resolves({});
+    // The claim loses because the status moved on; recording the reason succeeds.
+    dynamoMock
+      .on(UpdateCommand)
+      .rejectsOnce(
+        new ConditionalCheckFailedException({
+          message: "status changed",
+          $metadata: {},
+        }),
+      )
+      .resolves({});
 
     await handler(s3Event());
 
@@ -489,34 +498,37 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
-  it("retries a replacement whose claim was blocked by an edit lease", async () => {
-    const replacement = {
-      mimeType: "text/plain",
-      replacementToken: "token-1",
-      replacementPreviousStatus: "EMBEDDED",
-      pendingFilename: "sample.txt",
-      pendingTitle: "Replacement",
-    };
-    dynamoMock
-      .on(GetCommand)
-      .resolvesOnce({ Item: { ...replacement, status: "EMBEDDED" } })
-      .resolves({ Item: { ...replacement, status: "UPDATING" } });
-    dynamoMock.on(QueryCommand).resolves({ Items: [] });
-    dynamoMock.on(UpdateCommand).rejects(
-      new ConditionalCheckFailedException({
-        message: "status changed",
-        $metadata: {},
-      }),
-    );
+  it("resumes the cleanup of a replacement it already claimed", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "REPLACING",
+        mimeType: "text/plain",
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+        pendingFilename: "sample.txt",
+        pendingTitle: "Replacement",
+      },
+    });
+    dynamoMock.on(QueryCommand).resolves({
+      Items: [{ pk: "DOC#doc-1", sk: "CHUNK#1", chunkId: "chunk-1" }],
+    });
+    dynamoMock.on(BatchWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
     s3Mock.on(HeadObjectCommand).resolves({
       Metadata: { "upload-token": "token-1" },
     });
     s3Mock.on(ListObjectVersionsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
 
-    // The old chunks are already gone, so dropping the event would strand the
-    // document with no search data and the new source never parsed.
-    await expect(handler(s3Event())).rejects.toThrow("blocked");
-    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    await handler(s3Event());
+
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(1);
+    const promoted = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(promoted.ConditionExpression).toBe(
+      "replacementToken = :token AND #s = :replacing",
+    );
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
 
   it("drops a replacement event another event already finalized", async () => {

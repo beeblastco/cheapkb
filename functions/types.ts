@@ -22,6 +22,7 @@ export type DocumentStatus =
   | "CHUNKED"
   | "EMBEDDING"
   | "EMBEDDED"
+  | "REPLACING"
   | "DELETING"
   | "FAILED";
 

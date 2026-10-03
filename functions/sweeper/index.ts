@@ -29,6 +29,7 @@ const SETTLED_STATUSES = new Set([
   "DELETING",
   "EMBEDDED",
   "FAILED",
+  "REPLACING",
   "UPDATING",
 ]);
 const STAGE_STEPS: Record<string, string> = {
