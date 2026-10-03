@@ -6,6 +6,7 @@ import {
 import {
   DeleteObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
@@ -95,10 +96,7 @@ export async function handler(event: S3Event) {
       continue;
     }
 
-    const { versionId } = record.s3.object;
-    if (
-      await refuseOverAllowance(documentId, doc, key, eventId, versionId, now)
-    ) {
+    if (await refuseOverAllowance(documentId, doc, key, eventId, now)) {
       continue;
     }
 
@@ -346,7 +344,6 @@ async function refuseOverAllowance(
   doc: DocumentRow,
   key: string,
   eventId: string,
-  versionId: string | undefined,
   now: string,
 ): Promise<boolean> {
   if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
@@ -355,7 +352,7 @@ async function refuseOverAllowance(
 
   const message = "Monthly usage allowance reached. Upgrade to continue.";
   if (doc.replacementToken) {
-    await revertReplacement(documentId, doc, key, versionId, message);
+    await revertReplacement(documentId, doc, key, message);
     return true;
   }
   // Another event claimed the upload first; a retry recounts it as dispatched.
@@ -396,38 +393,41 @@ async function removeLateUpload(
   return null;
 }
 
-/** Removes a refused replacement's version so S3 falls back to the source the
- * search data came from, then clears the pending replacement with the reason. */
+/** Removes every version a refused replacement form wrote, so S3 falls back to the
+ * source the search data came from. The token stays until it expires with the form. */
 async function revertReplacement(
   documentId: string,
   doc: DocumentRow,
   key: string,
-  versionId: string | undefined,
   reason: string,
 ): Promise<void> {
-  if (!versionId) return;
-  const object = await s3.send(
-    new HeadObjectCommand({
-      Bucket: StorageBucketName,
-      Key: key,
-      VersionId: versionId,
-    }),
+  const listed = await s3.send(
+    new ListObjectVersionsCommand({ Bucket: StorageBucketName, Prefix: key }),
   );
-  if (object.Metadata?.["upload-token"] !== doc.replacementToken) return;
-  await s3.send(
-    new DeleteObjectCommand({
-      Bucket: StorageBucketName,
-      Key: key,
-      VersionId: versionId,
-    }),
-  );
+  for (const version of listed.Versions ?? []) {
+    if (version.Key !== key) continue;
+    const object = await s3.send(
+      new HeadObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: version.VersionId,
+      }),
+    );
+    if (object.Metadata?.["upload-token"] !== doc.replacementToken) continue;
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: version.VersionId,
+      }),
+    );
+  }
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET lastError = :e REMOVE replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+        UpdateExpression: "SET lastError = :e",
         ConditionExpression: "replacementToken = :token",
         ExpressionAttributeValues: {
           ":e": reason,

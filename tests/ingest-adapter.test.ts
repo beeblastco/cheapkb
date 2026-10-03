@@ -443,7 +443,7 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
-  it("reverts a replacement refused for allowance to the previous source", async () => {
+  it("reverts every version a refused replacement form wrote", async () => {
     usage.checkUsageLimit.mockResolvedValue({ allowed: false });
     dynamoMock.on(GetCommand).resolves({
       Item: {
@@ -455,21 +455,32 @@ describe("S3 ingest adapter", () => {
         replacementPreviousStatus: "EMBEDDED",
       },
     });
-    s3Mock.on(HeadObjectCommand).resolves({
-      Metadata: { "upload-token": "token-1" },
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [
+        { Key: "raw/doc-1/sample.txt", VersionId: "v3" },
+        { Key: "raw/doc-1/sample.txt", VersionId: "v2" },
+        { Key: "raw/doc-1/sample.txt", VersionId: "v1" },
+      ],
     });
+    s3Mock
+      .on(HeadObjectCommand)
+      .callsFake((input) =>
+        input.VersionId === "v1"
+          ? { Metadata: {} }
+          : { Metadata: { "upload-token": "token-1" } },
+      );
     s3Mock.on(DeleteObjectCommand).resolves({});
-    const event = s3Event();
-    event.Records[0].s3.object.versionId = "v2";
 
-    await handler(event);
+    await handler(s3Event());
 
     expect(
-      s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.VersionId,
-    ).toBe("v2");
-    const cleared = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
-    expect(cleared.UpdateExpression).toContain("REMOVE replacementToken");
-    expect(cleared.ExpressionAttributeValues?.[":e"]).toContain("allowance");
+      s3Mock
+        .commandCalls(DeleteObjectCommand)
+        .map((call) => call.args[0].input.VersionId),
+    ).toEqual(["v3", "v2"]);
+    const recorded = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(recorded.UpdateExpression).toBe("SET lastError = :e");
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
