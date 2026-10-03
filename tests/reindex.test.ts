@@ -109,7 +109,7 @@ describe("reindex migration", () => {
     const claim = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
     // Landing the replacement deletes the chunks this reindex would process.
     expect(claim.ConditionExpression).toContain(
-      "attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff",
+      "attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff",
     );
     // The cutoff includes the adapter's 15-minute grace for a late POST.
     const cutoff = Date.parse(

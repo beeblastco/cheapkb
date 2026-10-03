@@ -225,7 +225,7 @@ async function acquireLease(
           "SET #s = :updating, gsi1pk = :gsi1pk, gsi1sk = :now, previousStatus = :restoreTo, updatedAt = :now",
         // A pending replacement deletes chunks and vectors when it lands, so it
         // must not run under an edit; reserveReplacement refuses UPDATING likewise.
-        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff)`,
+        ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)`,
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":updating": UPDATING_STATUS,

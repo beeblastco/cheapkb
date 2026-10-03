@@ -210,8 +210,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
         UpdateExpression:
           "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
         ConditionExpression: doc.updatedAt
-          ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff)"
-          : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :replacementCutoff)",
+          ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)"
+          : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":s": "QUEUED",
