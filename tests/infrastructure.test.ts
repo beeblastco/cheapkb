@@ -94,6 +94,11 @@ describe("infrastructure hardening", () => {
     expect(config).not.toContain('api.route("PATCH /account/plan"');
   });
 
+  it("bounds log retention for every function", () => {
+    expect(config).toContain("$transform(sst.aws.Function");
+    expect(config).toContain('args.logging = { retention: "1 month" }');
+  });
+
   it("expires noncurrent object versions", () => {
     expect(config).toContain("BucketLifecycleConfigurationV2");
     expect(config).toContain("noncurrentDays: 7");

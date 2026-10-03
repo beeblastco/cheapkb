@@ -1,14 +1,18 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import type { Document, DocumentRow } from "../types";
-import { docId, extractUserId } from "../utils";
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import type { DocumentRow } from "../types";
+import { docId, dynamo, extractUserId, isDocumentInFlight } from "../utils";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 
-/** GET /documents: lists every document the caller owns, newest first. */
-export async function handler(event: APIGatewayProxyEventV2) {
+/** GET /documents: lists every document the caller owns, newest first.
+ * inFlight uses the upload handler's rule, so the client can wait for a free slot. */
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -26,27 +30,27 @@ export async function handler(event: APIGatewayProxyEventV2) {
         ExclusiveStartKey: lastKey,
       }),
     );
-    allItems.push(...((res.Items as unknown as DocumentRow[]) ?? []));
+    allItems.push(...((res.Items as DocumentRow[] | undefined) ?? []));
     lastKey = res.LastEvaluatedKey;
   } while (lastKey);
 
-  const documents: Document[] = allItems.map((doc: DocumentRow) => {
-    return {
-      documentId: docId(doc.pk),
-      title: doc.title,
-      status: doc.status,
-      userId: doc.userId,
-      lastError: doc.lastError ?? null,
-      retryCount: doc.retryCount ?? 0,
-      failedStep: doc.failedStep ?? null,
-      mimeType: doc.mimeType,
-      tags: doc.tags ?? null,
-      authors: doc.authors ?? null,
-      year: doc.year ?? null,
-      createdAt: doc.createdAt,
-      updatedAt: doc.updatedAt,
-    };
-  });
+  const nowMs = Date.now();
+  const documents = allItems.map((doc) => ({
+    documentId: docId(doc.pk),
+    title: doc.title,
+    status: doc.status,
+    userId: doc.userId,
+    lastError: doc.lastError ?? null,
+    retryCount: doc.retryCount ?? 0,
+    failedStep: doc.failedStep ?? null,
+    mimeType: doc.mimeType,
+    tags: doc.tags ?? null,
+    authors: doc.authors ?? null,
+    year: doc.year ?? null,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+    inFlight: isDocumentInFlight(doc, nowMs),
+  }));
 
   return {
     statusCode: 200,

@@ -1,10 +1,15 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import { extractUserId, getUsageSummary } from "../utils";
 
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 
 /** GET /account/usage: returns the caller's usage summary for the current month. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 

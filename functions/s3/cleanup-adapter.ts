@@ -1,28 +1,21 @@
-import type { S3Event } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
-import {
-  DeleteCommand,
-  DynamoDBDocumentClient,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type { S3Event } from "aws-lambda";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
   deleteS3Prefix,
+  dynamo,
   getDocument,
   updateStorageBytes,
 } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
@@ -30,7 +23,7 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
 /** S3 ObjectRemoved handler for raw/ objects; deletes the document's vectors, data and records. */
-export async function handler(event: S3Event) {
+export async function handler(event: S3Event): Promise<void> {
   for (const record of event.Records ?? []) {
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
     const parts = key.split("/");
@@ -98,20 +91,15 @@ export async function handler(event: S3Event) {
       throw new Error(errors.join("; "));
     }
 
-    try {
-      if (document?.countedBytes) {
-        await updateStorageBytes(
-          document.userId,
-          AccountsTableName,
-          -document.countedBytes,
-          `delete:${documentId}`,
-        );
-      }
-      await deleteDynamoRecords(documentId, chunkItems, document);
-    } catch (err) {
-      console.error(`[cleanup-adapter] dynamo delete failed:`, err);
-      throw err;
+    if (document?.countedBytes) {
+      await updateStorageBytes(
+        document.userId,
+        AccountsTableName,
+        -document.countedBytes,
+        `delete:${documentId}`,
+      );
     }
+    await deleteDynamoRecords(documentId, chunkItems, document);
     console.log(`[cleanup-adapter] Completed cleanup for ${documentId}`);
   }
 }
@@ -121,7 +109,7 @@ async function deleteDynamoRecords(
   documentId: string,
   chunkItems: ChunkItem[],
   document: DocumentRow | null,
-) {
+): Promise<void> {
   await deleteDocumentChunkRecords(chunkItems, dynamo, TableName);
   if (document) {
     await dynamo.send(
@@ -145,20 +133,18 @@ async function deleteDynamoRecords(
 
 /** Marks the document DELETING so pipeline stages stop writing to it. Returns false
  * while a replacement upload is reserved, since upload cannot reserve a DELETING one. */
-async function markDeleting(documentId: string) {
+async function markDeleting(documentId: string): Promise<boolean> {
   const now = new Date().toISOString();
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+        UpdateExpression: "SET #s = :s, updatedAt = :t",
         ConditionExpression:
           "attribute_exists(pk) AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :t)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
-          ":gsi1pk": "STATUS#DELETING",
           ":s": "DELETING",
           ":t": now,
         },
@@ -175,7 +161,7 @@ async function markDeleting(documentId: string) {
 }
 
 /** Reports whether the removed object has been uploaded again since the event. */
-async function objectExists(key: string) {
+async function objectExists(key: string): Promise<boolean> {
   try {
     await s3.send(
       new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),

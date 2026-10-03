@@ -1,7 +1,5 @@
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
 import {
-  DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
@@ -9,50 +7,38 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import type { Conditions } from "@aws-sdk/s3-presigned-post/dist-types/types";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import { createHash, randomUUID } from "node:crypto";
 import type { DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
+  dynamo,
   extractUserId,
+  getDocument,
+  isDocumentInFlight,
   recordUsage,
 } from "../utils";
 
 const s3 = new S3Client({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "52428800",
-  10,
-);
-const MAX_IMAGE_UPLOAD_BYTES = Math.min(
-  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-  5 * 1024 * 1024,
-);
-const MAX_STORAGE_BYTES = parseInt(
-  process.env.MAX_STORAGE_BYTES ?? "1073741824",
-  10,
-);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES);
+const MAX_IMAGE_UPLOAD_BYTES = Number(process.env.MAX_IMAGE_UPLOAD_BYTES);
+const MAX_STORAGE_BYTES = Number(process.env.MAX_STORAGE_BYTES);
 const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
 // S3 Vectors caps filterable metadata at 2 KB per vector; title, tags and authors
 // share this budget so the rest of a chunk's metadata always fits.
 const MAX_METADATA_BYTES = 1200;
 // Bounds GET /documents, which reads every document, and one account's share of
-// the pipeline queue. A document idle for an hour no longer counts as in flight.
+// the pipeline queue.
 const MAX_DOCUMENTS = 1000;
 const MAX_IN_FLIGHT_DOCUMENTS = 10;
-const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
-// UPDATING is a tag edit, not pipeline work.
-const SETTLED_STATUSES = new Set([
-  "DELETING",
-  "EMBEDDED",
-  "FAILED",
-  "UPDATING",
-]);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -65,7 +51,9 @@ const ALLOWED_MIME_TYPES = new Set([
 const REPLACEABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
 /** POST /upload: creates or reserves a document and returns a presigned S3 POST for its source. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -141,14 +129,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
   try {
     const filename = sanitizeFilename(body.filename as string);
     const dedupeKey = createDedupeKey(userId, filename, mimeType);
-    const mappingKey = {
-      pk: `USER#${userId}`,
-      sk: `DOCUMENT#${dedupeKey}`,
-    };
     const mapping = await dynamo.send(
       new GetCommand({
         TableName: TableName,
-        Key: mappingKey,
+        Key: { pk: `USER#${userId}`, sk: `DOCUMENT#${dedupeKey}` },
         ConsistentRead: true,
       }),
     );
@@ -167,20 +151,13 @@ export async function handler(event: APIGatewayProxyEventV2) {
       return {
         statusCode: 429,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: limitError }),
+        body: JSON.stringify(limitError),
       };
     }
 
     if (mapping?.Item) {
       ({ documentId } = mapping.Item);
-      const result = await dynamo.send(
-        new GetCommand({
-          TableName: TableName,
-          Key: { pk: `DOC#${documentId}`, sk: "META" },
-          ConsistentRead: true,
-        }),
-      );
-      const document = result?.Item as DocumentRow | undefined;
+      const document = await getDocument(documentId, dynamo, TableName);
       if (!document) return conflictResponse("Document mapping is invalid");
       if (!REPLACEABLE_STATUSES.has(document.status)) {
         return conflictResponse("Document is being processed");
@@ -260,17 +237,17 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
-/** Returns an error when the account is at its storage or in-flight cap, or at its
+/** Returns the 429 body when the account is at its storage or in-flight cap, or at its
  * document cap for a new document, else null. Concurrent requests can overshoot. */
 async function checkAccountLimits(
   userId: string,
   storageBytes: number,
   isNew: boolean,
-): Promise<string | null> {
+): Promise<{ error: string; code?: string } | null> {
   // Bytes are counted when S3 accepts a file, so an account can pass the cap
   // by the uploads already in flight.
   if (storageBytes >= MAX_STORAGE_BYTES) {
-    return "Storage limit reached. Delete documents to upload more.";
+    return { error: "Storage limit reached. Delete documents to upload more." };
   }
   const nowMs = Date.now();
   let total = 0;
@@ -290,20 +267,86 @@ async function checkAccountLimits(
     );
     for (const item of result.Items ?? []) {
       total += 1;
-      if (isInFlight(item, nowMs)) inFlight += 1;
+      if (isDocumentInFlight(item, nowMs)) inFlight += 1;
     }
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
 
   if (isNew && total >= MAX_DOCUMENTS) {
-    return "Document limit reached. Delete documents to upload more.";
+    return {
+      error: "Document limit reached. Delete documents to upload more.",
+    };
   }
   if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
     // web/src/lib/client.ts matches this text to wait and retry.
-    return "Too many documents processing. Try again when they finish.";
+    return {
+      error: "Too many documents processing. Try again when they finish.",
+      code: "PROCESSING_LIMIT",
+    };
   }
 
   return null;
+}
+
+/** Writes the dedupe mapping and META row together; false when the file is already being uploaded. */
+async function createDocument(
+  documentId: string,
+  userId: string,
+  filename: string,
+  mimeType: string,
+  dedupeKey: string,
+  sourceKey: string,
+  body: Record<string, unknown>,
+  now: string,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TableName,
+              Item: {
+                pk: `USER#${userId}`,
+                sk: `DOCUMENT#${dedupeKey}`,
+                documentId: documentId,
+                createdAt: now,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+          {
+            Put: {
+              TableName: TableName,
+              Item: {
+                pk: `DOC#${documentId}`,
+                sk: "META",
+                userId: userId,
+                filename: filename,
+                dedupeKey: dedupeKey,
+                title: body.title ?? filename,
+                sourceKey: sourceKey,
+                mimeType: mimeType,
+                status: "UPLOADED",
+                tags: body.tags ?? null,
+                authors: body.authors ?? null,
+                year: body.year ?? null,
+                createdAt: now,
+                updatedAt: now,
+                gsi2pk: `USER#${userId}`,
+                gsi2sk: now,
+              },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+        ],
+      }),
+    );
+    return true;
+  } catch (error) {
+    if ((error as Error).name === "TransactionCanceledException") return false;
+    throw error;
+  }
 }
 
 /** Claims an existing document for a re-upload; false when another upload holds it or it is busy. */
@@ -313,7 +356,7 @@ async function reserveReplacement(
   filename: string,
   body: Record<string, unknown>,
   now: string,
-) {
+): Promise<boolean> {
   const replacementExpiresAt = new Date(
     Date.now() + REPLACEMENT_TTL_MS,
   ).toISOString();
@@ -351,67 +394,50 @@ async function reserveReplacement(
   }
 }
 
-/** Writes the dedupe mapping and META row together; false when the file is already being uploaded. */
-async function createDocument(
-  documentId: string,
+function conflictResponse(error: string): APIGatewayProxyStructuredResultV2 {
+  return {
+    statusCode: 409,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ error: error }),
+  };
+}
+
+function createDedupeKey(
   userId: string,
   filename: string,
   mimeType: string,
-  dedupeKey: string,
-  sourceKey: string,
-  body: Record<string, unknown>,
-  now: string,
-) {
-  try {
-    await dynamo.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Put: {
-              TableName: TableName,
-              Item: {
-                pk: `USER#${userId}`,
-                sk: `DOCUMENT#${dedupeKey}`,
-                documentId: documentId,
-                createdAt: now,
-              },
-              ConditionExpression: "attribute_not_exists(pk)",
-            },
-          },
-          {
-            Put: {
-              TableName: TableName,
-              Item: {
-                pk: `DOC#${documentId}`,
-                sk: "META",
-                userId: userId,
-                filename: filename,
-                dedupeKey: dedupeKey,
-                title: body.title ?? filename,
-                sourceKey: sourceKey,
-                mimeType: mimeType,
-                status: "UPLOADED",
-                tags: body.tags ?? null,
-                authors: body.authors ?? null,
-                year: body.year ?? null,
-                createdAt: now,
-                updatedAt: now,
-                gsi1pk: "STATUS#UPLOADED",
-                gsi1sk: now,
-                gsi2pk: `USER#${userId}`,
-                gsi2sk: now,
-              },
-              ConditionExpression: "attribute_not_exists(pk)",
-            },
-          },
-        ],
-      }),
-    );
-    return true;
-  } catch (error) {
-    if ((error as Error).name === "TransactionCanceledException") return false;
-    throw error;
-  }
+): string {
+  return createHash("sha256")
+    .update(`${userId}\0${filename}\0${mimeType}`)
+    .digest("hex");
+}
+
+function isShortStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= 20 &&
+    value.every((item) => typeof item === "string" && item.length <= 100)
+  );
+}
+
+/** UTF-8 size of the searchable metadata, measured the same way as the web client. */
+function metadataBytes(
+  title: unknown,
+  tags: unknown,
+  authors: unknown,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
+  );
+}
+
+/** Feeds the S3 key and the dedupe key. Unicode letters, marks and digits are kept so
+ * distinct non-ASCII names stay distinct; an ASCII name maps exactly as before. */
+function sanitizeFilename(filename: string): string {
+  return filename
+    .trim()
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{M}\p{N}._-]/gu, "_");
 }
 
 /** Returns a validation message for a bad upload body, or null when it is valid. */
@@ -460,57 +486,4 @@ function validateBody(body: Record<string, unknown>): string | null {
     return `Title, tags and authors together must be ${MAX_METADATA_BYTES} bytes or fewer`;
   }
   return null;
-}
-
-/** UTF-8 size of the searchable metadata, measured the same way as the web client. */
-function metadataBytes(
-  title: unknown,
-  tags: unknown,
-  authors: unknown,
-): number {
-  return Buffer.byteLength(
-    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
-  );
-}
-
-/** Feeds the S3 key and the dedupe key. Unicode letters, marks and digits are kept so
- * distinct non-ASCII names stay distinct; an ASCII name maps exactly as before. */
-function sanitizeFilename(filename: string): string {
-  return filename
-    .trim()
-    .normalize("NFC")
-    .replace(/[^\p{L}\p{M}\p{N}._-]/gu, "_");
-}
-
-function createDedupeKey(userId: string, filename: string, mimeType: string) {
-  return createHash("sha256")
-    .update(`${userId}\0${filename}\0${mimeType}`)
-    .digest("hex");
-}
-
-/** A pending replacement counts until its form expires. An unused upload form
- * stops counting after its 15 minutes, other pipeline work after an hour. */
-function isInFlight(item: Record<string, unknown>, nowMs: number): boolean {
-  if (Date.parse(String(item.replacementExpiresAt ?? "")) > nowMs) return true;
-  if (SETTLED_STATUSES.has(String(item.status))) return false;
-  const windowMs =
-    item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
-
-  return nowMs - Date.parse(String(item.updatedAt ?? "")) < windowMs;
-}
-
-function isShortStringArray(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length <= 20 &&
-    value.every((item) => typeof item === "string" && item.length <= 100)
-  );
-}
-
-function conflictResponse(error: string) {
-  return {
-    statusCode: 409,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ error: error }),
-  };
 }

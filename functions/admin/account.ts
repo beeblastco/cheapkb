@@ -1,13 +1,24 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import type { AccountRow } from "../types";
-import { accountId, dynamo, extractUserId, getDefaultPlan } from "../utils";
+import {
+  accountId,
+  defaultPlanId,
+  dynamo,
+  extractUserId,
+  getDefaultPlan,
+} from "../utils";
 
 const tableName = process.env.ACCOUNTS_TABLE_NAME!;
 const plansTableName = process.env.PLANS_TABLE_NAME!;
 
 /** GET /account: returns the caller's profile, plan and stored bytes. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -33,7 +44,7 @@ export async function handler(event: APIGatewayProxyEventV2) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       userId: accountId(account.pk),
-      planId: plan?.planId ?? process.env.DEFAULT_PLAN_ID ?? "basic",
+      planId: plan?.planId ?? defaultPlanId(),
       priceMonthlyCents: plan?.priceMonthlyCents ?? 0,
       monthlyAllowanceCents: plan?.monthlyAllowanceCents ?? 0,
       storageBytes: account.storageBytes,

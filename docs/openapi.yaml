@@ -36,7 +36,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: Rate limit, monthly allowance, storage limit, 1,000-document limit, or 10 documents already processing
+          description: Rate limit, monthly allowance, storage limit, 1,000-document limit, or 10 documents already processing. The last one carries code PROCESSING_LIMIT, so a client can wait for a slot and retry.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -424,6 +424,10 @@ components:
       properties:
         error:
           type: string
+        code:
+          type: string
+          enum: [PROCESSING_LIMIT]
+          description: Set when an upload is refused because 10 documents are already processing
 
     UploadRequest:
       type: object
@@ -674,6 +678,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        inFlight:
+          type: boolean
+          description: GET /documents only. True while the document counts toward the 10 documents one account can process at once.
 
     DocumentDetailResponse:
       type: object

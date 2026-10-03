@@ -10,6 +10,12 @@ import { mockClient } from "aws-sdk-client-mock";
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// sst.config.ts sets these limits for every function, clamping images to 5 MB.
+vi.hoisted(() => {
+  process.env.MAX_UPLOAD_BYTES = "52428800";
+  process.env.MAX_IMAGE_UPLOAD_BYTES = "5242880";
+  process.env.MAX_STORAGE_BYTES = "1073741824";
+});
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
@@ -86,7 +92,7 @@ describe("upload validation", () => {
     const response = await handler(jsonApiEvent(null));
 
     expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body).error).toBe(
+    expect(JSON.parse(response.body!).error).toBe(
       "Request body must be an object",
     );
   });
@@ -147,7 +153,7 @@ describe("upload validation", () => {
     const response = await handler(
       jsonApiEvent({ filename: "file.pdf", mimeType: "application/pdf" }),
     );
-    const body = JSON.parse(response.body);
+    const body = JSON.parse(response.body!);
 
     expect(response.statusCode).toBe(200);
     expect(body.documentId).toBe("doc-existing");
@@ -193,8 +199,8 @@ describe("upload validation", () => {
       jsonApiEvent({ filename: "file.txt", mimeType: "text/plain" }),
     );
 
-    expect(JSON.parse(first.body).documentId).not.toBe(
-      JSON.parse(second.body).documentId,
+    expect(JSON.parse(first.body!).documentId).not.toBe(
+      JSON.parse(second.body!).documentId,
     );
     expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
   });
@@ -292,6 +298,10 @@ describe("upload validation", () => {
     );
 
     expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body!)).toEqual({
+      error: "Too many documents processing. Try again when they finish.",
+      code: "PROCESSING_LIMIT",
+    });
   });
 
   it("rejects title, tags and authors over the shared metadata budget", async () => {
@@ -304,7 +314,7 @@ describe("upload validation", () => {
     );
 
     expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body).error).toContain("1200 bytes");
+    expect(JSON.parse(response.body!).error).toContain("1200 bytes");
     expect(createPresignedPost).not.toHaveBeenCalled();
   });
 

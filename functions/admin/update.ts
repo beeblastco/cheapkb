@@ -1,8 +1,4 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommand,
@@ -12,13 +8,18 @@ import {
   DeleteVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
   chunkId,
   deleteS3Prefix,
+  dynamo,
   extractUserId,
   getDocument,
   listDocumentChunkItems,
@@ -27,7 +28,6 @@ import {
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
@@ -60,7 +60,9 @@ interface Lease {
 }
 
 /** PATCH /documents/{id}: replaces an owned document's tags in META, chunk JSON and vectors. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -101,11 +103,10 @@ export async function handler(event: APIGatewayProxyEventV2) {
   if (validationError) return json(400, { error: validationError });
 
   const document = await getDocument(documentId, dynamo, TableName);
-  if (!document) return json(404, { error: "Document not found" });
-  if (document.userId !== userId) {
+  if (!document || document.userId !== userId) {
     return json(404, { error: "Document not found" });
   }
-  if (!isEditable(document)) {
+  if (!EDITABLE_STATUSES.has(document.status) && !isLeaseExpired(document)) {
     return json(409, {
       error: `Cannot edit metadata while the document is ${document.status}`,
     });
@@ -174,31 +175,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
   }
 }
 
-function json(statusCode: number, body: unknown) {
-  return {
-    statusCode: statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
-
-function isEditable(document: DocumentRow): boolean {
-  if (EDITABLE_STATUSES.has(document.status)) return true;
-  return isLeaseExpired(document);
-}
-
-// An UPDATING row whose lease has outlived the function's own timeout belongs to
-// a handler that died before releasing it, so it is safe to take over.
-function isLeaseExpired(document: DocumentRow): boolean {
-  if (document.status !== UPDATING_STATUS) return false;
-  const heldSince = Date.parse(document.updatedAt ?? "");
-  return !Number.isFinite(heldSince) || Date.now() - heldSince > LEASE_TTL_MS;
-}
-
-/**
- * Returns the lease, or null if it was not taken. updatedAt doubles as the
- * revision token and the lease timestamp.
- */
+/** Returns the lease, or null if it was not taken. updatedAt doubles as the
+ * revision token and the lease timestamp. */
 async function acquireLease(
   document: DocumentRow,
   userId: string,
@@ -219,17 +197,14 @@ async function acquireLease(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: document.pk, sk: document.sk },
-        // gsi1pk mirrors status everywhere else in the pipeline; leaving it
-        // behind would hand a stale status to the first query that uses it.
         UpdateExpression:
-          "SET #s = :updating, gsi1pk = :gsi1pk, gsi1sk = :now, previousStatus = :restoreTo, updatedAt = :now",
+          "SET #s = :updating, previousStatus = :restoreTo, updatedAt = :now",
         // A pending replacement deletes chunks and vectors when it lands, so it
         // must not run under an edit; reserveReplacement refuses UPDATING likewise.
         ConditionExpression: `userId = :userId AND #s = :expected AND ${revisionMatches} AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)`,
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":updating": UPDATING_STATUS,
-          ":gsi1pk": `STATUS#${UPDATING_STATUS}`,
           ":restoreTo": restoreTo,
           ":now": heldSince,
           ":replacementCutoff": new Date(
@@ -248,10 +223,8 @@ async function acquireLease(
   }
 }
 
-/**
- * Tags land only once every store agreed, so a failure leaves the row reporting
- * the edit as not applied rather than advertising tags the vectors lack.
- */
+/** Tags land only once every store agreed, so a failure leaves the row reporting
+ * the edit as not applied rather than advertising tags the vectors lack. */
 async function finalizeLease(
   document: DocumentRow,
   lease: Lease,
@@ -261,19 +234,23 @@ async function finalizeLease(
   await releaseWith(
     document,
     lease,
-    "SET tags = :tags, #s = :restoreTo, gsi1pk = :gsi1pk, gsi1sk = :now, updatedAt = :now REMOVE previousStatus",
+    "SET tags = :tags, #s = :restoreTo, updatedAt = :now REMOVE previousStatus",
     { ":tags": tags, ":now": now },
   );
+
   return now;
 }
 
 /** Restores the pre-edit status after a failed edit, keeping the old tags. */
-async function releaseLease(document: DocumentRow, lease: Lease) {
+async function releaseLease(
+  document: DocumentRow,
+  lease: Lease,
+): Promise<void> {
   try {
     await releaseWith(
       document,
       lease,
-      "SET #s = :restoreTo, gsi1pk = :gsi1pk, gsi1sk = :now, updatedAt = :now REMOVE previousStatus",
+      "SET #s = :restoreTo, updatedAt = :now REMOVE previousStatus",
       { ":now": new Date().toISOString() },
     );
   } catch {
@@ -282,16 +259,14 @@ async function releaseLease(document: DocumentRow, lease: Lease) {
   }
 }
 
-/**
- * Conditioned on the lease still being ours: a successor that took over an
- * expired lease is also UPDATING, so status alone would let us clobber it.
- */
+/** Conditioned on the lease still being ours: a successor that took over an
+ * expired lease is also UPDATING, so status alone would let us clobber it. */
 async function releaseWith(
   document: DocumentRow,
   lease: Lease,
   updateExpression: string,
   values: Record<string, unknown>,
-) {
+): Promise<void> {
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
@@ -302,7 +277,6 @@ async function releaseWith(
       ExpressionAttributeValues: {
         ...values,
         ":restoreTo": lease.restoreTo,
-        ":gsi1pk": `STATUS#${lease.restoreTo}`,
         ":updating": UPDATING_STATUS,
         ":heldSince": lease.heldSince,
       },
@@ -336,12 +310,12 @@ async function removeWritesAfterDelete(
 async function updateChunkObjects(
   chunkItems: ChunkItem[],
   tags: string[] | null,
-) {
+): Promise<void> {
   const pending = chunkItems.filter((item) => item.s3ChunkKey);
   let cursor = 0;
 
   /** Takes the next pending chunk until none remain. */
-  async function worker() {
+  async function worker(): Promise<void> {
     while (cursor < pending.length) {
       const item = pending[cursor];
       cursor += 1;
@@ -351,7 +325,9 @@ async function updateChunkObjects(
           Key: item.s3ChunkKey,
         }),
       );
-      const chunkData = JSON.parse(await response.Body!.transformToString());
+      const chunkData = JSON.parse(
+        await response.Body!.transformToString(),
+      ) as Record<string, unknown>;
       await s3.send(
         new PutObjectCommand({
           Bucket: StorageBucketName,
@@ -373,6 +349,34 @@ async function updateChunkObjects(
   );
   const failed = results.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
+}
+
+/** An UPDATING row whose lease has outlived the function's own timeout belongs to
+ * a handler that died before releasing it, so it is safe to take over. */
+function isLeaseExpired(document: DocumentRow): boolean {
+  if (document.status !== UPDATING_STATUS) return false;
+  const heldSince = Date.parse(document.updatedAt ?? "");
+
+  return !Number.isFinite(heldSince) || Date.now() - heldSince > LEASE_TTL_MS;
+}
+
+function isShortStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= 20 &&
+    value.every((item) => typeof item === "string" && item.length <= 100)
+  );
+}
+
+function json(
+  statusCode: number,
+  body: unknown,
+): APIGatewayProxyStructuredResultV2 {
+  return {
+    statusCode: statusCode,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
 }
 
 /** UTF-8 size of the searchable metadata, measured the same way as the upload handler. */
@@ -398,6 +402,7 @@ function normalizeTags(tags: unknown): string[] | null {
     const key = trimmed.toLowerCase();
     if (!deduped.has(key)) deduped.set(key, trimmed);
   }
+
   return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
@@ -413,13 +418,6 @@ function validateBody(body: unknown): string | null {
   if (fields.tags !== null && !isShortStringArray(fields.tags)) {
     return "Tags must be an array of at most 20 strings, each 100 characters or fewer";
   }
-  return null;
-}
 
-function isShortStringArray(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length <= 20 &&
-    value.every((item) => typeof item === "string" && item.length <= 100)
-  );
+  return null;
 }

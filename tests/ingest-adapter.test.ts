@@ -22,7 +22,12 @@ import {
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const usage = vi.hoisted(() => ({ checkUsageLimit: vi.fn() }));
+// sst.config.ts sets these limits for every function, clamping images to 5 MB.
+const usage = vi.hoisted(() => {
+  process.env.MAX_UPLOAD_BYTES = "52428800";
+  process.env.MAX_IMAGE_UPLOAD_BYTES = "5242880";
+  return { checkUsageLimit: vi.fn() };
+});
 vi.mock("../functions/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../functions/utils")>()),
   checkUsageLimit: usage.checkUsageLimit,

@@ -169,7 +169,7 @@ describe("document deletion", () => {
     );
 
     expect(response.statusCode).toBe(500);
-    expect(JSON.parse(response.body).warnings).toEqual([
+    expect(JSON.parse(response.body!).warnings).toEqual([
       "derived data",
       "source",
     ]);
