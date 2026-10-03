@@ -73,11 +73,14 @@ import {
 } from "@/components/ui/tooltip";
 import type { TagVocabulary } from "@/hooks/use-tags";
 import {
+  countProcessingDocuments,
   extractMetadata,
   formatDate,
   getFileMimeType,
   getStatusBadgeVariant,
   isActiveStatus,
+  MAX_PROCESSING_DOCUMENTS,
+  PROCESSING_LIMIT_ERROR,
   updateDocumentTags,
   uploadDocument,
   validateUploadFile,
@@ -116,6 +119,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 50;
+const PROCESSING_POLL_MS = 5000;
+// A file the server still refuses waits this long, a few times, before it fails.
+const PROCESSING_RETRY_MS = 30000;
+const PROCESSING_RETRIES = 3;
 const STALLED_AFTER_MS = 5 * 60 * 1000;
 const UPLOAD_CONCURRENCY = 3;
 const SUPPORTED_EXTENSIONS = [
@@ -130,12 +137,9 @@ const SUPPORTED_EXTENSIONS = [
 ];
 // Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
 // have its tags overwritten by the run in progress.
-const EDITABLE_TAG_STATUSES = new Set([
-  "EMBEDDED",
-  "FAILED",
-  "CHUNKED",
-  "PARSED",
-]);
+const EDITABLE_TAG_STATUSES = new Set(["EMBEDDED", "FAILED"]);
+// An edit whose handler died keeps UPDATING; the API takes it over after this.
+const EDIT_LEASE_TTL_MS = 5 * 60 * 1000;
 
 type DocumentTableRow =
   | { document: Document; kind: "document" }
@@ -244,8 +248,13 @@ export function DocumentsCard({
   );
   const dragDepth = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const documentsRef = useRef(documents);
   const itemsRef = useRef(items);
   const syncingRef = useRef(syncing);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -479,6 +488,10 @@ export function DocumentsCard({
     }));
   }, [pageCount, pagination.pageIndex]);
 
+  function isStillQueued(itemId: string): boolean {
+    return itemsRef.current.some((current) => current.id === itemId);
+  }
+
   /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
    * reloads documents and usage. Wired to the Sync button. */
   async function syncAll() {
@@ -494,18 +507,38 @@ export function DocumentsCard({
     let failed = 0;
 
     let nextIndex = 0;
+    let uploading = 0;
+    const retries = new Map<string, number>();
     const workers = Array.from(
       { length: Math.min(UPLOAD_CONCURRENCY, pending.length) },
       async () => {
         while (nextIndex < pending.length) {
           const item = pending[nextIndex];
           nextIndex += 1;
+          let counted = false;
+          // Files wait their turn as READY and can be removed before a worker
+          // reaches them, which now takes minutes under the processing cap.
+          if (!isStillQueued(item.id)) continue;
           updateItem(item.id, {
             error: "",
             progress: "Requesting upload URL",
             state: "SYNCING",
           });
           try {
+            // Each queued file keeps counting until it finishes, so wait for room
+            // under the server's cap rather than spend upload requests on 429s.
+            while (
+              countProcessingDocuments(documentsRef.current, Date.now()) +
+                uploading >=
+              MAX_PROCESSING_DOCUMENTS
+            ) {
+              updateItem(item.id, {
+                progress: "Waiting for earlier files to finish processing",
+              });
+              await delay(PROCESSING_POLL_MS);
+            }
+            uploading += 1;
+            counted = true;
             const documentId = await uploadDocument(
               token,
               item.file,
@@ -518,18 +551,22 @@ export function DocumentsCard({
               (progress) => updateItem(item.id, { progress: progress }),
             );
             const now = new Date().toISOString();
+            const queued: Document = {
+              createdAt: now,
+              documentId: documentId,
+              mimeType: getFileMimeType(item.file),
+              status: "QUEUED",
+              title: item.title.trim() || item.file.name,
+              updatedAt: now,
+            };
+            // The ref catches up only after a render, and this worker checks the
+            // cap again right away, so count the new document now.
+            documentsRef.current = [...documentsRef.current, queued];
             setDocuments((current) => {
               const byId = new Map(
                 current.map((document) => [document.documentId, document]),
               );
-              byId.set(documentId, {
-                createdAt: now,
-                documentId: documentId,
-                mimeType: getFileMimeType(item.file),
-                status: "QUEUED",
-                title: item.title.trim() || item.file.name,
-                updatedAt: now,
-              });
+              byId.set(documentId, queued);
               const next = Array.from(byId.values());
               writePendingDocuments(next);
               return next;
@@ -539,12 +576,28 @@ export function DocumentsCard({
             );
             succeeded += 1;
           } catch (error) {
+            // Another tab or a pending replacement can still hit the cap.
+            const attempts = retries.get(item.id) ?? 0;
+            if (
+              (error as Error).message === PROCESSING_LIMIT_ERROR &&
+              attempts < PROCESSING_RETRIES
+            ) {
+              retries.set(item.id, attempts + 1);
+              updateItem(item.id, {
+                progress: "Waiting for earlier files to finish processing",
+              });
+              await delay(PROCESSING_RETRY_MS);
+              pending.push(item);
+              continue;
+            }
             updateItem(item.id, {
               error: (error as Error).message,
               progress: "Sync failed",
               state: "FAILED",
             });
             failed += 1;
+          } finally {
+            if (counted) uploading -= 1;
           }
         }
       },
@@ -1119,7 +1172,7 @@ function DocumentRow({
       >
         <div className="flex justify-end gap-1">
           <ActionButton
-            disabled={!EDITABLE_TAG_STATUSES.has(document.status)}
+            disabled={!canEditTags(document)}
             label="Edit tags"
             onClick={() => onEditTags(document.documentId)}
           >
@@ -1415,6 +1468,19 @@ function getSearchValue(row: DocumentTableRow): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function canEditTags(document: Document): boolean {
+  if (EDITABLE_TAG_STATUSES.has(document.status)) return true;
+  if (document.status !== "UPDATING") return false;
+
+  return Date.now() - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function splitList(value: string): string[] | undefined {

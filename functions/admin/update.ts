@@ -13,6 +13,7 @@ import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { ChunkItem, DocumentRow } from "../types";
 import {
   checkRateLimit,
+  checkUsageLimit,
   extractUserId,
   getDocument,
   listDocumentChunkItems,
@@ -23,14 +24,15 @@ const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
+const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
-// A running pipeline copies tags into chunks itself, so an edit mid-flight
-// would race it. Only settled documents can be retagged.
-const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED", "CHUNKED", "PARSED"]);
+// A running pipeline copies tags into chunks itself and overwrites the lease
+// status, so only settled documents can be retagged.
+const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 const UPDATING_STATUS = "UPDATING";
 // A handler killed mid-propagation cannot release its lease, so an abandoned
 // one must expire or the document stays uneditable. It times out at 60s.
@@ -59,6 +61,16 @@ export async function handler(event: APIGatewayProxyEventV2) {
   );
   if (!allowed) {
     return json(429, { error: "Rate limit exceeded. Try again later." });
+  }
+
+  const { allowed: usageAllowed } = await checkUsageLimit(
+    userId,
+    AccountsTableName,
+  );
+  if (!usageAllowed) {
+    return json(429, {
+      error: "Monthly usage allowance reached. Upgrade to continue.",
+    });
   }
 
   const documentId = event.pathParameters?.id;

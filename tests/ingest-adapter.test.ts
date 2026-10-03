@@ -1,5 +1,6 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   HeadObjectCommand,
   ListObjectVersionsCommand,
@@ -19,7 +20,13 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const usage = vi.hoisted(() => ({ checkUsageLimit: vi.fn() }));
+vi.mock("../functions/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../functions/utils")>()),
+  checkUsageLimit: usage.checkUsageLimit,
+}));
 
 import { handler } from "../functions/s3/ingest-adapter";
 import { s3Event } from "./helpers/events";
@@ -36,6 +43,8 @@ describe("S3 ingest adapter", () => {
     vectorsMock.reset();
     sqsMock.reset();
     s3Mock.on(HeadObjectCommand).resolves({});
+    usage.checkUsageLimit.mockReset();
+    usage.checkUsageLimit.mockResolvedValue({ allowed: true });
   });
 
   it("queues a valid uploaded object", async () => {
@@ -393,5 +402,168 @@ describe("S3 ingest adapter", () => {
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(1);
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(1);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+  });
+
+  it("deletes a late upload whose document no longer exists", async () => {
+    dynamoMock.on(GetCommand).resolves({});
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.Key).toBe(
+      "raw/doc-1/sample.txt",
+    );
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("queues a new upload that the first read missed", async () => {
+    dynamoMock
+      .on(GetCommand)
+      .resolvesOnce({})
+      .resolves({ Item: { status: "UPLOADED", mimeType: "text/plain" } });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+  });
+
+  it("deletes an upload that lands while its document is being deleted", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "DELETING", mimeType: "text/plain", userId: "user-1" },
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("reverts every version a refused replacement form wrote", async () => {
+    usage.checkUsageLimit.mockResolvedValue({ allowed: false });
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        userId: "user-1",
+        countedBytes: 20,
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [
+        { Key: "raw/doc-1/sample.txt", VersionId: "v3" },
+        { Key: "raw/doc-1/sample.txt", VersionId: "v2" },
+        { Key: "raw/doc-1/sample.txt", VersionId: "v1" },
+      ],
+    });
+    s3Mock
+      .on(HeadObjectCommand)
+      .callsFake((input) =>
+        input.VersionId === "v1"
+          ? { Metadata: {} }
+          : { Metadata: { "upload-token": "token-1" } },
+      );
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event());
+
+    expect(
+      s3Mock
+        .commandCalls(DeleteObjectCommand)
+        .map((call) => call.args[0].input.VersionId),
+    ).toEqual(["v3", "v2"]);
+    const recorded = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(recorded.UpdateExpression).toBe("SET lastError = :e");
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("charges a token-less overwrite while a replacement is pending", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk === "ACCOUNT#user-1" && input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            storageBytes: 20,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 20,
+          replacementToken: "token-1",
+        },
+      };
+    });
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ Metadata: {}, ContentLength: 5000 });
+
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+
+    const storageUpdate = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems?.[0].Update)
+      .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
+    expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(5000);
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+
+  it("fails and charges a new upload once the monthly allowance is spent", async () => {
+    const now = new Date().toISOString();
+    usage.checkUsageLimit.mockResolvedValue({ allowed: false });
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk === "ACCOUNT#user-1" && input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            pk: "ACCOUNT#user-1",
+            sk: "PROFILE",
+            storageBytes: 0,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: { status: "UPLOADED", mimeType: "text/plain", userId: "user-1" },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 50 });
+
+    await handler(s3Event("raw/doc-1/sample.txt", 50));
+
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    const failure = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(failure.ExpressionAttributeValues?.[":s"]).toBe("FAILED");
+    expect(failure.ConditionExpression).toBe("#s = :uploaded");
+    const storageUpdate = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems?.[0].Update)
+      .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
+    expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(50);
   });
 });

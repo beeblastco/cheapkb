@@ -3,11 +3,21 @@ import {
   ConditionalCheckFailedException,
   DynamoDBClient,
 } from "@aws-sdk/client-dynamodb";
-import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  ListObjectVersionsCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+import {
+  checkUsageLimit,
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
@@ -59,22 +69,13 @@ export async function handler(event: S3Event) {
     const now = new Date().toISOString();
 
     let doc = await getDocument(documentId, dynamo, TableName);
-    if (!doc) {
-      console.log(`[ingest-adapter] Document ${documentId} not found`);
-      continue;
+    if (!doc || doc.status === "DELETING") {
+      doc = await removeLateUpload(documentId, key, record.s3.object.versionId);
+      if (!doc) continue;
     }
 
-    if (doc.replacementToken) {
-      const object = await s3.send(
-        new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
-      );
-      if (object.Metadata?.["upload-token"] !== doc.replacementToken) {
-        console.log(
-          `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
-        );
-        continue;
-      }
-    }
+    const eventId = `${documentId}:${record.s3.object.sequencer}`;
+    if (await skipStaleReplacement(documentId, doc, key, eventId)) continue;
 
     const objectSize = Number(record.s3.object.size ?? 0);
     const maxUploadBytes = doc.mimeType?.startsWith("image/")
@@ -95,6 +96,10 @@ export async function handler(event: S3Event) {
       continue;
     }
 
+    if (await refuseOverAllowance(documentId, doc, key, eventId, now)) {
+      continue;
+    }
+
     if (doc.replacementToken) {
       const finalized = await finalizeReplacement(documentId, doc, now);
       if (!finalized) {
@@ -106,7 +111,6 @@ export async function handler(event: S3Event) {
       doc = { ...doc, status: "UPLOADED" };
     }
 
-    const eventId = `${documentId}:${record.s3.object.sequencer}`;
     if (isDispatched(doc)) {
       await recountStorage(documentId, doc, key, eventId);
       console.log(
@@ -153,6 +157,18 @@ export async function handler(event: S3Event) {
 
     console.log(`[ingest-adapter] Triggered ingest for ${documentId}`);
   }
+}
+
+/** The old token-less POST can still overwrite the source while a replacement
+ * is pending, so charge whatever now sits there. */
+async function chargeStaleOverwrite(
+  documentId: string,
+  doc: DocumentRow,
+  key: string,
+  eventId: string,
+): Promise<void> {
+  if (!isDispatched(doc)) return;
+  await recountStorage(documentId, doc, key, eventId);
 }
 
 /** Claims the document for dispatch with a lease; returns false when another event owns it. */
@@ -321,6 +337,109 @@ async function recountStorage(
   );
 }
 
+/** The allowance is checked when the upload URL is issued, but a burst of URLs
+ * all pass that check before any embedding is billed. Returns true when refused. */
+async function refuseOverAllowance(
+  documentId: string,
+  doc: DocumentRow,
+  key: string,
+  eventId: string,
+  now: string,
+): Promise<boolean> {
+  if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
+  const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
+  if (allowed) return false;
+
+  const message = "Monthly usage allowance reached. Upgrade to continue.";
+  if (doc.replacementToken) {
+    await revertReplacement(documentId, doc, key, message);
+    return true;
+  }
+  // Another event claimed the upload first; a retry recounts it as dispatched.
+  if (!(await updateFailure(documentId, message, now, true))) {
+    throw new Error(`Upload ${documentId} was claimed concurrently`);
+  }
+  // A failed upload keeps its source, so its bytes are charged like any other.
+  await recountStorage(documentId, doc, key, eventId);
+
+  return true;
+}
+
+/** Removes an upload that landed after or during its document's delete. Returns
+ * the document instead when a consistent read shows it is live after all. */
+async function removeLateUpload(
+  documentId: string,
+  key: string,
+  versionId: string | undefined,
+): Promise<DocumentRow | null> {
+  const existing = await dynamo.send(
+    new GetCommand({
+      TableName: TableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: true,
+    }),
+  );
+  const live = existing.Item as DocumentRow | undefined;
+  if (live && live.status !== "DELETING") return live;
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: StorageBucketName,
+      Key: key,
+      VersionId: versionId,
+    }),
+  );
+  console.log(`[ingest-adapter] Removed late upload for ${documentId}`);
+
+  return null;
+}
+
+/** Removes every version a refused replacement form wrote, so S3 falls back to the
+ * source the search data came from. The token stays until it expires with the form. */
+async function revertReplacement(
+  documentId: string,
+  doc: DocumentRow,
+  key: string,
+  reason: string,
+): Promise<void> {
+  const listed = await s3.send(
+    new ListObjectVersionsCommand({ Bucket: StorageBucketName, Prefix: key }),
+  );
+  for (const version of listed.Versions ?? []) {
+    if (version.Key !== key) continue;
+    const object = await s3.send(
+      new HeadObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: version.VersionId,
+      }),
+    );
+    if (object.Metadata?.["upload-token"] !== doc.replacementToken) continue;
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: version.VersionId,
+      }),
+    );
+  }
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression: "SET lastError = :e",
+        ConditionExpression: "replacementToken = :token",
+        ExpressionAttributeValues: {
+          ":e": reason,
+          ":token": doc.replacementToken,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+}
+
 /** Returns a claimed document to UPLOADED when dispatch fails, so a retry can claim it. */
 async function rollbackQueueStatus(documentId: string, eventId: string) {
   const now = new Date().toISOString();
@@ -363,25 +482,62 @@ async function setCountedBytes(documentId: string, countedBytes: number) {
   );
 }
 
-/** Marks the document FAILED at the UPLOAD step with the given error. */
-async function updateFailure(documentId: string, error: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":s": "FAILED",
-        ":e": error,
-        ":f": "UPLOAD",
-        ":t": now,
-        ":gsi1pk": "STATUS#FAILED",
-        ":gsi1sk": now,
-      },
-    }),
+/** Returns true when this event wrote through an old token-less POST while a
+ * replacement is pending; its bytes are charged and dispatch is skipped. */
+async function skipStaleReplacement(
+  documentId: string,
+  doc: DocumentRow,
+  key: string,
+  eventId: string,
+): Promise<boolean> {
+  if (!doc.replacementToken) return false;
+  const object = await s3.send(
+    new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
   );
+  if (object.Metadata?.["upload-token"] === doc.replacementToken) return false;
+  await chargeStaleOverwrite(documentId, doc, key, eventId);
+  console.log(
+    `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
+  );
+
+  return true;
+}
+
+/** Marks the document FAILED at the UPLOAD step with the given error. */
+async function updateFailure(
+  documentId: string,
+  error: string,
+  now: string,
+  onlyIfUploaded = false,
+): Promise<boolean> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        // Another event may have claimed the upload since it was read.
+        ConditionExpression: onlyIfUploaded ? "#s = :uploaded" : undefined,
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":s": "FAILED",
+          ":e": error,
+          ":f": "UPLOAD",
+          ":t": now,
+          ":gsi1pk": "STATUS#FAILED",
+          ":gsi1sk": now,
+          ...(onlyIfUploaded ? { ":uploaded": "UPLOADED" } : {}),
+        },
+      }),
+    );
+    return true;
+  } catch (err) {
+    if (onlyIfUploaded && err instanceof ConditionalCheckFailedException) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 /** Dispatch already charged this document once, so later events only recount. */

@@ -25,6 +25,12 @@ vi.mock("jose", () => ({
   }),
 }));
 
+const usage = vi.hoisted(() => ({ checkUsageLimit: vi.fn() }));
+vi.mock("../functions/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../functions/utils")>()),
+  checkUsageLimit: usage.checkUsageLimit,
+}));
+
 import { handler as update } from "../functions/admin/update";
 import { apiEvent, jsonApiEvent } from "./helpers/events";
 
@@ -111,6 +117,8 @@ describe("PATCH /documents/{id}", () => {
     dynamoMock.reset();
     s3Mock.reset();
     vectorsMock.reset();
+    usage.checkUsageLimit.mockReset();
+    usage.checkUsageLimit.mockResolvedValue({ allowed: true });
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk?.startsWith("RATE#")) return {};
       return embeddedDocument();
@@ -476,6 +484,28 @@ describe("PATCH /documents/{id}", () => {
         "Research",
         "product",
       ]);
+    });
+  });
+
+  describe("cost guards", () => {
+    it("refuses an account past its monthly allowance", async () => {
+      usage.checkUsageLimit.mockResolvedValue({ allowed: false });
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(429);
+      expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it("refuses a document the pipeline will still overwrite", async () => {
+      dynamoMock.on(GetCommand).callsFake((input) => {
+        if (input.Key?.pk?.startsWith("RATE#")) return {};
+        return embeddedDocument({ status: "PARSED" });
+      });
+
+      const response = await update(patchEvent({ tags: ["research"] }));
+
+      expect(response.statusCode).toBe(409);
     });
   });
 });

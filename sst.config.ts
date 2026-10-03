@@ -393,13 +393,14 @@ export default $config({
         "BedrockInvocationLogging",
         {
           loggingConfig: {
-            embeddingDataDeliveryEnabled: true,
-            imageDataDeliveryEnabled: true,
+            // Metadata and token counts only; document text and images stay out of logs.
+            embeddingDataDeliveryEnabled: false,
+            imageDataDeliveryEnabled: false,
             s3Config: {
               bucketName: invocationLogs.name,
               keyPrefix: invocationLogPrefix,
             },
-            textDataDeliveryEnabled: true,
+            textDataDeliveryEnabled: false,
             videoDataDeliveryEnabled: false,
           },
         },
@@ -454,6 +455,10 @@ export default $config({
             "dynamodb:UpdateItem",
           ],
           resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+        },
+        {
+          actions: ["dynamodb:Query"],
+          resources: [pulumi.interpolate`${table.arn}/index/GSI2`],
         },
         {
           actions: ["dynamodb:GetItem"],
@@ -743,6 +748,11 @@ export default $config({
           resources: [rateLimitsTable.arn],
         },
         {
+          actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+          resources: [accountsTable.arn],
+        },
+        { actions: ["dynamodb:GetItem"], resources: [plansTable.arn] },
+        {
           actions: ["s3vectors:GetVectors", "s3vectors:PutVectors"],
           resources: [vectorIndexArn],
         },
@@ -941,9 +951,11 @@ export default $config({
           ],
           resources: [table.arn, accountsTable.arn],
         },
+        { actions: ["dynamodb:GetItem"], resources: [plansTable.arn] },
         {
           actions: [
             "s3:GetObject",
+            "s3:GetObjectVersion",
             "s3:ListBucketVersions",
             "s3:DeleteObject",
             "s3:DeleteObjectVersion",

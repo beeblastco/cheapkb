@@ -1,3 +1,4 @@
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   DeleteObjectsCommand,
   HeadObjectCommand,
@@ -134,5 +135,43 @@ describe("document deletion", () => {
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
     expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
+  });
+
+  it("refuses while an edit holds the document's lease", async () => {
+    dynamoMock.on(UpdateCommand).rejects(
+      new ConditionalCheckFailedException({
+        message: "lease is live",
+        $metadata: {},
+      }),
+    );
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    const mark = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(mark.ConditionExpression).toContain("#s <> :updating");
+    expect(mark.ExpressionAttributeValues?.[":updating"]).toBe("UPDATING");
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
+  });
+
+  it("names the failed step without echoing the AWS error", async () => {
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 10 });
+    s3Mock
+      .on(ListObjectVersionsCommand)
+      .rejects(new Error("arn:aws:s3:::secret-bucket denied"));
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body).warnings).toEqual([
+      "derived data",
+      "source",
+    ]);
   });
 });

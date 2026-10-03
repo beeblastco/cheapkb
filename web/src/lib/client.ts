@@ -25,6 +25,12 @@ const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+// Mirrors the upload handler's per-account cap and how long each status counts.
+export const MAX_PROCESSING_DOCUMENTS = 10;
+export const PROCESSING_LIMIT_ERROR =
+  "Too many documents processing. Try again when they finish.";
+const UNUSED_UPLOAD_FORM_MS = 15 * 60 * 1000;
+const PROCESSING_WINDOW_MS = 60 * 60 * 1000;
 const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
@@ -304,6 +310,23 @@ export async function updateDocumentTags(
 
 export function isActiveStatus(status: string): boolean {
   return (ACTIVE_STATUSES as readonly string[]).includes(status);
+}
+
+/** Counts documents the upload handler treats as processing, so a bulk sync can
+ * wait for room instead of hitting its 429. */
+export function countProcessingDocuments(
+  documents: Document[],
+  nowMs: number,
+): number {
+  return documents.filter((document) => {
+    if (!isActiveStatus(document.status)) return false;
+    const windowMs =
+      document.status === "UPLOADED"
+        ? UNUSED_UPLOAD_FORM_MS
+        : PROCESSING_WINDOW_MS;
+
+    return nowMs - Date.parse(document.updatedAt ?? "") < windowMs;
+  }).length;
 }
 
 export function getStatusBadgeVariant(
