@@ -25,6 +25,7 @@ const API_TIMEOUT_MS = 20000;
 const UPLOAD_TIMEOUT_MS = 120000;
 const MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_METADATA_BYTES = 1200;
 // Mirrors the upload handler's per-account cap and how long each status counts.
 export const MAX_PROCESSING_DOCUMENTS = 10;
 export const PROCESSING_LIMIT_ERROR =
@@ -488,7 +489,7 @@ export function getFileMimeType(file: File): string {
 
 /**
  * Uploads a file to S3 and starts indexing, reporting steps via onProgress.
- * On failure it deletes the new document and attaches its id to the error.
+ * If the S3 upload fails it deletes the new document and attaches its id to the error.
  */
 export async function uploadDocument(
   token: string,
@@ -501,7 +502,7 @@ export async function uploadDocument(
   const metadata: UploadMetadata = (await apiCall(token, "POST", "/upload", {
     filename: file.name,
     mimeType: getFileMimeType(file),
-    ...values,
+    ...limitUploadValues(values),
   })) as unknown as UploadMetadata;
   try {
     if (file.size > metadata.maxUploadBytes) {
@@ -521,11 +522,6 @@ export async function uploadDocument(
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error("Failed to upload file to S3");
-    onProgress("Starting indexing…");
-    await apiCall(token, "POST", "/ingest", {
-      documentId: metadata.documentId,
-    });
-    return metadata.documentId;
   } catch (error) {
     if (!metadata.reused) {
       try {
@@ -541,6 +537,14 @@ export async function uploadDocument(
     (error as Error & { documentId?: string }).documentId = metadata.documentId;
     throw error;
   }
+  onProgress("Starting indexing…");
+  // The S3 event already queued the file, so a failed status check keeps it
+  // and the document poll reports its status instead.
+  await apiCall(token, "POST", "/ingest", {
+    documentId: metadata.documentId,
+  }).catch(() => undefined);
+
+  return metadata.documentId;
 }
 
 export function validateUploadFile(file: File): string | undefined {
@@ -636,6 +640,50 @@ function parseMetadata(
 
 function cleanTitle(title: string | undefined): string {
   return title?.trim().replace(/\s+/g, " ").slice(0, 200) ?? "";
+}
+
+/** Trims upload metadata to the upload handler's limits, so long PDF metadata
+ * or file names still sync instead of failing validation. */
+function limitUploadValues(
+  values: Parameters<typeof uploadDocument>[2],
+): Parameters<typeof uploadDocument>[2] {
+  const authors = values.authors
+    ?.map((author) => author.trim().slice(0, 100))
+    .filter(Boolean)
+    .slice(0, 20);
+  const tags = values.tags
+    ?.map((tag) => tag.trim().slice(0, 100))
+    .filter(Boolean)
+    .slice(0, 20);
+  const { year } = values;
+  const title = values.title.trim().slice(0, 200);
+  // The upload handler caps title, tags and authors at 1,200 UTF-8 bytes together;
+  // drop authors, then tags, from the end until they fit.
+  while (metadataBytes(title, tags, authors) > MAX_METADATA_BYTES) {
+    if (authors?.length) authors.pop();
+    else if (tags?.length) tags.pop();
+    else break;
+  }
+
+  return {
+    authors: authors?.length ? authors : undefined,
+    tags: tags?.length ? tags : undefined,
+    title: title,
+    year:
+      year && Number.isInteger(year) && year >= 1000 && year <= 9999
+        ? year
+        : undefined,
+  };
+}
+
+function metadataBytes(
+  title: string,
+  tags: string[] | undefined,
+  authors: string[] | undefined,
+): number {
+  return new TextEncoder().encode(
+    JSON.stringify([title, tags ?? [], authors ?? []]),
+  ).length;
 }
 
 function normalizeAuthors(authors: string | string[] | undefined): string[] {
