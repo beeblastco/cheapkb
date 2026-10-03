@@ -54,8 +54,6 @@ const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 // Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
 // before SQS redelivers its message (visibility timeout 900 seconds).
 const EMBED_CLAIM_LEASE_MS = 300_000;
-// S3 Vectors rejects a vector whose filterable metadata passes 2 KB. Measured as
-// JSON, which overcounts the raw values, so the stored size stays under the cap.
 
 interface ChunkMetadata {
   documentId: string;

@@ -100,7 +100,13 @@ export async function handler(event: S3Event) {
     }
 
     if (doc.replacementToken) {
-      const finalized = await finalizeReplacement(documentId, doc, key, now);
+      const finalized = await finalizeReplacement(
+        documentId,
+        doc,
+        key,
+        record.eventTime,
+        now,
+      );
       if (!finalized) {
         console.log(
           `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
@@ -221,31 +227,24 @@ async function claimDispatch(
 }
 
 /** Deletes the old derived data and promotes the pending replacement metadata. Returns
- * false for a stale event; throws so S3 retries while the same replacement is still blocked. */
+ * false for a stale event. Edits and reindex wait out the window, so only a delete or a
+ * stray write from the old version's pipeline can change the row meanwhile. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
   key: string,
+  uploadedAt: string,
   now: string,
 ): Promise<boolean> {
-  // Checked before any delete: a replacement that can no longer claim the row must
-  // leave its data alone. A form that outlived its window is rolled back instead.
+  // A form that outlived its window is rolled back instead of replacing newer work.
+  // Lateness is judged by when S3 accepted the file, so a retry never changes it.
   const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
-  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(uploadedAt)) {
     await revertReplacement(
       documentId,
       doc,
       key,
       "Replacement arrived too late",
-    );
-    return false;
-  }
-  if (doc.status !== doc.replacementPreviousStatus) {
-    await revertReplacement(
-      documentId,
-      doc,
-      key,
-      "Replacement skipped because the document changed; upload it again",
     );
     return false;
   }
@@ -267,8 +266,7 @@ async function finalizeReplacement(
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
-        ConditionExpression:
-          "replacementToken = :token AND #s = :previousStatus",
+        ConditionExpression: "replacementToken = :token AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
           ":uploaded": "UPLOADED",
@@ -280,22 +278,16 @@ async function finalizeReplacement(
           ":now": now,
           ":gsi1pk": "STATUS#UPLOADED",
           ":token": doc.replacementToken,
-          ":previousStatus": doc.replacementPreviousStatus,
+          ":deleting": "DELETING",
         },
       }),
     );
     return true;
   } catch (error) {
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    // Another event already finished this replacement, or a delete took the row.
+    if (error instanceof ConditionalCheckFailedException) return false;
+    throw error;
   }
-  // The old data is already gone, so a replacement blocked by an edit or reindex
-  // must retry until it lands; a changed token means another event finalized it.
-  const current = await getDocument(documentId, dynamo, TableName);
-  if (current?.replacementToken === doc.replacementToken) {
-    throw new Error(`Replacement for ${documentId} is blocked, retrying`);
-  }
-
-  return false;
 }
 
 /** Marks the claimed dispatch as sent once the parse message is on the queue. */
