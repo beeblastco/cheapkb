@@ -24,7 +24,7 @@ import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handler as embed } from "../functions/embed/index";
 import { handler as parse } from "../functions/parse/index";
-import { sqsEvent } from "./helpers/events";
+import { bedrockEmbeddings, sqsEvent } from "./helpers/events";
 
 const bedrockMock = mockClient(BedrockRuntimeClient);
 const dynamoMock = mockClient(DynamoDBDocumentClient);
@@ -71,6 +71,10 @@ describe("multimodal pipeline", () => {
     );
 
     expect(result.batchItemFailures).toEqual([]);
+    // Only the magic bytes are read; the embed stage downloads the whole image.
+    expect(s3Mock.commandCalls(GetObjectCommand)[0].args[0].input.Range).toBe(
+      "bytes=0-15",
+    );
     const manifest = JSON.parse(
       String(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.Body),
     );
@@ -121,14 +125,7 @@ describe("multimodal pipeline", () => {
         Body: { transformToByteArray: async () => png } as any,
       };
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 321 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({
-          embeddings: { float: [[0.1, 0.2, 0.3]] },
-        }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 321));
     vectorsMock.on(PutVectorsCommand).resolves({});
     dynamoMock.on(UpdateCommand).resolves({});
     dynamoMock.on(GetCommand).resolves({
@@ -218,19 +215,15 @@ describe("multimodal pipeline", () => {
         Body: { transformToByteArray: async () => png } as any,
       };
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 642 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({
-          embeddings: {
-            float: [
-              [0.1, 0.2, 0.3],
-              [0.4, 0.5, 0.6],
-            ],
-          },
-        }),
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        642,
       ),
-    });
+    );
     vectorsMock.on(PutVectorsCommand).resolves({});
     dynamoMock.on(UpdateCommand).resolves({});
     dynamoMock.on(GetCommand).resolves({
@@ -288,12 +281,7 @@ describe("multimodal pipeline", () => {
           }),
       } as any,
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 1 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
     vectorsMock.on(PutVectorsCommand).resolves({});
     let chunkStatus = "QUEUED";
     dynamoMock.on(TransactWriteCommand).callsFake(() => {
@@ -339,12 +327,7 @@ describe("multimodal pipeline", () => {
           }),
       } as any,
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 1 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
     vectorsMock.on(PutVectorsCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(UpdateCommand).resolves({});
@@ -391,12 +374,7 @@ describe("multimodal pipeline", () => {
           }),
       } as any,
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 1 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
     vectorsMock.on(PutVectorsCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(UpdateCommand).resolves({});
@@ -490,12 +468,7 @@ describe("multimodal pipeline", () => {
         } as any,
       };
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 1 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
     vectorsMock.on(PutVectorsCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock
@@ -510,26 +483,22 @@ describe("multimodal pipeline", () => {
       return {};
     });
 
-    const result = await embed({
-      Records: [
-        {
-          messageId: "embed-ok",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            s3ChunkKey: "chunks/doc-1/chunk-1.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-        {
-          messageId: "embed-bad",
-          body: JSON.stringify({
-            documentId: "doc-2",
-            s3ChunkKey: "chunks/doc-2/chunk-2.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const ok = sqsEvent(
+      "embed-ok",
+      JSON.stringify({
+        documentId: "doc-1",
+        s3ChunkKey: "chunks/doc-1/chunk-1.json",
+      }),
+    );
+    const bad = sqsEvent(
+      "embed-bad",
+      JSON.stringify({
+        documentId: "doc-2",
+        s3ChunkKey: "chunks/doc-2/chunk-2.json",
+      }),
+    );
+
+    const result = await embed({ Records: [...ok.Records, ...bad.Records] });
 
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "embed-bad" }]);
     expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
@@ -551,12 +520,7 @@ describe("multimodal pipeline", () => {
           }),
       } as any,
     });
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 2 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({ embeddings: { float: [[0.1, 0.2, 0.3]] } }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
     vectorsMock.on(PutVectorsCommand).resolves({});
     vectorsMock.on(DeleteVectorsCommand).resolves({});
     dynamoMock.on(TransactWriteCommand).callsFake((input) => {

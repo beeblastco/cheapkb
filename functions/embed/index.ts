@@ -1,28 +1,29 @@
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
-import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
+import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   DeleteVectorsCommand,
   PutVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
+import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import {
-  DynamoDBDocumentClient,
   GetCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import type { DocumentType } from "@smithy/types";
+import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import { encode } from "gpt-tokenizer";
-import { fitFilterableMetadata, recordUsage } from "../utils";
+import {
+  dynamo,
+  embeddingDimension,
+  embeddingModel,
+  fitFilterableMetadata,
+  getDocument,
+  invokeEmbeddingModel,
+  recordStageError,
+} from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
@@ -43,12 +44,10 @@ const bedrock = new BedrockRuntimeClient({
       }
     : {}),
 });
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
-const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 const MAX_COHERE_ITEMS = 96;
 const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 // Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
@@ -82,10 +81,6 @@ interface EmbeddingWork {
   messageId: string;
   metadata: ChunkMetadata;
   text?: string;
-}
-
-interface CohereEmbeddingResponse {
-  embeddings: number[][] | { float?: number[][] };
 }
 
 /** Embed stage entry, called by the pipeline router with embed records. */
@@ -160,7 +155,13 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     // chunks that were already embedded; their own messages are retried anyway.
     const writes = await Promise.allSettled(
       Array.from(documents, ([documentId, failure]) =>
-        handleError(documentId, failure.error, failure.attempt),
+        recordStageError(
+          documentId,
+          TableName,
+          "EMBEDDING",
+          failure.error,
+          failure.attempt,
+        ),
       ),
     );
     for (const write of writes) {
@@ -169,6 +170,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       }
     }
   }
+
   return {
     batchItemFailures: Array.from(failedMessageIds).map((itemIdentifier) => ({
       itemIdentifier: itemIdentifier,
@@ -185,7 +187,9 @@ async function batchProcess(
     messageId: string;
     attempt: number;
   }>,
-) {
+): Promise<
+  Map<string, { attempt: number; documentId: string; error: unknown }>
+> {
   const owners = new Map<string, string>();
   const reconcileDocuments = new Set<string>();
   const failures = new Map<
@@ -206,13 +210,8 @@ async function batchProcess(
         let userId: string | undefined =
           chunkData.userId ?? owners.get(chunk.documentId);
         if (!userId) {
-          const result = await dynamo.send(
-            new GetCommand({
-              TableName: TableName,
-              Key: { pk: `DOC#${chunk.documentId}`, sk: "META" },
-            }),
-          );
-          userId = result.Item?.userId;
+          const doc = await getDocument(chunk.documentId, dynamo, TableName);
+          userId = doc?.userId;
           if (!userId) throw new Error("Document owner is missing");
           owners.set(chunk.documentId, userId);
         }
@@ -284,11 +283,10 @@ async function batchProcess(
             }),
           );
           const imageBytes = await image.Body!.transformToByteArray();
-          const maxImageBytes = Math.min(
-            parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-            5 * 1024 * 1024,
-          );
-          if (imageBytes.byteLength > maxImageBytes) {
+          // sst.config.ts clamps this to the 5 MB Cohere image limit.
+          if (
+            imageBytes.byteLength > Number(process.env.MAX_IMAGE_UPLOAD_BYTES)
+          ) {
             throw new Error(
               "Image exceeds the configured Cohere embedding limit",
             );
@@ -393,21 +391,23 @@ async function batchProcess(
   }
 
   for (const vector of writtenVectors) {
-    const meta = vector.metadata;
-    if (!meta.documentId || !meta.chunkId || !meta.userId) continue;
-    await markChunkEmbedded(meta.documentId, meta.chunkId);
-    writtenDocuments.add(meta.documentId);
+    await markChunkEmbedded(vector.metadata.documentId, vector.key);
+    writtenDocuments.add(vector.metadata.documentId);
   }
   await Promise.all(
     Array.from(writtenDocuments, (documentId) => markEmbedded(documentId)),
   );
   console.log(`[embed] OK: ${writtenVectors.length} vectors written`);
+
   return failures;
 }
 
 /** Claims a chunk for this delivery, or returns false when another delivery holds a
  * live claim or the chunk is already embedded. */
-async function claimChunk(documentId: string, chunkId: string) {
+async function claimChunk(
+  documentId: string,
+  chunkId: string,
+): Promise<boolean> {
   const now = Date.now();
   try {
     await dynamo.send(
@@ -432,26 +432,6 @@ async function claimChunk(documentId: string, chunkId: string) {
   }
 }
 
-/** Resets the error fields on a document after a stage succeeds. */
-async function clearError(documentId: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
-      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":deleting": "DELETING",
-        ":null": null,
-        ":zero": 0,
-        ":t": now,
-      },
-    }),
-  );
-}
-
 /** Embeds one packed request, halving it on error to isolate the failing item. */
 async function embedItems(
   items: EmbeddingWork[],
@@ -460,15 +440,18 @@ async function embedItems(
     string,
     { attempt: number; documentId: string; error: unknown }
   >,
-) {
+): Promise<void> {
   try {
     const hasImage = items.some((item) => item.imageBase64);
     const hasText = items.some((item) => !item.imageBase64);
     const modality =
       hasImage && hasText ? "mixed" : hasImage ? "image" : "text";
-    const embeddings = await invokeBedrock(
-      buildEmbeddingRequest(items, "search_document"),
+    const embeddings = await invokeEmbeddingModel(
+      bedrock,
+      buildEmbeddingRequest(items),
       items[0].metadata.userId,
+      process.env.ACCOUNTS_TABLE_NAME!,
+      "ingest",
       modality,
     );
     for (let index = 0; index < items.length; index += 1) {
@@ -492,97 +475,12 @@ async function embedItems(
   }
 }
 
-// A deleted document has nothing left to record the error on.
-async function handleError(documentId: string, err: unknown, attempt: number) {
-  try {
-    await writeError(documentId, err, attempt);
-  } catch (error) {
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
-  }
-}
-
-/** Calls the Cohere embedding model, records token usage and returns vectors. */
-async function invokeBedrock(
-  body: Record<string, unknown>,
-  userId: string,
-  modality: "image" | "mixed" | "text",
-): Promise<number[][]> {
-  let responseInputTokenCount: number | undefined;
-  const command = new InvokeModelCommand({
-    modelId: embeddingModel(),
-    contentType: "application/json",
-    accept: "application/json",
-    requestMetadata: JSON.stringify({
-      cheapkbEmbeddingModel: embeddingModel(),
-      cheapkbInputModality: modality,
-      cheapkbOperation: "ingest",
-      cheapkbStage: process.env.DEPLOYMENT_STAGE ?? "unknown",
-      cheapkbUsageCategory: "embed",
-      cheapkbUserId: userId,
-    }),
-    trace: "ENABLED",
-    body: JSON.stringify(body),
-  });
-  command.middlewareStack.add(
-    (next) => async (args) => {
-      const result = await next(args);
-      const headers = (
-        result as typeof result & {
-          response?: { headers?: Record<string, string> };
-        }
-      ).response?.headers;
-      const tokenHeader = headers?.["x-amzn-bedrock-input-token-count"];
-      const parsed = tokenHeader ? Number.parseInt(tokenHeader, 10) : NaN;
-      responseInputTokenCount =
-        Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-      return result;
-    },
-    {
-      name: "captureBedrockInputTokens",
-      priority: "low",
-      step: "deserialize",
-    },
-  );
-  const response = await bedrock.send(command);
-  const metadata = response.$metadata as typeof response.$metadata & {
-    bedrockInputTokenCount?: number;
-  };
-  const inputTokenCount =
-    responseInputTokenCount ?? metadata.bedrockInputTokenCount;
-  if (inputTokenCount) {
-    await recordUsage(
-      userId,
-      process.env.ACCOUNTS_TABLE_NAME!,
-      "embed",
-      inputTokenCount,
-    );
-  } else {
-    console.warn("[embed] Bedrock response omitted its input token count", {
-      requestId: response.$metadata.requestId,
-    });
-  }
-  const payload = JSON.parse(
-    new TextDecoder().decode(response.body),
-  ) as CohereEmbeddingResponse;
-  const embeddings = Array.isArray(payload.embeddings)
-    ? payload.embeddings
-    : payload.embeddings?.float;
-  const dimension = embeddingDimension();
-  if (
-    !embeddings?.length ||
-    embeddings.some((embedding) => embedding.length !== dimension)
-  ) {
-    throw new Error(`Cohere Embed v4 returned an invalid ${dimension}D vector`);
-  }
-  return embeddings;
-}
-
 /** Marks a chunk EMBEDDED and bumps the document count in one transaction.
- * Returns false when the chunk was already embedded or the document is gone. */
+ * A chunk already embedded is left alone; one whose document is gone loses its vector. */
 async function markChunkEmbedded(
   documentId: string,
   chunkId: string,
-): Promise<boolean> {
+): Promise<void> {
   try {
     await dynamo.send(
       new TransactWriteCommand({
@@ -617,19 +515,12 @@ async function markChunkEmbedded(
         ],
       }),
     );
-    return true;
   } catch (err) {
     if ((err as Error).name !== "TransactionCanceledException") throw err;
     // Delete marks META as DELETING before it removes vectors, so a vector
     // written after that point is removed here instead of staying searchable.
-    const doc = await dynamo.send(
-      new GetCommand({
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        ConsistentRead: true,
-      }),
-    );
-    if (!doc.Item || doc.Item.status === "DELETING") {
+    const doc = await getDocument(documentId, dynamo, TableName);
+    if (!doc || doc.status === "DELETING") {
       await vectors.send(
         new DeleteVectorsCommand({
           vectorBucketName: VectorBucketName,
@@ -637,7 +528,7 @@ async function markChunkEmbedded(
           keys: [chunkId],
         }),
       );
-      return false;
+      return;
     }
     const existing = await dynamo.send(
       new GetCommand({
@@ -646,125 +537,53 @@ async function markChunkEmbedded(
         ConsistentRead: true,
       }),
     );
-    if (existing.Item?.status === "EMBEDDED") return false;
+    if (existing.Item?.status === "EMBEDDED") return;
     throw err;
   }
 }
 
 /** Marks the document EMBEDDED once every chunk has been embedded. */
-async function markEmbedded(documentId: string) {
-  const now = new Date().toISOString();
+async function markEmbedded(documentId: string): Promise<void> {
   // Read strongly so the count includes the increment this call just committed.
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  const doc = result.Item;
+  const doc = await getDocument(documentId, dynamo, TableName);
   const expected = doc?.chunkCount ?? 0;
   const done = doc?.embeddedCount ?? 0;
-  if (expected > 0 && done >= expected) {
-    try {
-      await dynamo.send(
-        new UpdateCommand({
-          TableName: TableName,
-          Key: { pk: `DOC#${documentId}`, sk: "META" },
-          UpdateExpression:
-            "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-          ConditionExpression:
-            "attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting",
-          ExpressionAttributeNames: { "#s": "status" },
-          ExpressionAttributeValues: {
-            ":deleting": "DELETING",
-            ":s": "EMBEDDED",
-            ":t": now,
-            ":expected": expected,
-            ":gsi1pk": "STATUS#EMBEDDED",
-            ":gsi1sk": now,
-          },
-        }),
-      );
-      await clearError(documentId, now);
-    } catch (err) {
-      if ((err as Error).name !== "ConditionalCheckFailedException") {
-        throw err;
-      }
-    }
-  }
-}
+  if (expected <= 0 || done < expected) return;
 
-/** Records an embed failure, marking the document FAILED on the third attempt. */
-async function writeError(documentId: string, err: unknown, attempt: number) {
-  const now = new Date().toISOString();
-  // Raw SDK messages can name buckets and ARNs; the detail is in the logs.
-  const lastError = "Embedding failed. Reindex to try again.";
-
-  if (attempt >= 3) {
+  try {
     await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+          "SET #s = :s, updatedAt = :t, lastError = :null, retryCount = :zero, failedStep = :null",
+        ConditionExpression:
+          "attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":deleting": "DELETING",
-          ":s": "FAILED",
-          ":e": lastError,
-          ":r": attempt,
-          ":f": "EMBEDDING",
-          ":t": now,
-          ":gsi1pk": "STATUS#FAILED",
-          ":gsi1sk": now,
+          ":s": "EMBEDDED",
+          ":t": new Date().toISOString(),
+          ":expected": expected,
+          ":null": null,
+          ":zero": 0,
         },
       }),
     );
-    return;
+  } catch (err) {
+    if ((err as Error).name !== "ConditionalCheckFailedException") {
+      throw err;
+    }
   }
-
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
-      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":deleting": "DELETING",
-        ":e": lastError,
-        ":r": attempt,
-        ":f": "EMBEDDING",
-        ":t": now,
-      },
-    }),
-  );
 }
 
-/** Builds the Cohere Embed v4 request body for text and image items. */
+/** Builds the Cohere Embed v4 search_document request body for text and image items. */
 function buildEmbeddingRequest(
   items: EmbeddingWork[],
-  inputType: "search_document" | "search_query",
-) {
+): Record<string, unknown> {
   return {
-    input_type: inputType,
-    inputs: items.map((item) => {
-      if (!item.imageBase64 || !item.imageFormat) {
-        return { content: [{ type: "text", text: item.text ?? "" }] };
-      }
-      const content: Array<Record<string, unknown>> = [];
-      if (item.text) content.push({ type: "text", text: item.text });
-      content.push({
-        type: "image_url",
-        image_url: {
-          url: `data:image/${item.imageFormat};base64,${item.imageBase64}`,
-        },
-      });
-      return { content: content };
-    }),
+    input_type: "search_document",
+    inputs: items.map((item) => embeddingInput(item)),
     embedding_types: ["float"],
     output_dimension: embeddingDimension(),
     max_tokens: 128000,
@@ -772,7 +591,7 @@ function buildEmbeddingRequest(
   };
 }
 
-function buildImageDescription(metadata: ChunkMetadata) {
+function buildImageDescription(metadata: ChunkMetadata): string {
   return [
     metadata.title,
     metadata.authors?.length
@@ -784,12 +603,21 @@ function buildImageDescription(metadata: ChunkMetadata) {
     .join("\n");
 }
 
-function embeddingDimension() {
-  return parseInt(process.env.EMBEDDING_DIMENSION ?? "1024", 10);
-}
+/** Builds one Cohere input: the text alone, or the image with its description. */
+function embeddingInput(item: EmbeddingWork): Record<string, unknown> {
+  if (!item.imageBase64 || !item.imageFormat) {
+    return { content: [{ type: "text", text: item.text ?? "" }] };
+  }
+  const content: Array<Record<string, unknown>> = [];
+  if (item.text) content.push({ type: "text", text: item.text });
+  content.push({
+    type: "image_url",
+    image_url: {
+      url: `data:image/${item.imageFormat};base64,${item.imageBase64}`,
+    },
+  });
 
-function embeddingModel() {
-  return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
+  return { content: content };
 }
 
 function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {
@@ -800,37 +628,41 @@ function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {
   throw new Error(`Unsupported image MIME type: ${mimeType}`);
 }
 
-/** Groups items into Cohere requests by owner, item count and request size. */
+/** Groups items into Cohere requests by owner, item count and request size.
+ * A request's size is its empty body plus each input and the comma between inputs. */
 function packEmbeddingBatches(items: EmbeddingWork[]): EmbeddingWork[][] {
+  const emptyBytes = Buffer.byteLength(
+    JSON.stringify(buildEmbeddingRequest([])),
+  );
   const batches: EmbeddingWork[][] = [];
   let current: EmbeddingWork[] = [];
+  let currentBytes = emptyBytes;
 
   for (const item of items) {
-    const candidate = [...current, item];
+    const itemBytes = Buffer.byteLength(JSON.stringify(embeddingInput(item)));
     const differentOwner =
       current.length > 0 && current[0].metadata.userId !== item.metadata.userId;
-    const requestBytes = Buffer.byteLength(
-      JSON.stringify(buildEmbeddingRequest(candidate, "search_document")),
-    );
+    const requestBytes =
+      currentBytes + itemBytes + (current.length > 0 ? 1 : 0);
     if (
       current.length > 0 &&
       (differentOwner ||
-        candidate.length > MAX_COHERE_ITEMS ||
+        current.length + 1 > MAX_COHERE_ITEMS ||
         requestBytes > MAX_COHERE_REQUEST_BYTES)
     ) {
       batches.push(current);
       current = [item];
+      currentBytes = emptyBytes + itemBytes;
     } else {
-      current = candidate;
+      current.push(item);
+      currentBytes = requestBytes;
     }
-    const currentBytes = Buffer.byteLength(
-      JSON.stringify(buildEmbeddingRequest(current, "search_document")),
-    );
     if (currentBytes > MAX_COHERE_REQUEST_BYTES) {
       throw new Error("One Cohere embedding input exceeds the request limit");
     }
   }
 
   if (current.length > 0) batches.push(current);
+
   return batches;
 }
