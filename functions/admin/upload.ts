@@ -296,6 +296,7 @@ async function checkAccountLimits(
     return "Document limit reached. Delete documents to upload more.";
   }
   if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
+    // web/src/lib/client.ts matches this text to wait and retry.
     return "Too many documents processing. Try again when they finish.";
   }
 

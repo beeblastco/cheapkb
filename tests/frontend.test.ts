@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiCall,
+  countProcessingDocuments,
   getIdentity,
   getFileMimeType,
   getUserProfile,
@@ -15,6 +16,8 @@ import {
   uploadDocument,
   validateUploadFile,
 } from "../web/src/lib/client";
+
+import type { Document } from "../web/src/lib/types";
 
 const API_URL = "https://api.cheapkb.test/v1";
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
@@ -362,6 +365,25 @@ describe("frontend", () => {
   });
 
   describe("document helpers", () => {
+    it("counts processing documents the way the upload cap does", () => {
+      const now = Date.parse("2026-10-03T12:00:00Z");
+      const at = (minutesAgo: number) =>
+        new Date(now - minutesAgo * 60 * 1000).toISOString();
+
+      const count = countProcessingDocuments(
+        [
+          { documentId: "a", status: "EMBEDDING", updatedAt: at(30) },
+          { documentId: "b", status: "UPLOADED", updatedAt: at(5) },
+          { documentId: "c", status: "UPLOADED", updatedAt: at(20) },
+          { documentId: "d", status: "PARSING", updatedAt: at(90) },
+          { documentId: "e", status: "EMBEDDED", updatedAt: at(1) },
+        ] as Document[],
+        now,
+      );
+
+      expect(count).toBe(2);
+    });
+
     it("infers supported MIME types from file extensions", () => {
       expect(getFileMimeType({ name: "notes.md", type: "" } as File)).toBe(
         "text/markdown",
