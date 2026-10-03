@@ -454,7 +454,9 @@ function validateBody(body: Record<string, unknown>): string | null {
   ) {
     return "Year must be an integer from 1000 to 9999";
   }
-  if (metadataBytes(body.title, body.tags, body.authors) > MAX_METADATA_BYTES) {
+  // A missing title falls back to the filename, so that is what gets stored.
+  const title = body.title ?? body.filename;
+  if (metadataBytes(title, body.tags, body.authors) > MAX_METADATA_BYTES) {
     return `Title, tags and authors together must be ${MAX_METADATA_BYTES} bytes or fewer`;
   }
   return null;

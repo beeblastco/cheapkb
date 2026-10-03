@@ -308,6 +308,19 @@ describe("upload validation", () => {
     expect(createPresignedPost).not.toHaveBeenCalled();
   });
 
+  it("counts a filename used as the title against the metadata budget", async () => {
+    const response = await handler(
+      jsonApiEvent({
+        filename: `${"報".repeat(250)}.pdf`,
+        mimeType: "application/pdf",
+        authors: Array.from({ length: 5 }, (_, i) => `${i}`.padEnd(100, "a")),
+      }),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(createPresignedPost).not.toHaveBeenCalled();
+  });
+
   it("rejects a new document at the per-account document cap", async () => {
     dynamoMock.on(QueryCommand).resolves({
       Items: Array.from({ length: 1000 }, () => ({ status: "EMBEDDED" })),
