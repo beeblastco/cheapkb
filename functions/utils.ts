@@ -55,6 +55,16 @@ const jwks = createRemoteJWKSet(
 // and authors share MAX_METADATA_BYTES of it, so the rest of a chunk's metadata fits.
 const MAX_FILTERABLE_METADATA_BYTES = 2048;
 export const MAX_METADATA_BYTES = 1200;
+// Upload, ingest and embed share these limits. Cohere embeds an image of at most
+// 5 MB, so a larger image setting is clamped here.
+export const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
+  10,
+);
+export const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
@@ -990,6 +1000,33 @@ export function currentCycle(
   };
 }
 
+/** Reads a /tags/{name} path's tag name, or returns a 400 response when it is invalid. */
+export function decodeTagName(
+  pathParameters: APIGatewayProxyEventV2["pathParameters"],
+): string | APIGatewayProxyStructuredResultV2 {
+  const raw = pathParameters?.name;
+  let decoded: string;
+  try {
+    decoded = raw ? decodeURIComponent(raw) : "";
+  } catch {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Tag name contains invalid URL encoding" }),
+    };
+  }
+  const name = decoded.trim();
+  if (!name) {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Tag name is required" }),
+    };
+  }
+
+  return name;
+}
+
 export function defaultPlanId(): string {
   return process.env.DEFAULT_PLAN_ID ?? "basic";
 }
@@ -1062,6 +1099,16 @@ export function isDocumentInFlight(
     item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
 
   return nowMs - Date.parse(String(item.updatedAt ?? "")) < windowMs;
+}
+
+/** Checks a tags or authors list: at most 20 strings of at most 100 characters.
+ * Upload and update share it so both accept the same lists. */
+export function isShortStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= 20 &&
+    value.every((item) => typeof item === "string" && item.length <= 100)
+  );
 }
 
 /** Checks the leading magic bytes match the declared image MIME type.

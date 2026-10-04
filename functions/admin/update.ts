@@ -22,6 +22,7 @@ import {
   dynamo,
   extractUserId,
   getDocument,
+  isShortStringArray,
   listDocumentChunkItems,
   MAX_METADATA_BYTES,
   metadataBytes,
@@ -357,14 +358,6 @@ function isLeaseExpired(document: DocumentRow): boolean {
   const heldSince = Date.parse(document.updatedAt ?? "");
 
   return !Number.isFinite(heldSince) || Date.now() - heldSince > LEASE_TTL_MS;
-}
-
-function isShortStringArray(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length <= 20 &&
-    value.every((item) => typeof item === "string" && item.length <= 100)
-  );
 }
 
 function json(

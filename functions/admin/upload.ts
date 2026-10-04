@@ -20,7 +20,10 @@ import {
   extractUserId,
   getDocument,
   isDocumentInFlight,
+  isShortStringArray,
+  MAX_IMAGE_UPLOAD_BYTES,
   MAX_METADATA_BYTES,
+  MAX_UPLOAD_BYTES,
   metadataBytes,
   recordUsage,
   REPLACEMENT_TTL_MS,
@@ -31,14 +34,6 @@ const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "52428800",
-  10,
-);
-const MAX_IMAGE_UPLOAD_BYTES = Math.min(
-  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-  5 * 1024 * 1024,
-);
 const MAX_STORAGE_BYTES = parseInt(
   process.env.MAX_STORAGE_BYTES ?? "1073741824",
   10,
@@ -418,14 +413,6 @@ function createDedupeKey(
   return createHash("sha256")
     .update(`${userId}\0${filename}\0${mimeType}`)
     .digest("hex");
-}
-
-function isShortStringArray(value: unknown): boolean {
-  return (
-    Array.isArray(value) &&
-    value.length <= 20 &&
-    value.every((item) => typeof item === "string" && item.length <= 100)
-  );
 }
 
 /** Feeds the S3 key and the dedupe key. Unicode letters, marks and digits are kept so

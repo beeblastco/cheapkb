@@ -22,6 +22,7 @@ import {
   fitFilterableMetadata,
   getDocument,
   invokeEmbeddingModel,
+  MAX_IMAGE_UPLOAD_BYTES,
   recordStageError,
 } from "../utils";
 
@@ -288,14 +289,7 @@ async function batchProcess(
             }),
           );
           const imageBytes = await image.Body!.transformToByteArray();
-          // sst.config.ts clamps this to the 5 MB Cohere image limit.
-          if (
-            imageBytes.byteLength >
-            Math.min(
-              parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-              5 * 1024 * 1024,
-            )
-          ) {
+          if (imageBytes.byteLength > MAX_IMAGE_UPLOAD_BYTES) {
             throw new Error(
               "Image exceeds the configured Cohere embedding limit",
             );

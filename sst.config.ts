@@ -320,13 +320,7 @@ export default $config({
       CHUNK_MAX_TOKENS: process.env.CHUNK_MAX_TOKENS!,
       CHUNK_OVERLAP_TOKENS: process.env.CHUNK_OVERLAP_TOKENS!,
       MAX_UPLOAD_BYTES: process.env.MAX_UPLOAD_BYTES ?? "52428800",
-      // Cohere embeds an image of at most 5 MB, so a larger setting is clamped once here.
-      MAX_IMAGE_UPLOAD_BYTES: String(
-        Math.min(
-          parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-          5 * 1024 * 1024,
-        ),
-      ),
+      MAX_IMAGE_UPLOAD_BYTES: process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880",
       MAX_CHUNKS_PER_DOCUMENT: process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000",
       MAX_STORAGE_BYTES: process.env.MAX_STORAGE_BYTES ?? "1073741824",
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
