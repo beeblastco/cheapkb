@@ -449,6 +449,11 @@ describe("frontend", () => {
       expect(mergeDocuments(current, [{ ...current[0] }])).toBe(current);
       expect(
         mergeDocuments(current, [{ ...current[0], inFlight: false }]),
+      ).not.toBe(current); // A refused replacement records why without moving updatedAt.
+      expect(
+        mergeDocuments(current, [
+          { ...current[0], lastError: "Replacement arrived too late" },
+        ]),
       ).not.toBe(current);
     });
   });

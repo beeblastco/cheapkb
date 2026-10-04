@@ -487,15 +487,11 @@ export function mergeDocuments(
   // Polls usually change nothing; keeping the old array skips the re-render.
   const unchanged =
     documents.length === currentDocuments.length &&
-    documents.every((document, index) => {
-      const current = currentDocuments[index];
-      return (
-        current.documentId === document.documentId &&
-        current.status === document.status &&
-        current.updatedAt === document.updatedAt &&
-        current.inFlight === document.inFlight
-      );
-    });
+    // Every field counts: a refused replacement sets lastError without a new updatedAt.
+    documents.every(
+      (document, index) =>
+        JSON.stringify(document) === JSON.stringify(currentDocuments[index]),
+    );
 
   return unchanged ? currentDocuments : documents;
 }

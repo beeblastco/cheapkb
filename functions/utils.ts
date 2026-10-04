@@ -591,7 +591,7 @@ export async function listDocumentChunkItems(
       }),
     );
     chunkItems.push(
-      ...(chunkRecords.Items as unknown as ChunkItem[]).map((item) => ({
+      ...((chunkRecords.Items ?? []) as ChunkItem[]).map((item) => ({
         pk: item.pk,
         sk: item.sk,
         s3ChunkKey: item.s3ChunkKey,
