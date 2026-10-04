@@ -23,6 +23,7 @@ import {
   MAX_METADATA_BYTES,
   metadataBytes,
   recordUsage,
+  REPLACEMENT_TTL_MS,
 } from "../utils";
 
 const s3 = new S3Client({});
@@ -30,10 +31,18 @@ const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES);
-const MAX_IMAGE_UPLOAD_BYTES = Number(process.env.MAX_IMAGE_UPLOAD_BYTES);
-const MAX_STORAGE_BYTES = Number(process.env.MAX_STORAGE_BYTES);
-const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
+  10,
+);
+const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
+const MAX_STORAGE_BYTES = parseInt(
+  process.env.MAX_STORAGE_BYTES ?? "1073741824",
+  10,
+);
 // Bounds GET /documents, which reads every document, and one account's share of
 // the pipeline queue.
 const MAX_DOCUMENTS = 1000;
@@ -277,7 +286,7 @@ async function checkAccountLimits(
     };
   }
   if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
-    // web/src/lib/client.ts matches this text to wait and retry.
+    // web/src/lib/client.ts waits and retries on this code.
     return {
       error: "Too many documents processing. Try again when they finish.",
       code: "PROCESSING_LIMIT",

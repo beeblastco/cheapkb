@@ -69,11 +69,6 @@ export default $config({
           resources: embeddingModelResources,
         };
 
-    // Every function keeps a month of logs, set explicitly so no log group grows forever.
-    $transform(sst.aws.Function, (args) => {
-      args.logging = { retention: "1 month" };
-    });
-
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
         allowOrigins: ["*"],
@@ -504,8 +499,8 @@ export default $config({
         handler: "./functions/pipeline/index.handler",
         runtime: "nodejs22.x",
         timeout: "300 seconds",
-        // Parsing a 50 MB PDF holds the whole document in memory; the prod peak is ~210 MB.
-        memory: "1024 MB",
+        // Parsing a 50 MB PDF holds the whole document in memory.
+        memory: "2048 MB",
         description:
           "Route pipeline messages to the parse, chunk and embed stages",
         environment: {
@@ -1013,7 +1008,7 @@ export default $config({
       handler: "./functions/s3/cleanup-adapter.handler",
       runtime: "nodejs22.x",
       timeout: "300 seconds",
-      memory: "256 MB",
+      memory: "512 MB",
       description:
         "Delete all derived data when a source file is removed from S3",
       environment: baseEnv,

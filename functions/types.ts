@@ -73,6 +73,8 @@ export interface Document {
   updatedAt?: string;
   userId?: string;
   dedupeKey?: string;
+  // Set by GET /documents: the upload cap counts this document as processing.
+  inFlight?: boolean;
 }
 
 export interface DocumentRow {

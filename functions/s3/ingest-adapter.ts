@@ -34,8 +34,14 @@ const DISPATCH_LEASE_MS = 60 * 1000;
 // A POST that starts just before its form expires can finish minutes later; edits
 // and reindex wait out the same grace, so nothing races a replacement before it.
 const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES);
-const MAX_IMAGE_UPLOAD_BYTES = Number(process.env.MAX_IMAGE_UPLOAD_BYTES);
+const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
+  10,
+);
+const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",

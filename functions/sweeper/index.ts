@@ -7,7 +7,7 @@ import {
   SQSClient,
 } from "@aws-sdk/client-sqs";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { dynamo, getDocument } from "../utils";
+import { dynamo, getDocument, SETTLED_STATUSES } from "../utils";
 
 const sqs = new SQSClient({});
 const lambda = new LambdaClient({});
@@ -17,13 +17,6 @@ const PipelineDlqUrl = process.env.PIPELINE_DLQ_URL!;
 const AdapterDlqUrl = process.env.ADAPTER_DLQ_URL!;
 const MAX_BATCHES = 50;
 const QUIET_MS = 30 * 60 * 1000;
-// UPDATING is a tag-edit lease over a settled document, so it never needs a redrive.
-const SETTLED_STATUSES = new Set([
-  "DELETING",
-  "EMBEDDED",
-  "FAILED",
-  "UPDATING",
-]);
 const STAGE_STEPS: Record<string, string> = {
   chunk: "CHUNKING",
   embed: "EMBEDDING",

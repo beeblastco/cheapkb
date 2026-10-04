@@ -554,6 +554,8 @@ export function DocumentsCard({
                 progress: "Waiting for earlier files to finish processing",
               });
               await delay(PROCESSING_POLL_MS);
+              // The app's poll pauses in hidden tabs, so the wait refreshes the list itself.
+              await loadDocuments(false);
             }
             uploading += 1;
             counted = true;

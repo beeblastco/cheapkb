@@ -3,7 +3,7 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import type { DocumentRow } from "../types";
+import type { Document, DocumentRow } from "../types";
 import { docId, dynamo, extractUserId, isDocumentInFlight } from "../utils";
 
 const TableName = process.env.TABLE_NAME!;
@@ -35,7 +35,7 @@ export async function handler(
   } while (lastKey);
 
   const nowMs = Date.now();
-  const documents = allItems.map((doc) => ({
+  const documents: Document[] = allItems.map((doc) => ({
     documentId: docId(doc.pk),
     title: doc.title,
     status: doc.status,

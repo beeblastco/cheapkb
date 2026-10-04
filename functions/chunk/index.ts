@@ -93,7 +93,7 @@ async function chunkDocument(
   const now = new Date().toISOString();
   await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
 
-  const doc = await getDocument(documentId, dynamo, TableName);
+  const doc = await getDocument(documentId, dynamo, TableName, false);
   if (!doc?.userId) throw new Error("Document owner is missing");
   const title = doc.title ?? null;
   const tags = doc.tags ?? null;

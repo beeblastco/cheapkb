@@ -210,7 +210,12 @@ async function batchProcess(
         let userId: string | undefined =
           chunkData.userId ?? owners.get(chunk.documentId);
         if (!userId) {
-          const doc = await getDocument(chunk.documentId, dynamo, TableName);
+          const doc = await getDocument(
+            chunk.documentId,
+            dynamo,
+            TableName,
+            false,
+          );
           userId = doc?.userId;
           if (!userId) throw new Error("Document owner is missing");
           owners.set(chunk.documentId, userId);
@@ -285,7 +290,11 @@ async function batchProcess(
           const imageBytes = await image.Body!.transformToByteArray();
           // sst.config.ts clamps this to the 5 MB Cohere image limit.
           if (
-            imageBytes.byteLength > Number(process.env.MAX_IMAGE_UPLOAD_BYTES)
+            imageBytes.byteLength >
+            Math.min(
+              parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+              5 * 1024 * 1024,
+            )
           ) {
             throw new Error(
               "Image exceeds the configured Cohere embedding limit",

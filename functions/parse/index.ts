@@ -179,10 +179,23 @@ async function parseDocument(
     new GetObjectCommand({ Bucket: StorageBucketName, Key: sourceKey }),
   );
   const bytes = new Uint8Array(await resp.Body!.transformToByteArray());
-  const pages =
-    mimeType === "application/pdf"
-      ? await extractPdfText(bytes)
-      : [{ pageNumber: 1, text: new TextDecoder().decode(bytes) }];
+  let pages: Array<{ pageNumber: number; text: string }>;
+  if (mimeType === "application/pdf") {
+    pages = await extractPdfText(bytes);
+  } else if (
+    mimeType === "text/markdown" ||
+    mimeType === "text/plain" ||
+    mimeType === "text/html"
+  ) {
+    pages = [{ pageNumber: 1, text: new TextDecoder().decode(bytes) }];
+  } else {
+    // Documents stored before the MIME allow-list may be PDFs under another type.
+    try {
+      pages = await extractPdfText(bytes);
+    } catch {
+      pages = [{ pageNumber: 1, text: new TextDecoder().decode(bytes) }];
+    }
+  }
 
   const hasText = pages.some((p) => p.text && p.text.trim().length > 0);
   if (!hasText) {

@@ -60,12 +60,12 @@ const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
 
 const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
-const DEFAULT_PLAN_CACHE_MS = 5 * 60 * 1000;
 
-// The upload handler counts these documents against the in-flight limit.
+// The upload handler counts these documents against the in-flight limit. The upload
+// form's TTL and the settled statuses are shared so upload, list and sweeper agree.
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
-const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
-const SETTLED_STATUSES = new Set([
+export const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+export const SETTLED_STATUSES = new Set([
   "DELETING",
   "EMBEDDED",
   "FAILED",
@@ -103,9 +103,6 @@ type TransactItem = NonNullable<
 interface CohereEmbeddingResponse {
   embeddings: number[][] | { float?: number[][] };
 }
-
-let defaultPlanCache: { expiresAt: number; key: string; plan: Plan } | null =
-  null;
 
 export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -362,49 +359,35 @@ export async function extractUserId(
   }
 }
 
-/** Loads the deploy-owned default plan, or null when it is missing.
- * A found plan is cached for five minutes, since every usage check reads it. */
+/** Loads the deploy-owned default plan, or null when it is missing. Read fresh on
+ * every call so a lowered allowance is enforced at once. */
 export async function getDefaultPlan(
   plansTableName?: string,
 ): Promise<Plan | null> {
-  const tableName = plansTableName ?? process.env.PLANS_TABLE_NAME!;
-  const planId = defaultPlanId();
-  const key = `${tableName}#${planId}`;
-  const nowMs = Date.now();
-  if (defaultPlanCache?.key === key && defaultPlanCache.expiresAt > nowMs) {
-    return defaultPlanCache.plan;
-  }
-
   const result = await dynamo.send(
     new GetCommand({
-      TableName: tableName,
-      Key: { pk: `PLAN#${planId}`, sk: "PLAN" },
+      TableName: plansTableName ?? process.env.PLANS_TABLE_NAME!,
+      Key: { pk: `PLAN#${defaultPlanId()}`, sk: "PLAN" },
     }),
   );
-  const plan = (result?.Item as Plan | undefined) ?? null;
-  if (plan) {
-    defaultPlanCache = {
-      expiresAt: nowMs + DEFAULT_PLAN_CACHE_MS,
-      key: key,
-      plan: plan,
-    };
-  }
 
-  return plan;
+  return (result?.Item as Plan | undefined) ?? null;
 }
 
-/** Consistently loads a document's META row, or null when the document does not exist.
+/** Loads a document's META row, or null when it does not exist. Consistent unless a
+ * caller that tolerates staleness opts out to halve the read cost.
  * Used by the pipeline stages, update handler and S3 adapters to decide on writes. */
 export async function getDocument(
   documentId: string,
   documentClient: DynamoDBDocumentClient,
   tableName: string,
+  consistentRead = true,
 ): Promise<DocumentRow | null> {
   const result = await documentClient.send(
     new GetCommand({
       TableName: tableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
+      ConsistentRead: consistentRead,
     }),
   );
 

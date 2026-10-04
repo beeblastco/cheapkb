@@ -45,7 +45,7 @@ export async function handler(
     };
   }
 
-  const doc = await getDocument(documentId, dynamo, TableName);
+  const doc = await getDocument(documentId, dynamo, TableName, false);
   if (!doc || doc.userId !== userId) {
     return {
       statusCode: 404,

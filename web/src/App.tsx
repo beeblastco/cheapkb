@@ -161,6 +161,7 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     const hasInflight = documents.some(
       (document) =>
+        document.inFlight ||
         isActiveStatus(document.status) ||
         (document.status === "DELETING" && !document.lastError),
     );
