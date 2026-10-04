@@ -1,4 +1,9 @@
-import type { SQSBatchResponse, SQSEvent, SQSRecord } from "aws-lambda";
+import type {
+  SQSBatchItemFailure,
+  SQSBatchResponse,
+  SQSEvent,
+  SQSRecord,
+} from "aws-lambda";
 import { handler as chunkHandler } from "../chunk";
 import { handler as embedHandler } from "../embed";
 import { handler as parseHandler } from "../parse";
@@ -14,7 +19,7 @@ type Stage = keyof typeof STAGE_HANDLERS;
 /** Pipeline queue Lambda entry. One queue feeds every stage so Lambda idle-polls
  * a single event source, which saves the SQS free tier. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
-  const batchItemFailures: Array<{ itemIdentifier: string }> = [];
+  const batchItemFailures: SQSBatchItemFailure[] = [];
   const byStage = new Map<Stage, SQSRecord[]>();
 
   for (const record of event.Records) {
@@ -52,6 +57,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures: batchItemFailures };
 }
 
+/** Reads the stage a record names, or undefined when it names no known stage. */
 function readStage(record: SQSRecord): Stage | undefined {
   try {
     const { stage } = JSON.parse(record.body);

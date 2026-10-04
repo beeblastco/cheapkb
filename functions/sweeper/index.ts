@@ -1,7 +1,4 @@
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   DeleteMessageCommand,
@@ -9,28 +6,17 @@ import {
   SendMessageCommand,
   SQSClient,
 } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { dynamo, getDocument, SETTLED_STATUSES } from "../utils";
 
 const sqs = new SQSClient({});
 const lambda = new LambdaClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const PipelineDlqUrl = process.env.PIPELINE_DLQ_URL!;
 const AdapterDlqUrl = process.env.ADAPTER_DLQ_URL!;
 const MAX_BATCHES = 50;
 const QUIET_MS = 30 * 60 * 1000;
-// UPDATING is a tag-edit lease over a settled document, so it never needs a redrive.
-const SETTLED_STATUSES = new Set([
-  "DELETING",
-  "EMBEDDED",
-  "FAILED",
-  "UPDATING",
-]);
 const STAGE_STEPS: Record<string, string> = {
   chunk: "CHUNKING",
   embed: "EMBEDDING",
@@ -85,7 +71,7 @@ async function markFailed(documentId: string, step: string): Promise<void> {
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :failed, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+          "SET #s = :failed, lastError = :e, failedStep = :f, updatedAt = :t",
         ConditionExpression:
           "attribute_exists(pk) AND NOT #s IN (:deleting, :embedded, :failed, :updating)",
         ExpressionAttributeNames: { "#s": "status" },
@@ -95,7 +81,6 @@ async function markFailed(documentId: string, step: string): Promise<void> {
           ":embedded": "EMBEDDED",
           ":f": step,
           ":failed": "FAILED",
-          ":gsi1pk": "STATUS#FAILED",
           ":t": now,
           ":updating": "UPDATING",
         },
@@ -147,13 +132,7 @@ async function redrivePipelineMessage(body: string): Promise<boolean> {
     return true;
   }
 
-  const { Item: doc } = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${message.documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
+  const doc = await getDocument(message.documentId, dynamo, TableName);
   if (!doc || SETTLED_STATUSES.has(doc.status)) return true;
   const updatedAt = Date.parse(doc.updatedAt ?? "");
   if (Number.isFinite(updatedAt) && Date.now() - updatedAt < QUIET_MS) {

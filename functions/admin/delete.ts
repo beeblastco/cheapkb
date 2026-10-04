@@ -1,29 +1,25 @@
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
-import {
-  DeleteCommand,
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
-import type { ChunkItem, DocumentRow } from "../types";
+import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import type { ChunkItem } from "../types";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
   deleteS3Prefix,
+  dynamo,
   extractUserId,
+  getDocument,
   updateStorageBytes,
 } from "../utils";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
@@ -34,7 +30,9 @@ const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const UPDATE_LEASE_TTL_MS = 5 * 60 * 1000;
 
 /** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */
-export async function handler(event: APIGatewayProxyEventV2) {
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -47,22 +45,8 @@ export async function handler(event: APIGatewayProxyEventV2) {
     };
   }
 
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  if (!result.Item) {
-    return {
-      statusCode: 404,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Document not found" }),
-    };
-  }
-
-  const doc = result.Item as DocumentRow;
-  if (doc.userId !== userId) {
+  const doc = await getDocument(documentId, dynamo, TableName, false);
+  if (!doc || doc.userId !== userId) {
     return {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },
@@ -208,18 +192,19 @@ export async function handler(event: APIGatewayProxyEventV2) {
   };
 }
 
-/**
- * A failed delete stays DELETING so in-flight pipeline work still cannot write
- * to it; lastError tells the user to delete again.
- */
-async function markDeleting(documentId: string, lastError: string | null) {
+/** A failed delete stays DELETING so in-flight pipeline work still cannot write
+ * to it; lastError tells the user to delete again. */
+async function markDeleting(
+  documentId: string,
+  lastError: string | null,
+): Promise<void> {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+        "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
       // Never take over a live edit lease; a DELETING row always passes.
       ConditionExpression:
         "attribute_exists(pk) AND (#s <> :updating OR updatedAt < :leaseCutoff)",
@@ -231,7 +216,6 @@ async function markDeleting(documentId: string, lastError: string | null) {
         ":updating": "UPDATING",
         ":e": lastError,
         ":f": lastError ? "DELETE" : null,
-        ":gsi1pk": "STATUS#DELETING",
         ":s": "DELETING",
         ":t": now,
       },
@@ -240,19 +224,11 @@ async function markDeleting(documentId: string, lastError: string | null) {
 }
 
 /** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */
-async function markRefusedResponse(documentId: string): Promise<{
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string;
-}> {
-  const current = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  if (!current.Item) {
+async function markRefusedResponse(
+  documentId: string,
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const current = await getDocument(documentId, dynamo, TableName);
+  if (!current) {
     return {
       statusCode: 404,
       headers: { "Content-Type": "application/json" },

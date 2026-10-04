@@ -11,6 +11,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +39,7 @@ vi.mock("../functions/utils", async (importOriginal) => ({
 
 import { recordUsage } from "../functions/utils";
 import { buildFilter, handler as queryHandler } from "../functions/query/index";
+import { bedrockEmbeddings, jsonApiEvent } from "./helpers/events";
 
 const s3Mock = mockClient(S3Client);
 const vectorsMock = mockClient(S3VectorsClient);
@@ -105,25 +107,15 @@ describe("query handler usage", () => {
     dynamoMock.reset();
     dynamoMock.on(GetCommand).resolves({});
     dynamoMock.on(PutCommand).resolves({});
-    bedrockMock.on(InvokeModelCommand).resolves({
-      $metadata: { bedrockInputTokenCount: 11 } as any,
-      body: new TextEncoder().encode(
-        JSON.stringify({
-          embeddings: { float: [[0.1, 0.2, 0.3]] },
-        }),
-      ),
-    });
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 11));
 
     vectorsMock.on(QueryVectorsCommand).resolves({ vectors: [] });
   });
 
   it("records the query operation after a successful search", async () => {
-    const event = {
-      headers: { authorization: "Bearer token" },
-      body: JSON.stringify({ query: "hello world" }),
-    };
+    dynamoMock.on(UpdateCommand).resolves({});
 
-    const response = await queryHandler(event);
+    const response = await queryHandler(jsonApiEvent({ query: "hello world" }));
 
     expect(response.statusCode).toBe(200);
     expect(recordUsage).toHaveBeenCalledWith(
@@ -132,12 +124,12 @@ describe("query handler usage", () => {
       "query",
       1,
     );
-    expect(recordUsage).toHaveBeenCalledWith(
-      "user-1",
-      expect.any(String),
-      "embed",
-      11,
-    );
+    // The embed usage is recorded inside utils, so it is read off the usage write.
+    const usage = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) => call.args[0].input.TableName === "test-accounts-table");
+    expect(usage?.args[0].input.ExpressionAttributeValues?.[":u"]).toBe(11);
+    expect(usage?.args[0].input.UpdateExpression).toContain("embedTokens");
     const invocation =
       bedrockMock.commandCalls(InvokeModelCommand)[0].args[0].input;
     expect(invocation.trace).toBe("ENABLED");
@@ -155,10 +147,7 @@ describe("query handler usage", () => {
     const image = `data:image/png;base64,${Buffer.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     ]).toString("base64")}`;
-    const response = await queryHandler({
-      headers: { authorization: "Bearer token" },
-      body: JSON.stringify({ image: image }),
-    });
+    const response = await queryHandler(jsonApiEvent({ image: image }));
 
     expect(response.statusCode).toBe(200);
     const request = JSON.parse(
@@ -183,10 +172,9 @@ describe("query handler usage", () => {
     const image = `data:image/png;base64,${Buffer.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     ]).toString("base64")}`;
-    const response = await queryHandler({
-      headers: { authorization: "Bearer token" },
-      body: JSON.stringify({ query: "catalog photo", image: image }),
-    });
+    const response = await queryHandler(
+      jsonApiEvent({ query: "catalog photo", image: image }),
+    );
 
     expect(response.statusCode).toBe(200);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
@@ -201,12 +189,11 @@ describe("query handler usage", () => {
   });
 
   it("rejects a mislabeled image before invoking Bedrock", async () => {
-    const response = await queryHandler({
-      headers: { authorization: "Bearer token" },
-      body: JSON.stringify({
+    const response = await queryHandler(
+      jsonApiEvent({
         image: `data:image/png;base64,${Buffer.from("not a png").toString("base64")}`,
       }),
-    });
+    );
 
     expect(response.statusCode).toBe(400);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);

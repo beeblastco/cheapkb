@@ -47,7 +47,7 @@ describe("ingest status", () => {
     const response = await handler(jsonApiEvent({ documentId: "doc-1" }));
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({
+    expect(JSON.parse(response.body!)).toEqual({
       documentId: "doc-1",
       status: "UPLOADED",
     });

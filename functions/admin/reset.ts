@@ -1,21 +1,24 @@
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   BatchWriteCommand,
-  DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
 import type { AccountRow, DocumentRow } from "../types";
-import { checkRateLimit, extractUserId, updateStorageBytes } from "../utils";
+import {
+  checkRateLimit,
+  dynamo,
+  extractUserId,
+  updateStorageBytes,
+} from "../utils";
 
 const s3 = new S3Client({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const TagsTableName = process.env.TAGS_TABLE_NAME!;
@@ -24,9 +27,11 @@ const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const BATCH_SIZE = 25;
 const TAG_DELETE_BACKOFF_MS = 100;
 
-// Deletes every document and tag the caller owns and brings stored bytes to 0.
-// Usage history stays, so a reset never grants a fresh allowance.
-export async function handler(event: APIGatewayProxyEventV2) {
+/** DELETE /account/data: deletes every document and tag the caller owns and brings stored
+ * bytes to 0. Usage history stays, so a reset never grants a fresh allowance. */
+export async function handler(
+  event: APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
@@ -179,12 +184,10 @@ async function markDeleting(document: DocumentRow): Promise<number> {
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: document.pk, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t REMOVE lastError",
+        UpdateExpression: "SET #s = :s, updatedAt = :t REMOVE lastError",
         ConditionExpression: "attribute_exists(pk)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
-          ":gsi1pk": "STATUS#DELETING",
           ":s": "DELETING",
           ":t": now,
         },
@@ -198,7 +201,10 @@ async function markDeleting(document: DocumentRow): Promise<number> {
   }
 }
 
-function json(statusCode: number, body: unknown) {
+function json(
+  statusCode: number,
+  body: unknown,
+): APIGatewayProxyStructuredResultV2 {
   return {
     statusCode: statusCode,
     headers: { "Content-Type": "application/json" },

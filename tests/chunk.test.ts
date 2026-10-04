@@ -19,6 +19,7 @@ vi.mock("sst", () => ({
 }));
 
 import { handler } from "../functions/chunk/index";
+import { sqsEvent } from "./helpers/events";
 
 const s3Mock = mockClient(S3Client);
 const sqsMock = mockClient(SQSClient);
@@ -45,18 +46,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-1",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-1",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     const item = dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item;
@@ -91,18 +89,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-long",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-long",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     const written = dynamoMock.commandCalls(PutCommand).length;
@@ -128,18 +123,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    await handler({
-      Records: [
-        {
-          messageId: "chunk-tail",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    await handler(
+      sqsEvent(
+        "chunk-tail",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     const items = dynamoMock
       .commandCalls(PutCommand)
@@ -164,18 +156,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    await handler({
-      Records: [
-        {
-          messageId: "chunk-pages",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    await handler(
+      sqsEvent(
+        "chunk-pages",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     const ranges = dynamoMock
       .commandCalls(PutCommand)
@@ -204,18 +193,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-special",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-special",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     const chunkBody = JSON.parse(
@@ -249,18 +235,15 @@ describe("chunk records", () => {
       } as any,
     });
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-image",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/image.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-image",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/image.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     const chunkBody = JSON.parse(
@@ -296,18 +279,16 @@ describe("chunk records", () => {
       } as any,
     });
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-again",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "2" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-again",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+        2,
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     expect(
@@ -338,19 +319,16 @@ describe("chunk records", () => {
       } as any,
     });
 
-    await handler({
-      Records: [
-        {
-          messageId: "chunk-swept",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-            sweeps: 1,
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    await handler(
+      sqsEvent(
+        "chunk-swept",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+          sweeps: 1,
+        }),
+      ),
+    );
 
     expect(
       dynamoMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression,
@@ -362,18 +340,15 @@ describe("chunk records", () => {
     dynamoMock.on(GetCommand).resolves({ Item: { retryCount: 0 } });
     dynamoMock.on(UpdateCommand).rejects(new Error("dynamo unavailable"));
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-failed",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-failed",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([
       { itemIdentifier: "chunk-failed" },
@@ -387,18 +362,15 @@ describe("chunk records", () => {
         new ConditionalCheckFailedException({ $metadata: {}, message: "gone" }),
       );
 
-    const result = await handler({
-      Records: [
-        {
-          messageId: "chunk-deleted",
-          body: JSON.stringify({
-            documentId: "doc-1",
-            parsedKey: "parsed/doc-1/v1/pages.json",
-          }),
-          attributes: { ApproximateReceiveCount: "1" },
-        },
-      ],
-    } as any);
+    const result = await handler(
+      sqsEvent(
+        "chunk-deleted",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
 
     expect(result.batchItemFailures).toEqual([]);
     expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);

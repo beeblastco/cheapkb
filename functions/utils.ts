@@ -1,8 +1,10 @@
 import {
+  type BedrockRuntimeClient,
+  InvokeModelCommand,
+} from "@aws-sdk/client-bedrock-runtime";
+import {
   ConditionalCheckFailedException,
   DynamoDBClient,
-  type AttributeValue,
-  type WriteRequest,
 } from "@aws-sdk/client-dynamodb";
 import {
   DeleteObjectsCommand,
@@ -17,6 +19,7 @@ import {
 } from "@aws-sdk/client-s3vectors";
 import {
   BatchWriteCommand,
+  type BatchWriteCommandInput,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -25,13 +28,17 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DocumentType } from "@smithy/types";
-import type { APIGatewayProxyEventV2 } from "aws-lambda";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import type {
+  APIGatewayProxyEventV2,
+  APIGatewayProxyStructuredResultV2,
+} from "aws-lambda";
+import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
 import type {
   Account,
   AccountRow,
   ChunkItem,
   DocumentRow,
+  DocumentStatus,
   Plan,
   UsageCategory,
   UsageSummary,
@@ -44,14 +51,39 @@ const jwks = createRemoteJWKSet(
 );
 
 // GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
-// S3 Vectors caps the filterable part of a vector's metadata at 2 KB.
+// S3 Vectors caps the filterable part of a vector's metadata at 2 KB. Title, tags
+// and authors share MAX_METADATA_BYTES of it, so the rest of a chunk's metadata fits.
 const MAX_FILTERABLE_METADATA_BYTES = 2048;
+export const MAX_METADATA_BYTES = 1200;
+// Upload, ingest and embed share these limits. Cohere embeds an image of at most
+// 5 MB, so a larger image setting is clamped here.
+export const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES ?? "52428800",
+  10,
+);
+export const MAX_IMAGE_UPLOAD_BYTES = Math.min(
+  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
+  5 * 1024 * 1024,
+);
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
 
+const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
+
+// The upload handler counts these documents against the in-flight limit. The upload
+// form's TTL and the settled statuses are shared so upload, list and sweeper agree.
+const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
+export const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+export const SETTLED_STATUSES = new Set([
+  "DELETING",
+  "EMBEDDED",
+  "FAILED",
+  "UPDATING",
+]);
+
 const NANO_PER_USD = 1_000_000_000;
-const NANO_PER_CENT = NANO_PER_USD / 100;
+export const NANO_PER_CENT = NANO_PER_USD / 100;
 
 const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
   const raw = process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12";
@@ -63,7 +95,7 @@ const EMBEDDING_INPUT_PRICE_PER_TOKEN =
   EMBEDDING_INPUT_PRICE_PER_1M_TOKENS / 1_000_000;
 
 // A query result costs one S3 GET ($0.0004 per 1k) to load its chunk text.
-const PRICING = {
+export const PRICING = {
   queryPerRequest: 5_000,
   queryPerResult: 400,
   uploadPerRequest: 2_000,
@@ -78,364 +110,14 @@ type TransactItem = NonNullable<
   ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]
 >[number];
 
+interface CohereEmbeddingResponse {
+  embeddings: number[][] | { float?: number[][] };
+}
+
 export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 // A document the pipeline can never process, so it fails without retries.
 export class ContentError extends Error {}
-
-export function accountId(pk: string) {
-  return pk.replace("ACCOUNT#", "");
-}
-
-export function chunkId(sk: string) {
-  return sk.replace("CHUNK#", "");
-}
-
-export function docId(pk: string) {
-  return pk.replace("DOC#", "");
-}
-
-/** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
- * title, tags, authors and then sourceKey are added back while they fit. */
-export function fitFilterableMetadata<T extends Record<string, unknown>>(
-  metadata: T,
-): T {
-  const fits = (candidate: Record<string, unknown>): boolean =>
-    Buffer.byteLength(
-      JSON.stringify({
-        ...candidate,
-        chunkPreview: undefined,
-        s3ChunkKey: undefined,
-        text: undefined,
-      }),
-    ) <= MAX_FILTERABLE_METADATA_BYTES;
-  if (fits(metadata)) return metadata;
-  console.warn(
-    `Trimmed metadata of ${String(metadata.chunkId)} to fit the filterable cap`,
-  );
-
-  const { authors, sourceKey, tags, title, ...required } = metadata;
-  const fitted: Record<string, unknown> = { ...required };
-  if (title !== undefined && fits({ ...fitted, title: title })) {
-    fitted.title = title;
-  }
-  for (const [field, values] of [
-    ["tags", tags],
-    ["authors", authors],
-  ] as const) {
-    for (const value of Array.isArray(values) ? values : []) {
-      const next = [...((fitted[field] as unknown[] | undefined) ?? []), value];
-      if (fits({ ...fitted, [field]: next })) fitted[field] = next;
-    }
-  }
-  if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {
-    fitted.sourceKey = sourceKey;
-  }
-
-  return fitted as T;
-}
-
-/** Verifies a Shoo ID token for the app origin and returns its payload.
- * Used by extractUserId to authenticate API requests. */
-export async function verifyShooToken(idToken: string, appOrigin: string) {
-  // Tokens minted for the local dev server are only accepted outside production.
-  const audiences = [
-    `origin:${new URL(appOrigin).origin}`,
-    ...(process.env.DEPLOYMENT_STAGE === "production"
-      ? []
-      : ["origin:http://localhost:5173"]),
-  ];
-  const { payload } = await jwtVerify(idToken, jwks, {
-    issuer: SHOO_ISSUER,
-    audience: audiences,
-  });
-  if (typeof payload.pairwise_sub !== "string") {
-    throw new Error("Shoo token missing pairwise_sub");
-  }
-  return payload;
-}
-
-/** Reads the bearer token from an API event and returns the caller's user id.
- * Handlers return `response` as-is when it is set, which is a 401. */
-export async function extractUserId(
-  event: APIGatewayProxyEventV2,
-): Promise<{ userId: string; response?: unknown }> {
-  const authHeader =
-    event.headers?.authorization ?? event.headers?.Authorization ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (!token) {
-    return {
-      userId: "",
-      response: {
-        statusCode: 401,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Missing authorization token" }),
-      },
-    };
-  }
-
-  const appOrigin = process.env.APP_ORIGIN ?? "http://localhost:5173";
-  try {
-    const payload = await verifyShooToken(token, appOrigin);
-    return { userId: payload.pairwise_sub as string };
-  } catch {
-    return {
-      userId: "",
-      response: {
-        statusCode: 401,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Invalid authorization token" }),
-      },
-    };
-  }
-}
-
-/** Lists every chunk record of a document, following DynamoDB pagination.
- * Used by deleteDocumentVectors and by the update handler before a retag. */
-export async function listDocumentChunkItems(
-  documentId: string,
-  documentClient: DynamoDBDocumentClient,
-  tableName: string,
-): Promise<ChunkItem[]> {
-  const chunkItems: ChunkItem[] = [];
-  let lastKey: Record<string, unknown> | undefined;
-
-  do {
-    const chunkRecords = await documentClient.send(
-      new QueryCommand({
-        TableName: tableName,
-        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-        ExpressionAttributeValues: {
-          ":pk": `DOC#${documentId}`,
-          ":prefix": "CHUNK#",
-        },
-        ExclusiveStartKey: lastKey,
-      }),
-    );
-    chunkItems.push(
-      ...(chunkRecords.Items as unknown as ChunkItem[]).map((item) => ({
-        pk: item.pk,
-        sk: item.sk,
-        s3ChunkKey: item.s3ChunkKey,
-        pageStart: item.pageStart,
-        pageEnd: item.pageEnd,
-        tokenCount: item.tokenCount,
-        status: item.status,
-        text: item.text,
-      })),
-    );
-    lastKey = chunkRecords.LastEvaluatedKey;
-  } while (lastKey);
-
-  return chunkItems;
-}
-
-/** Deletes all of a document's vectors and returns its chunk records.
- * Callers pass the records to deleteDocumentChunkRecords afterwards. */
-export async function deleteDocumentVectors(
-  documentId: string,
-  documentClient: DynamoDBDocumentClient,
-  vectorClient: S3VectorsClient,
-  tableName: string,
-  vectorBucketName: string,
-  vectorIndexName: string,
-): Promise<ChunkItem[]> {
-  const chunkItems = await listDocumentChunkItems(
-    documentId,
-    documentClient,
-    tableName,
-  );
-
-  const vectorKeys = chunkItems
-    .map((item) => chunkId(item.sk))
-    .filter((id): id is string => Boolean(id));
-  const deletes: Promise<unknown>[] = [];
-  for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
-    deletes.push(
-      vectorClient.send(
-        new DeleteVectorsCommand({
-          vectorBucketName: vectorBucketName,
-          indexName: vectorIndexName,
-          keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
-        }),
-      ),
-    );
-  }
-  // Every batch settles before a failure is thrown, so no delete is still in flight.
-  const deleted = await Promise.allSettled(deletes);
-  const failedDelete = deleted.find((result) => result.status === "rejected");
-  if (failedDelete) throw failedDelete.reason;
-
-  return chunkItems;
-}
-
-/** Swaps the tags on a document's vectors and returns how many were rewritten.
- * PutVectors replaces metadata, so each vector is fetched and re-put whole. */
-export async function retagDocumentVectors(
-  chunkItems: ChunkItem[],
-  tags: string[] | null,
-  vectorClient: S3VectorsClient,
-  vectorBucketName: string,
-  vectorIndexName: string,
-): Promise<number> {
-  const vectorKeys = chunkItems.map((item) => chunkId(item.sk)).filter(Boolean);
-  const batches: string[][] = [];
-  for (let i = 0; i < vectorKeys.length; i += VECTOR_GET_BATCH) {
-    batches.push(vectorKeys.slice(i, i + VECTOR_GET_BATCH));
-  }
-
-  // Every batch settles before a failure is thrown, so no stale put lands after
-  // the caller releases its update lease.
-  const results = await Promise.allSettled(
-    batches.map(async (keys) => {
-      const existing = await vectorClient.send(
-        new GetVectorsCommand({
-          vectorBucketName: vectorBucketName,
-          indexName: vectorIndexName,
-          keys: keys,
-          returnData: true,
-          returnMetadata: true,
-        }),
-      );
-
-      const vectors = (existing.vectors ?? [])
-        // A chunk with no text is never embedded, so it has no vector to retag.
-        .filter((vector) => vector.key && vector.data)
-        .map((vector) => ({
-          key: vector.key!,
-          data: vector.data!,
-          metadata: applyTags(vector.metadata, tags),
-        }));
-      if (vectors.length === 0) return 0;
-
-      await vectorClient.send(
-        new PutVectorsCommand({
-          vectorBucketName: vectorBucketName,
-          indexName: vectorIndexName,
-          vectors: vectors,
-        }),
-      );
-      return vectors.length;
-    }),
-  );
-
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) throw failed.reason;
-
-  return results.reduce(
-    (total, result) =>
-      total + (result.status === "fulfilled" ? result.value : 0),
-    0,
-  );
-}
-
-/** Consistently loads a document's META row, or null when the document does not exist.
- * Used by the update handler and the S3 ingest and cleanup adapters to decide on writes. */
-export async function getDocument(
-  documentId: string,
-  documentClient: DynamoDBDocumentClient,
-  tableName: string,
-): Promise<DocumentRow | null> {
-  const result = await documentClient.send(
-    new GetCommand({
-      TableName: tableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      ConsistentRead: true,
-    }),
-  );
-  return (result.Item as DocumentRow | undefined) ?? null;
-}
-
-/** Batch deletes chunk records 25 at a time, retrying unprocessed items.
- * Throws when some records still fail after three attempts. */
-export async function deleteDocumentChunkRecords(
-  chunkItems: ChunkItem[],
-  documentClient: DynamoDBDocumentClient,
-  tableName: string,
-) {
-  for (let i = 0; i < chunkItems.length; i += 25) {
-    let requests: WriteRequest[] = chunkItems.slice(i, i + 25).map((item) => ({
-      DeleteRequest: {
-        Key: { pk: item.pk, sk: item.sk } as unknown as Record<
-          string,
-          AttributeValue
-        >,
-      },
-    }));
-
-    for (let attempt = 0; requests.length > 0 && attempt < 3; attempt += 1) {
-      // Back off before resending throttled items so retries don't hammer the
-      // same throttling window.
-      if (attempt > 0)
-        await delay(2 ** (attempt - 1) * CHUNK_DELETE_BACKOFF_MS);
-      const response = await documentClient.send(
-        new BatchWriteCommand({
-          RequestItems: { [tableName]: requests },
-        }),
-      );
-      requests = response.UnprocessedItems?.[tableName] ?? [];
-    }
-
-    if (requests.length > 0) {
-      throw new Error("Failed to delete DynamoDB chunk records");
-    }
-  }
-}
-
-export async function deleteDocumentS3Data(
-  documentId: string,
-  s3Client: S3Client,
-  storageBucketName: string,
-) {
-  await deleteS3Prefix(`chunks/${documentId}/`, s3Client, storageBucketName);
-  await deleteS3Prefix(`parsed/${documentId}/`, s3Client, storageBucketName);
-}
-
-/** Deletes every object version and delete marker under a prefix.
- * Returns the number of versions removed; used by delete and cleanup flows. */
-export async function deleteS3Prefix(
-  prefix: string,
-  s3Client: S3Client,
-  storageBucketName: string,
-): Promise<number> {
-  let keyMarker: string | undefined;
-  let versionIdMarker: string | undefined;
-  let count = 0;
-
-  do {
-    const list = await s3Client.send(
-      new ListObjectVersionsCommand({
-        Bucket: storageBucketName,
-        Prefix: prefix,
-        KeyMarker: keyMarker,
-        VersionIdMarker: versionIdMarker,
-      }),
-    );
-    const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
-    if (objects.length === 0) return count;
-
-    const response = await s3Client.send(
-      new DeleteObjectsCommand({
-        Bucket: storageBucketName,
-        Delete: {
-          Objects: objects.map((object) => ({
-            Key: object.Key!,
-            VersionId: object.VersionId,
-          })),
-          Quiet: true,
-        },
-      }),
-    );
-    if (response.Errors?.length) {
-      throw new Error("Failed to delete S3 versions");
-    }
-    count += objects.length;
-    keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
-    versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
-  } while (keyMarker);
-
-  return count;
-}
 
 /** Takes one token from the caller's bucket for an operation, refilling hourly.
  * Handlers reject the request when `allowed` is false. */
@@ -517,28 +199,209 @@ export async function checkRateLimit(
   return { allowed: false, remaining: 0 };
 }
 
-/** Loads a plan row by id from the plans table, or null when it is missing.
- * Used by getDefaultPlan. */
-export async function getPlan(
-  planId: string,
-  plansTableName: string,
-): Promise<Plan | null> {
-  const result = await dynamo.send(
-    new GetCommand({
-      TableName: plansTableName,
-      Key: { pk: `PLAN#${planId}`, sk: "PLAN" },
-    }),
-  );
-  return (result?.Item as unknown as Plan) ?? null;
+export async function checkUsageLimit(
+  userId: string,
+  tableName: string,
+): Promise<{ allowed: boolean; summary: UsageSummary }> {
+  const summary = await getUsageSummary(userId, tableName);
+
+  return { allowed: !summary.paused, summary: summary };
 }
 
+/** Batch deletes chunk records 25 at a time, retrying unprocessed items.
+ * Throws when some records still fail after three attempts. */
+export async function deleteDocumentChunkRecords(
+  chunkItems: ChunkItem[],
+  documentClient: DynamoDBDocumentClient,
+  tableName: string,
+): Promise<void> {
+  for (let i = 0; i < chunkItems.length; i += 25) {
+    let requests: NonNullable<BatchWriteCommandInput["RequestItems"]>[string] =
+      chunkItems.slice(i, i + 25).map((item) => ({
+        DeleteRequest: { Key: { pk: item.pk, sk: item.sk } },
+      }));
+
+    for (let attempt = 0; requests.length > 0 && attempt < 3; attempt += 1) {
+      // Back off before resending throttled items so retries don't hammer the
+      // same throttling window.
+      if (attempt > 0)
+        await delay(2 ** (attempt - 1) * CHUNK_DELETE_BACKOFF_MS);
+      const response = await documentClient.send(
+        new BatchWriteCommand({
+          RequestItems: { [tableName]: requests },
+        }),
+      );
+      requests = response.UnprocessedItems?.[tableName] ?? [];
+    }
+
+    if (requests.length > 0) {
+      throw new Error("Failed to delete DynamoDB chunk records");
+    }
+  }
+}
+
+export async function deleteDocumentS3Data(
+  documentId: string,
+  s3Client: S3Client,
+  storageBucketName: string,
+): Promise<void> {
+  await deleteS3Prefix(`chunks/${documentId}/`, s3Client, storageBucketName);
+  await deleteS3Prefix(`parsed/${documentId}/`, s3Client, storageBucketName);
+}
+
+/** Deletes all of a document's vectors and returns its chunk records.
+ * Callers pass the records to deleteDocumentChunkRecords afterwards. */
+export async function deleteDocumentVectors(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  vectorClient: S3VectorsClient,
+  tableName: string,
+  vectorBucketName: string,
+  vectorIndexName: string,
+): Promise<ChunkItem[]> {
+  const chunkItems = await listDocumentChunkItems(
+    documentId,
+    documentClient,
+    tableName,
+  );
+
+  const vectorKeys = chunkItems
+    .map((item) => chunkId(item.sk))
+    .filter((id): id is string => Boolean(id));
+  const deletes: Promise<unknown>[] = [];
+  for (let i = 0; i < vectorKeys.length; i += VECTOR_DELETE_BATCH) {
+    deletes.push(
+      vectorClient.send(
+        new DeleteVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          keys: vectorKeys.slice(i, i + VECTOR_DELETE_BATCH),
+        }),
+      ),
+    );
+  }
+  // Every batch settles before a failure is thrown, so no delete is still in flight.
+  const deleted = await Promise.allSettled(deletes);
+  const failedDelete = deleted.find((result) => result.status === "rejected");
+  if (failedDelete) throw failedDelete.reason;
+
+  return chunkItems;
+}
+
+/** Deletes every object version and delete marker under a prefix.
+ * Returns the number of versions removed; used by delete and cleanup flows. */
+export async function deleteS3Prefix(
+  prefix: string,
+  s3Client: S3Client,
+  storageBucketName: string,
+): Promise<number> {
+  let keyMarker: string | undefined;
+  let versionIdMarker: string | undefined;
+  let count = 0;
+
+  do {
+    const list = await s3Client.send(
+      new ListObjectVersionsCommand({
+        Bucket: storageBucketName,
+        Prefix: prefix,
+        KeyMarker: keyMarker,
+        VersionIdMarker: versionIdMarker,
+      }),
+    );
+    const objects = [...(list.Versions ?? []), ...(list.DeleteMarkers ?? [])];
+    if (objects.length === 0) return count;
+
+    const response = await s3Client.send(
+      new DeleteObjectsCommand({
+        Bucket: storageBucketName,
+        Delete: {
+          Objects: objects.map((object) => ({
+            Key: object.Key!,
+            VersionId: object.VersionId,
+          })),
+          Quiet: true,
+        },
+      }),
+    );
+    if (response.Errors?.length) {
+      throw new Error("Failed to delete S3 versions");
+    }
+    count += objects.length;
+    keyMarker = list.IsTruncated ? list.NextKeyMarker : undefined;
+    versionIdMarker = list.IsTruncated ? list.NextVersionIdMarker : undefined;
+  } while (keyMarker);
+
+  return count;
+}
+
+/** Reads the bearer token from an API event and returns the caller's user id.
+ * Handlers return `response` as-is when it is set, which is a 401. */
+export async function extractUserId(
+  event: APIGatewayProxyEventV2,
+): Promise<{ userId: string; response?: APIGatewayProxyStructuredResultV2 }> {
+  const authHeader =
+    event.headers?.authorization ?? event.headers?.Authorization ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (!token) {
+    return {
+      userId: "",
+      response: {
+        statusCode: 401,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Missing authorization token" }),
+      },
+    };
+  }
+
+  const appOrigin = process.env.APP_ORIGIN ?? "http://localhost:5173";
+  try {
+    const payload = await verifyShooToken(token, appOrigin);
+    return { userId: payload.pairwise_sub as string };
+  } catch {
+    return {
+      userId: "",
+      response: {
+        statusCode: 401,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Invalid authorization token" }),
+      },
+    };
+  }
+}
+
+/** Loads the deploy-owned default plan, or null when it is missing. Read fresh on
+ * every call so a lowered allowance is enforced at once. */
 export async function getDefaultPlan(
   plansTableName?: string,
 ): Promise<Plan | null> {
-  return getPlan(
-    defaultPlanId(),
-    plansTableName ?? process.env.PLANS_TABLE_NAME!,
+  const result = await dynamo.send(
+    new GetCommand({
+      TableName: plansTableName ?? process.env.PLANS_TABLE_NAME!,
+      Key: { pk: `PLAN#${defaultPlanId()}`, sk: "PLAN" },
+    }),
   );
+
+  return (result?.Item as Plan | undefined) ?? null;
+}
+
+/** Loads a document's META row, or null when it does not exist. Consistent unless a
+ * caller that tolerates staleness opts out to halve the read cost.
+ * Used by the pipeline stages, update handler and S3 adapters to decide on writes. */
+export async function getDocument(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
+  tableName: string,
+  consistentRead = true,
+): Promise<DocumentRow | null> {
+  const result = await documentClient.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      ConsistentRead: consistentRead,
+    }),
+  );
+
+  return (result.Item as DocumentRow | undefined) ?? null;
 }
 
 /** Returns the user's account profile, creating it on the default plan once.
@@ -642,43 +505,327 @@ export async function getUsageSummary(
   };
 }
 
-export async function checkUsageLimit(
+/** Calls the Cohere embedding model, bills its input tokens to the user and returns
+ * one vector per input. Used by the embed stage and the query handler. */
+export async function invokeEmbeddingModel(
+  bedrock: BedrockRuntimeClient,
+  body: Record<string, unknown>,
   userId: string,
-  tableName: string,
-): Promise<{ allowed: boolean; summary: UsageSummary }> {
-  const summary = await getUsageSummary(userId, tableName);
-  return { allowed: !summary.paused, summary: summary };
+  accountsTableName: string,
+  operation: "ingest" | "query",
+  modality: "image" | "mixed" | "text",
+): Promise<number[][]> {
+  let inputTokenCount: number | undefined;
+  const command = new InvokeModelCommand({
+    modelId: embeddingModel(),
+    contentType: "application/json",
+    accept: "application/json",
+    requestMetadata: JSON.stringify({
+      cheapkbEmbeddingModel: embeddingModel(),
+      cheapkbInputModality: modality,
+      cheapkbOperation: operation,
+      cheapkbStage: process.env.DEPLOYMENT_STAGE ?? "unknown",
+      cheapkbUsageCategory: "embed",
+      cheapkbUserId: userId,
+    }),
+    trace: "ENABLED",
+    body: JSON.stringify(body),
+  });
+  // The SDK output drops response headers, so the billed token count is read here.
+  command.middlewareStack.add(
+    (next) => async (args) => {
+      const result = await next(args);
+      const headers = (
+        result as typeof result & {
+          response?: { headers?: Record<string, string> };
+        }
+      ).response?.headers;
+      const tokenHeader = headers?.["x-amzn-bedrock-input-token-count"];
+      const parsed = tokenHeader ? Number.parseInt(tokenHeader, 10) : NaN;
+      inputTokenCount =
+        Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+      return result;
+    },
+    {
+      name: "captureBedrockInputTokens",
+      priority: "low",
+      step: "deserialize",
+    },
+  );
+  const response = await bedrock.send(command);
+  if (inputTokenCount) {
+    await recordUsage(userId, accountsTableName, "embed", inputTokenCount);
+  } else {
+    console.warn(
+      `[${operation}] Bedrock response omitted its input token count`,
+      { requestId: response.$metadata.requestId },
+    );
+  }
+  const payload = JSON.parse(
+    new TextDecoder().decode(response.body),
+  ) as CohereEmbeddingResponse;
+  const embeddings = Array.isArray(payload.embeddings)
+    ? payload.embeddings
+    : payload.embeddings?.float;
+  const dimension = embeddingDimension();
+  if (
+    !embeddings?.length ||
+    embeddings.some((embedding) => embedding.length !== dimension)
+  ) {
+    throw new Error(`Cohere Embed v4 returned an invalid ${dimension}D vector`);
+  }
+
+  return embeddings;
 }
 
-/** Sums the nano USD cost of a user's daily usage rows between two days.
- * Used by getUsageSummary for the current cycle. */
-export async function sumUsageNano(
-  userId: string,
+/** Lists every chunk record of a document, following DynamoDB pagination.
+ * Used by deleteDocumentVectors and by the update handler before a retag. */
+export async function listDocumentChunkItems(
+  documentId: string,
+  documentClient: DynamoDBDocumentClient,
   tableName: string,
-  startDay: string,
-  endDay: string,
-): Promise<number> {
-  let total = 0;
+): Promise<ChunkItem[]> {
+  const chunkItems: ChunkItem[] = [];
   let lastKey: Record<string, unknown> | undefined;
+
   do {
-    const result = await dynamo.send(
+    const chunkRecords = await documentClient.send(
       new QueryCommand({
         TableName: tableName,
-        KeyConditionExpression: "pk = :pk AND sk BETWEEN :start AND :end",
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
         ExpressionAttributeValues: {
-          ":pk": `ACCOUNT#${userId}`,
-          ":start": `USAGE#${startDay}`,
-          ":end": `USAGE#${endDay}`,
+          ":pk": `DOC#${documentId}`,
+          ":prefix": "CHUNK#",
         },
         ExclusiveStartKey: lastKey,
       }),
     );
-    for (const item of result?.Items ?? []) {
-      total += (item.costNano as number) ?? 0;
-    }
-    lastKey = result?.LastEvaluatedKey;
+    chunkItems.push(
+      ...((chunkRecords.Items ?? []) as ChunkItem[]).map((item) => ({
+        pk: item.pk,
+        sk: item.sk,
+        s3ChunkKey: item.s3ChunkKey,
+        pageStart: item.pageStart,
+        pageEnd: item.pageEnd,
+        tokenCount: item.tokenCount,
+        status: item.status,
+        text: item.text,
+      })),
+    );
+    lastKey = chunkRecords.LastEvaluatedKey;
   } while (lastKey);
-  return total;
+
+  return chunkItems;
+}
+
+/** Records a pipeline stage failure on its document, marking it FAILED on the third
+ * attempt. A deleted document has nothing left to record the error on. */
+export async function recordStageError(
+  documentId: string,
+  tableName: string,
+  step: "CHUNKING" | "EMBEDDING" | "PARSING",
+  err: unknown,
+  attempt: number,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const failed = attempt >= 3;
+  // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
+  let lastError = "Processing failed. Reindex to try again.";
+  if (step === "EMBEDDING")
+    lastError = "Embedding failed. Reindex to try again.";
+  else if (err instanceof ContentError) lastError = err.message;
+
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression: failed
+          ? "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t"
+          : "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
+        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":deleting": "DELETING",
+          ...(failed ? { ":s": "FAILED" } : {}),
+          ":e": lastError,
+          ":r": attempt,
+          ":f": step,
+          ":t": now,
+        },
+      }),
+    );
+  } catch (error) {
+    if (error instanceof ConditionalCheckFailedException) return;
+    throw error;
+  }
+
+  console.log(
+    failed
+      ? `[pipeline] Marked ${documentId} as FAILED in ${step} after ${attempt} attempts`
+      : `[pipeline] ${step} retry ${attempt}/3 for ${documentId}`,
+  );
+}
+
+/** Adds billable units to the user's daily usage row, once per operationId.
+ * Called by the upload, query, ingest and embed functions. */
+export async function recordUsage(
+  userId: string,
+  tableName: string,
+  category: UsageCategory,
+  units: number,
+  operationId?: string,
+): Promise<void> {
+  if (units <= 0) return;
+
+  let costNano = 0;
+  if (category === "query") costNano = units * PRICING.queryPerRequest;
+  if (category === "queryResult") costNano = units * PRICING.queryPerResult;
+  if (category === "upload") costNano = units * PRICING.uploadPerRequest;
+  if (category === "ingest") costNano = units * PRICING.ingestPerDocument;
+  if (category === "embed")
+    costNano = Math.round(units * PRICING.embedPerToken);
+
+  const now = new Date();
+  const day = dayKey(now.getTime());
+  const pk = `ACCOUNT#${userId}`;
+  const sk = `USAGE#${day}`;
+  const field = categoryField(category);
+  const ttl = Math.floor(now.getTime() / 1000) + 90 * 24 * 60 * 60;
+
+  const update = {
+    TableName: tableName,
+    Key: { pk: pk, sk: sk },
+    UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
+    ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
+    ExpressionAttributeValues: {
+      ":u": units,
+      ":c": costNano,
+      ":zero": 0,
+      ":day": day,
+      ":t": now.toISOString(),
+      ":ttl": ttl,
+    },
+  };
+  if (!operationId) {
+    await dynamo.send(new UpdateCommand(update));
+    return;
+  }
+
+  try {
+    await dynamo.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Update: update },
+          {
+            Put: {
+              TableName: tableName,
+              Item: { pk: pk, sk: `USAGEEVENT#${operationId}`, ttl: ttl },
+              ConditionExpression: "attribute_not_exists(pk)",
+            },
+          },
+        ],
+      }),
+    );
+  } catch (error) {
+    if ((error as Error).name !== "TransactionCanceledException") throw error;
+    const existing = await dynamo.send(
+      new GetCommand({
+        TableName: tableName,
+        Key: { pk: pk, sk: `USAGEEVENT#${operationId}` },
+        ConsistentRead: true,
+      }),
+    );
+    if (!existing.Item) throw error;
+  }
+}
+
+/** Swaps the tags on a document's vectors and returns how many were rewritten.
+ * PutVectors replaces metadata, so each vector is fetched and re-put whole. */
+export async function retagDocumentVectors(
+  chunkItems: ChunkItem[],
+  tags: string[] | null,
+  vectorClient: S3VectorsClient,
+  vectorBucketName: string,
+  vectorIndexName: string,
+): Promise<number> {
+  const vectorKeys = chunkItems.map((item) => chunkId(item.sk)).filter(Boolean);
+  const batches: string[][] = [];
+  for (let i = 0; i < vectorKeys.length; i += VECTOR_GET_BATCH) {
+    batches.push(vectorKeys.slice(i, i + VECTOR_GET_BATCH));
+  }
+
+  // Every batch settles before a failure is thrown, so no stale put lands after
+  // the caller releases its update lease.
+  const results = await Promise.allSettled(
+    batches.map(async (keys) => {
+      const existing = await vectorClient.send(
+        new GetVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          keys: keys,
+          returnData: true,
+          returnMetadata: true,
+        }),
+      );
+
+      const vectors = (existing.vectors ?? [])
+        // A chunk with no text is never embedded, so it has no vector to retag.
+        .filter((vector) => vector.key && vector.data)
+        .map((vector) => ({
+          key: vector.key!,
+          data: vector.data!,
+          metadata: applyTags(vector.metadata, tags),
+        }));
+      if (vectors.length === 0) return 0;
+
+      await vectorClient.send(
+        new PutVectorsCommand({
+          vectorBucketName: vectorBucketName,
+          indexName: vectorIndexName,
+          vectors: vectors,
+        }),
+      );
+      return vectors.length;
+    }),
+  );
+
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
+
+  return results.reduce(
+    (total, result) =>
+      total + (result.status === "fulfilled" ? result.value : 0),
+    0,
+  );
+}
+
+/** Sets a pipeline document's status unless it is gone or being deleted. A stage
+ * that finishes passes clearError to reset the failure fields in the same write. */
+export async function setDocumentStatus(
+  documentId: string,
+  tableName: string,
+  status: DocumentStatus,
+  now: string,
+  clearError: boolean,
+): Promise<void> {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: clearError
+        ? "SET #s = :s, updatedAt = :t, lastError = :null, retryCount = :zero, failedStep = :null"
+        : "SET #s = :s, updatedAt = :t",
+      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":deleting": "DELETING",
+        ":s": status,
+        ":t": now,
+        ...(clearError ? { ":null": null, ":zero": 0 } : {}),
+      },
+    }),
+  );
 }
 
 /** Adds deltaBytes to the account's storage and accrued cost, once per operationId.
@@ -690,7 +837,7 @@ export async function updateStorageBytes(
   operationId?: string,
   alsoWrite?: TransactItem,
   expectedBytes?: number,
-) {
+): Promise<void> {
   if (deltaBytes === 0) return;
   const pk = `ACCOUNT#${userId}`;
   const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
@@ -797,77 +944,257 @@ export async function updateStorageBytes(
   throw new Error("Storage usage changed concurrently");
 }
 
-/** Adds billable units to the user's daily usage row, once per operationId.
- * Called by the upload, query, ingest and embed functions. */
-export async function recordUsage(
+/** Verifies a Shoo ID token for the app origin and returns its payload.
+ * Used by extractUserId to authenticate API requests. */
+export async function verifyShooToken(
+  idToken: string,
+  appOrigin: string,
+): Promise<JWTPayload> {
+  // Tokens minted for the local dev server are only accepted outside production.
+  const audiences = [
+    `origin:${new URL(appOrigin).origin}`,
+    ...(process.env.DEPLOYMENT_STAGE === "production"
+      ? []
+      : ["origin:http://localhost:5173"]),
+  ];
+  const { payload } = await jwtVerify(idToken, jwks, {
+    issuer: SHOO_ISSUER,
+    audience: audiences,
+  });
+  if (typeof payload.pairwise_sub !== "string") {
+    throw new Error("Shoo token missing pairwise_sub");
+  }
+
+  return payload;
+}
+
+export function accountId(pk: string): string {
+  return pk.replace("ACCOUNT#", "");
+}
+
+export function centsToNanoUsd(cents: number): number {
+  return cents * NANO_PER_CENT;
+}
+
+export function chunkId(sk: string): string {
+  return sk.replace("CHUNK#", "");
+}
+
+/** Returns the billing cycle containing nowMs, from midnight UTC on the creation
+ * day-of-month (29-31 clamp to month end), so each usage day is in one cycle. */
+export function currentCycle(
+  account: Account,
+  nowMs: number,
+): { startMs: number; endMs: number } {
+  const created = new Date(account.createdAt);
+  const anchorDay = created.getUTCDate();
+  const year = created.getUTCFullYear();
+  const month = created.getUTCMonth();
+
+  let index = 0;
+  while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index += 1;
+
+  return {
+    startMs: monthAnchor(year, month + index, anchorDay),
+    endMs: monthAnchor(year, month + index + 1, anchorDay),
+  };
+}
+
+/** Reads a /tags/{name} path's tag name, or returns a 400 response when it is invalid. */
+export function decodeTagName(
+  pathParameters: APIGatewayProxyEventV2["pathParameters"],
+): string | APIGatewayProxyStructuredResultV2 {
+  const raw = pathParameters?.name;
+  let decoded: string;
+  try {
+    decoded = raw ? decodeURIComponent(raw) : "";
+  } catch {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Tag name contains invalid URL encoding" }),
+    };
+  }
+  const name = decoded.trim();
+  if (!name) {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Tag name is required" }),
+    };
+  }
+
+  return name;
+}
+
+export function defaultPlanId(): string {
+  return process.env.DEFAULT_PLAN_ID ?? "basic";
+}
+
+export function docId(pk: string): string {
+  return pk.replace("DOC#", "");
+}
+
+export function embeddingDimension(): number {
+  return parseInt(process.env.EMBEDDING_DIMENSION ?? "1024", 10);
+}
+
+export function embeddingModel(): string {
+  return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
+}
+
+/** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
+ * title, tags, authors and then sourceKey are added back while they fit. */
+export function fitFilterableMetadata<T extends Record<string, unknown>>(
+  metadata: T,
+): T {
+  const fits = (candidate: Record<string, unknown>): boolean =>
+    Buffer.byteLength(
+      JSON.stringify({
+        ...candidate,
+        chunkPreview: undefined,
+        s3ChunkKey: undefined,
+        text: undefined,
+      }),
+    ) <= MAX_FILTERABLE_METADATA_BYTES;
+  if (fits(metadata)) return metadata;
+  console.warn(
+    `Trimmed metadata of ${String(metadata.chunkId)} to fit the filterable cap`,
+  );
+
+  const { authors, sourceKey, tags, title, ...required } = metadata;
+  const fitted: Record<string, unknown> = { ...required };
+  if (title !== undefined && fits({ ...fitted, title: title })) {
+    fitted.title = title;
+  }
+  for (const [field, values] of [
+    ["tags", tags],
+    ["authors", authors],
+  ] as const) {
+    for (const value of Array.isArray(values) ? values : []) {
+      const next = [...((fitted[field] as unknown[] | undefined) ?? []), value];
+      if (fits({ ...fitted, [field]: next })) fitted[field] = next;
+    }
+  }
+  if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {
+    fitted.sourceKey = sourceKey;
+  }
+
+  return fitted as T;
+}
+
+/** Whether a document still counts against the in-flight limit: a pending replacement
+ * until it expires, UPLOADED for 15 minutes and other unsettled statuses for an hour. */
+export function isDocumentInFlight(
+  item: {
+    status?: unknown;
+    updatedAt?: unknown;
+    replacementExpiresAt?: unknown;
+  },
+  nowMs: number,
+): boolean {
+  if (Date.parse(String(item.replacementExpiresAt ?? "")) > nowMs) return true;
+  if (SETTLED_STATUSES.has(String(item.status))) return false;
+  const windowMs =
+    item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
+
+  return nowMs - Date.parse(String(item.updatedAt ?? "")) < windowMs;
+}
+
+/** Checks a tags or authors list: at most 20 strings of at most 100 characters.
+ * Upload and update share it so both accept the same lists. */
+export function isShortStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= 20 &&
+    value.every((item) => typeof item === "string" && item.length <= 100)
+  );
+}
+
+/** Checks the leading magic bytes match the declared image MIME type.
+ * Used by the parse stage for uploads and the query handler for data URIs. */
+export function matchesImageSignature(
+  bytes: Uint8Array,
+  mimeType: string,
+): boolean {
+  if (mimeType === "image/jpeg") {
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (mimeType === "image/png") {
+    return (
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
+  }
+  if (mimeType === "image/gif") {
+    const signature = new TextDecoder().decode(bytes.slice(0, 6));
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  if (mimeType === "image/webp") {
+    return (
+      new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" &&
+      new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP"
+    );
+  }
+
+  return false;
+}
+
+/** UTF-8 size of the searchable metadata, measured the same way as the web client.
+ * Used by the upload and update handlers to hold title, tags and authors to budget. */
+export function metadataBytes(
+  title: unknown,
+  tags: unknown,
+  authors: unknown,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
+  );
+}
+
+export function storageCostNanoUsd(bytes: number, seconds: number): number {
+  const gb = bytes / (1024 * 1024 * 1024);
+  const prorated = (seconds / SECONDS_PER_MONTH) * gb;
+
+  return Math.round(prorated * PRICING.storagePerGbMonth);
+}
+
+/** Sums the nano USD cost of a user's daily usage rows between two days.
+ * Used by getUsageSummary for the current cycle. */
+async function sumUsageNano(
   userId: string,
   tableName: string,
-  category: UsageCategory,
-  units: number,
-  operationId?: string,
-): Promise<void> {
-  if (units <= 0) return;
-
-  let costNano = 0;
-  if (category === "query") costNano = units * PRICING.queryPerRequest;
-  if (category === "queryResult") costNano = units * PRICING.queryPerResult;
-  if (category === "upload") costNano = units * PRICING.uploadPerRequest;
-  if (category === "ingest") costNano = units * PRICING.ingestPerDocument;
-  if (category === "embed")
-    costNano = Math.round(units * PRICING.embedPerToken);
-
-  const now = new Date();
-  const day = dayKey(now.getTime());
-  const pk = `ACCOUNT#${userId}`;
-  const sk = `USAGE#${day}`;
-  const field = categoryField(category);
-  const ttl = Math.floor(now.getTime() / 1000) + 90 * 24 * 60 * 60;
-
-  const update = {
-    TableName: tableName,
-    Key: { pk: pk, sk: sk },
-    UpdateExpression: `SET ${field} = if_not_exists(${field}, :zero) + :u, costNano = if_not_exists(costNano, :zero) + :c, #day = :day, updatedAt = :t, #ttl = :ttl`,
-    ExpressionAttributeNames: { "#day": "day", "#ttl": "ttl" },
-    ExpressionAttributeValues: {
-      ":u": units,
-      ":c": costNano,
-      ":zero": 0,
-      ":day": day,
-      ":t": now.toISOString(),
-      ":ttl": ttl,
-    },
-  };
-  if (!operationId) {
-    await dynamo.send(new UpdateCommand(update));
-    return;
-  }
-
-  try {
-    await dynamo.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          { Update: update },
-          {
-            Put: {
-              TableName: tableName,
-              Item: { pk: pk, sk: `USAGEEVENT#${operationId}`, ttl: ttl },
-              ConditionExpression: "attribute_not_exists(pk)",
-            },
-          },
-        ],
-      }),
-    );
-  } catch (error) {
-    if ((error as Error).name !== "TransactionCanceledException") throw error;
-    const existing = await dynamo.send(
-      new GetCommand({
+  startDay: string,
+  endDay: string,
+): Promise<number> {
+  let total = 0;
+  let lastKey: Record<string, unknown> | undefined;
+  do {
+    const result = await dynamo.send(
+      new QueryCommand({
         TableName: tableName,
-        Key: { pk: pk, sk: `USAGEEVENT#${operationId}` },
-        ConsistentRead: true,
+        KeyConditionExpression: "pk = :pk AND sk BETWEEN :start AND :end",
+        ExpressionAttributeValues: {
+          ":pk": `ACCOUNT#${userId}`,
+          ":start": `USAGE#${startDay}`,
+          ":end": `USAGE#${endDay}`,
+        },
+        ExclusiveStartKey: lastKey,
       }),
     );
-    if (!existing.Item) throw error;
-  }
+    for (const item of result?.Items ?? []) {
+      total += (item.costNano as number) ?? 0;
+    }
+    lastKey = result?.LastEvaluatedKey;
+  } while (lastKey);
+
+  return total;
 }
 
 /** Returns vector metadata with its tags replaced, dropping the key when empty.
@@ -894,36 +1221,12 @@ function categoryField(category: UsageCategory): string {
   if (category === "queryResult") return "queryResults";
   if (category === "upload") return "uploadOps";
   if (category === "ingest") return "ingestOps";
+
   return "embedTokens";
-}
-
-function centsToNanoUsd(cents: number): number {
-  return cents * NANO_PER_CENT;
-}
-
-/** Returns the billing cycle containing nowMs, from midnight UTC on the creation
- * day-of-month (29-31 clamp to month end), so each usage day is in one cycle. */
-function currentCycle(account: Account, nowMs: number) {
-  const created = new Date(account.createdAt);
-  const anchorDay = created.getUTCDate();
-  const year = created.getUTCFullYear();
-  const month = created.getUTCMonth();
-
-  let index = 0;
-  while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index += 1;
-
-  return {
-    startMs: monthAnchor(year, month + index, anchorDay),
-    endMs: monthAnchor(year, month + index + 1, anchorDay),
-  };
 }
 
 function dayKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
-}
-
-function defaultPlanId(): string {
-  return process.env.DEFAULT_PLAN_ID ?? "basic";
 }
 
 function delay(ms: number): Promise<void> {
@@ -934,6 +1237,7 @@ function delay(ms: number): Promise<void> {
 
 function monthAnchor(year: number, monthIndex: number, day: number): number {
   const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+
   return Date.UTC(year, monthIndex, Math.min(day, lastDay));
 }
 
@@ -943,24 +1247,11 @@ function nanoUsdToUsd(nano: number): number {
 
 // Cycles used to start at the account's creation time; one stored from that
 // time still counts as the current cycle, so accrued cost carries over.
-function startsSameDay(storedStart: string | undefined, startMs: number) {
+function startsSameDay(
+  storedStart: string | undefined,
+  startMs: number,
+): boolean {
   const storedMs = Date.parse(storedStart ?? "");
+
   return Number.isFinite(storedMs) && dayKey(storedMs) === dayKey(startMs);
 }
-
-function storageCostNanoUsd(bytes: number, seconds: number): number {
-  const gb = bytes / (1024 * 1024 * 1024);
-  const prorated = (seconds / SECONDS_PER_MONTH) * gb;
-  return Math.round(prorated * PRICING.storagePerGbMonth);
-}
-
-export {
-  centsToNanoUsd,
-  currentCycle,
-  dayKey,
-  NANO_PER_CENT,
-  NANO_PER_USD,
-  nanoUsdToUsd,
-  PRICING,
-  storageCostNanoUsd,
-};

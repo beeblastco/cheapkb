@@ -32,33 +32,10 @@ import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const NOTICE_MS = 6000;
+const POLL_MS = 3000;
 
-/** Signed-out screen with the Google sign-in button, shown until a token exists. */
-function Guest({ onSignIn }: { onSignIn: () => void }) {
-  return (
-    <TooltipProvider>
-      <div className="flex min-h-dvh flex-col">
-        <main className="flex flex-1 items-center justify-center px-4">
-          <Card className="w-full max-w-sm">
-            <CardHeader>
-              <CardTitle>Sign in</CardTitle>
-              <CardDescription>
-                Continue to your private knowledge base.
-              </CardDescription>
-            </CardHeader>
-            <CardFooter>
-              <Button className="w-full cursor-pointer" onClick={onSignIn}>
-                <LogIn data-icon="inline-start" /> Continue with Google
-              </Button>
-            </CardFooter>
-          </Card>
-        </main>
-      </div>
-    </TooltipProvider>
-  );
-}
-
-function App() {
+/** Root component: signed-out screen, or the documents, usage and query workspace. */
+export default function App(): React.JSX.Element {
   const [identity, setIdentity] = useState<ShooIdentity | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
@@ -69,25 +46,26 @@ function App() {
     string,
     unknown
   > | null>(null);
-  const [loadingDocument, setLoadingDocument] = useState(false);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
   const documentsRef = useRef(documents);
   const documentRequest = useRef(0);
   const usageRequest = useRef(0);
+  const loadingDocument =
+    selectedDocument !== null && selectedDocumentData === null;
 
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
 
-  const dismissNotice = useCallback((id: string) => {
+  const dismissNotice = useCallback((id: string): void => {
     setNotices((current) => current.filter((notice) => notice.id !== id));
   }, []);
 
   // Shows an error at the top of the screen. A repeat replaces the one shown
   // with a fresh timer, and a notice with a retry stays until used or closed.
   const notify = useCallback(
-    (title: string, message: string, retry?: () => void) => {
+    (title: string, message: string, retry?: () => void): void => {
       const id = crypto.randomUUID();
       setNotices((current) => [
         ...current.filter(
@@ -104,14 +82,17 @@ function App() {
   const tagVocabulary = useTags(identity?.token ?? "");
 
   const request = useCallback(
-    (method: string, path: string, body?: Record<string, unknown>) =>
+    (
+      method: string,
+      path: string,
+      body?: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> =>
       apiCall(identity?.token ?? "", method, path, body),
     [identity?.token],
   );
 
-  // Loads usage on sign-in and after uploads, queries and deletes. A backend
-  // push (WebSocket or SSE) could replace these refreshes later.
-  const refreshUsage = useCallback(async () => {
+  // Loads usage on sign-in and after uploads, queries and deletes.
+  const refreshUsage = useCallback(async (): Promise<void> => {
     if (!identity?.token) return;
     const requestId = usageRequest.current + 1;
     usageRequest.current = requestId;
@@ -126,7 +107,7 @@ function App() {
   }, [identity?.token, notify]);
 
   const loadDocuments = useCallback(
-    async (showLoading = false) => {
+    async (showLoading = false): Promise<void> => {
       if (!identity?.token) return;
       if (showLoading) setLoadingDocuments(true);
       try {
@@ -147,7 +128,7 @@ function App() {
 
   useEffect(() => {
     /** Finishes a sign-in redirect if present, then restores the stored session. */
-    async function initialize() {
+    async function initialize(): Promise<void> {
       if (!import.meta.env.VITE_API_URL) {
         notify("App is not configured", "The API URL is missing.");
         return;
@@ -175,82 +156,43 @@ function App() {
     refreshUsage();
   }, [refreshUsage]);
 
+  // Polls while anything is in flight, skipping hidden tabs and catching up
+  // as soon as the tab is shown again.
   useEffect(() => {
     const hasInflight = documents.some(
       (document) =>
+        document.inFlight ||
         isActiveStatus(document.status) ||
         (document.status === "DELETING" && !document.lastError),
     );
     if (!hasInflight) return;
-    const timer = window.setInterval(() => loadDocuments(false), 3000);
-    return () => window.clearInterval(timer);
+    function poll(): void {
+      if (!window.document.hidden) loadDocuments(false);
+    }
+    const timer = window.setInterval(poll, POLL_MS);
+    window.document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(timer);
+      window.document.removeEventListener("visibilitychange", poll);
+    };
   }, [documents, loadDocuments]);
 
-  async function signIn() {
-    try {
-      await startSignIn();
-    } catch {
-      notify("Sign-in failed", "Could not start sign-in. Please try again.");
-    }
-  }
-
-  /** Opens the detail dialog for a document and loads its full record. Used by row and
-   * citation clicks; a newer call wins over an older one still in flight. */
-  async function showDocument(documentId: string) {
-    const requestId = documentRequest.current + 1;
-    documentRequest.current = requestId;
-    const document = documentsRef.current.find(
-      (current) => current.documentId === documentId,
-    );
-    setSelectedDocument(
-      document || { documentId: documentId, status: "", title: documentId },
-    );
-    setSelectedDocumentData(null);
-    setLoadingDocument(true);
-    try {
-      const data = await request(
-        "GET",
-        `/documents/${encodeURIComponent(documentId)}`,
-      );
-      if (requestId === documentRequest.current) {
-        setSelectedDocumentData(data);
-      }
-    } catch (error) {
-      if (requestId === documentRequest.current) {
-        closeDocument();
-        notify("Couldn't load document details", (error as Error).message);
-      }
-    } finally {
-      if (requestId === documentRequest.current) setLoadingDocument(false);
-    }
-  }
-
-  function closeDocument() {
+  /** Clears the detail dialog; a request still in flight is ignored. */
+  function closeDocument(): void {
     documentRequest.current += 1;
     setSelectedDocument(null);
     setSelectedDocumentData(null);
-    setLoadingDocument(false);
   }
 
-  /** Queues a document for reindexing and rolls the table back on failure. */
-  async function reindexDocument(documentId: string) {
-    const previous = documentsRef.current;
-    setDocuments((current) =>
-      current.map((document) => {
-        return document.documentId === documentId
-          ? { ...document, status: "QUEUED", lastError: null }
-          : document;
-      }),
-    );
+  async function deleteAllData(): Promise<void> {
     try {
-      await request(
-        "POST",
-        `/documents/${encodeURIComponent(documentId)}/reindex`,
-      );
+      await request("DELETE", "/account/data");
       await loadDocuments();
+      refreshUsage();
     } catch (error) {
-      setDocuments(previous);
-      notify("Reindex failed", (error as Error).message);
+      notify("Couldn't delete your data", (error as Error).message);
+      // Rethrown so the settings dialog stays open on failure.
+      throw error;
     }
   }
 
@@ -321,18 +263,65 @@ function App() {
     if (failedDocumentIds.length < documentIds.length) {
       refreshUsage();
     }
+
     return failedDocumentIds;
   }
 
-  async function deleteAllData() {
+  /** Queues a document for reindexing and rolls the table back on failure. */
+  async function reindexDocument(documentId: string): Promise<void> {
+    const previous = documentsRef.current;
+    setDocuments((current) =>
+      current.map((document) => {
+        return document.documentId === documentId
+          ? { ...document, inFlight: true, lastError: null, status: "QUEUED" }
+          : document;
+      }),
+    );
     try {
-      await request("DELETE", "/account/data");
+      await request(
+        "POST",
+        `/documents/${encodeURIComponent(documentId)}/reindex`,
+      );
       await loadDocuments();
-      refreshUsage();
     } catch (error) {
-      notify("Couldn't delete your data", (error as Error).message);
-      // Rethrown so the settings dialog stays open on failure.
-      throw error;
+      setDocuments(previous);
+      notify("Reindex failed", (error as Error).message);
+    }
+  }
+
+  /** Opens the detail dialog for a document and loads its full record. Used by row and
+   * citation clicks; a newer call wins over an older one still in flight. */
+  async function showDocument(documentId: string): Promise<void> {
+    const requestId = documentRequest.current + 1;
+    documentRequest.current = requestId;
+    const document = documentsRef.current.find(
+      (current) => current.documentId === documentId,
+    );
+    setSelectedDocument(
+      document || { documentId: documentId, status: "", title: documentId },
+    );
+    setSelectedDocumentData(null);
+    try {
+      const data = await request(
+        "GET",
+        `/documents/${encodeURIComponent(documentId)}`,
+      );
+      if (requestId === documentRequest.current) {
+        setSelectedDocumentData(data);
+      }
+    } catch (error) {
+      if (requestId === documentRequest.current) {
+        closeDocument();
+        notify("Couldn't load document details", (error as Error).message);
+      }
+    }
+  }
+
+  async function signIn(): Promise<void> {
+    try {
+      await startSignIn();
+    } catch {
+      notify("Sign-in failed", "Could not start sign-in. Please try again.");
     }
   }
 
@@ -395,4 +384,27 @@ function App() {
   );
 }
 
-export default App;
+/** Signed-out screen with the Google sign-in button, shown until a token exists. */
+function Guest({ onSignIn }: { onSignIn: () => void }): React.JSX.Element {
+  return (
+    <TooltipProvider>
+      <div className="flex min-h-dvh flex-col">
+        <main className="flex flex-1 items-center justify-center px-4">
+          <Card className="w-full max-w-sm">
+            <CardHeader>
+              <CardTitle>Sign in</CardTitle>
+              <CardDescription>
+                Continue to your private knowledge base.
+              </CardDescription>
+            </CardHeader>
+            <CardFooter>
+              <Button className="w-full cursor-pointer" onClick={onSignIn}>
+                <LogIn data-icon="inline-start" /> Continue with Google
+              </Button>
+            </CardFooter>
+          </Card>
+        </main>
+      </div>
+    </TooltipProvider>
+  );
+}

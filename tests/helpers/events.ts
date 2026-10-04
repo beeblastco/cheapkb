@@ -1,3 +1,7 @@
+import type {
+  InvokeModelCommand,
+  InvokeModelCommandOutput,
+} from "@aws-sdk/client-bedrock-runtime";
 import type { APIGatewayProxyEventV2, S3Event, SQSEvent } from "aws-lambda";
 
 const API_EVENT: APIGatewayProxyEventV2 = {
@@ -35,6 +39,33 @@ function apiEvent(
     ...input,
     headers: { ...API_EVENT.headers, ...input.headers },
     requestContext: input.requestContext ?? API_EVENT.requestContext,
+  };
+}
+
+/** Builds a fake for a mocked Bedrock client's send that runs the command's own
+ * middleware, so the code reads the input token header as it does in production. */
+function bedrockEmbeddings(
+  embeddings: number[][],
+  inputTokens: number,
+): (command: InvokeModelCommand) => Promise<InvokeModelCommandOutput> {
+  return async (command) => {
+    const handler = command.middlewareStack.resolve(
+      async () => ({
+        output: {
+          $metadata: {},
+          body: new TextEncoder().encode(
+            JSON.stringify({ embeddings: { float: embeddings } }),
+          ),
+        } as InvokeModelCommandOutput,
+        response: {
+          headers: { "x-amzn-bedrock-input-token-count": String(inputTokens) },
+        },
+      }),
+      {},
+    );
+    const { output } = await handler({ input: command.input });
+
+    return output as InvokeModelCommandOutput;
   };
 }
 
@@ -104,4 +135,4 @@ function sqsEvent(messageId: string, body: string, receiveCount = 1): SQSEvent {
   };
 }
 
-export { apiEvent, jsonApiEvent, s3Event, sqsEvent };
+export { apiEvent, bedrockEmbeddings, jsonApiEvent, s3Event, sqsEvent };

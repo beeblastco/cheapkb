@@ -1,26 +1,27 @@
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
-import {
-  DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  UpdateCommand,
-} from "@aws-sdk/lib-dynamodb";
-import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type {
+  SQSBatchItemFailure,
+  SQSBatchResponse,
+  SQSEvent,
+} from "aws-lambda";
 import { decode, encode } from "gpt-tokenizer";
-import { ContentError } from "../utils";
+import {
+  ContentError,
+  dynamo,
+  getDocument,
+  recordStageError,
+  setDocumentStatus,
+} from "../utils";
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
@@ -28,7 +29,7 @@ const CHUNK_WRITE_CONCURRENCY = 10;
 
 /** Chunk stage entry, called by the pipeline router with chunk records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
-  const batchItemFailures: Array<{ itemIdentifier: string }> = [];
+  const batchItemFailures: SQSBatchItemFailure[] = [];
 
   for (const record of event.Records) {
     let body: { documentId?: string; parsedKey?: string; sweeps?: number };
@@ -62,8 +63,10 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       // A failed error write retries only this record, so the records already
       // chunked in this batch are not replayed.
       try {
-        await handleError(
+        await recordStageError(
           documentId,
+          TableName,
+          "CHUNKING",
           err,
           err instanceof ContentError ? 3 : attempt,
         );
@@ -77,6 +80,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
+
   return { batchItemFailures: batchItemFailures };
 }
 
@@ -85,23 +89,17 @@ async function chunkDocument(
   documentId: string,
   parsedKey: string,
   attempt: number,
-) {
+): Promise<void> {
   const now = new Date().toISOString();
-  await updateStatus(documentId, "CHUNKING", now);
+  await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
 
-  const docResult = await dynamo.send(
-    new GetCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-    }),
-  );
-  const doc = docResult.Item ?? {};
+  const doc = await getDocument(documentId, dynamo, TableName, false);
+  if (!doc?.userId) throw new Error("Document owner is missing");
   const title = doc.title ?? null;
   const tags = doc.tags ?? null;
   const authors = doc.authors ?? null;
   const year = doc.year ?? null;
   const { mimeType, sourceKey, userId } = doc;
-  if (!userId) throw new Error("Document owner is missing");
 
   const resp = await s3.send(
     new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
@@ -157,8 +155,7 @@ async function chunkDocument(
 
   const chunks = splitIntoChunks(pages, maxTokens, overlapTokens, maxChunks);
   if (chunks.length === 0) {
-    await updateStatus(documentId, "CHUNKED", now);
-    await clearError(documentId, now);
+    await setDocumentStatus(documentId, TableName, "CHUNKED", now, true);
     return;
   }
 
@@ -225,39 +222,19 @@ async function chunkDocument(
   );
 }
 
-/** Resets the error fields on a document after a stage succeeds. */
-async function clearError(documentId: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :null, retryCount = :zero, failedStep = :null, updatedAt = :t",
-      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":deleting": "DELETING",
-        ":null": null,
-        ":zero": 0,
-        ":t": now,
-      },
-    }),
-  );
-}
-
 /** Marks the document CHUNKED and queues one embed message per new chunk. */
 async function finishChunking(
   documentId: string,
   chunkCount: number,
   chunkKeys: string[],
   now: string,
-) {
+): Promise<void> {
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :s, chunkCount = :c, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #s = :s, chunkCount = :c, updatedAt = :t, lastError = :null, retryCount = :zero, failedStep = :null",
       ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: {
@@ -265,12 +242,11 @@ async function finishChunking(
         ":s": "CHUNKED",
         ":c": chunkCount,
         ":t": now,
-        ":gsi1pk": "STATUS#CHUNKED",
-        ":gsi1sk": now,
+        ":null": null,
+        ":zero": 0,
       },
     }),
   );
-  await clearError(documentId, now);
   if (chunkKeys.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
 
   const sendSize = 10;
@@ -293,33 +269,25 @@ async function finishChunking(
   }
 }
 
-// A deleted document has nothing left to record the error on.
-async function handleError(documentId: string, err: unknown, attempt: number) {
-  try {
-    await writeError(documentId, err, attempt);
-  } catch (error) {
-    if (!(error instanceof ConditionalCheckFailedException)) throw error;
-  }
-}
-
 /** Finishes a document whose chunks were all embedded by an earlier delivery,
  * since no embed step will run for it. */
-async function markEmbeddedIfDone(documentId: string, chunkCount: number) {
+async function markEmbeddedIfDone(
+  documentId: string,
+  chunkCount: number,
+): Promise<void> {
   const now = new Date().toISOString();
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :t",
+        UpdateExpression: "SET #s = :s, updatedAt = :t",
         ConditionExpression:
           "attribute_exists(pk) AND embeddedCount >= :count AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":count": chunkCount,
           ":deleting": "DELETING",
-          ":gsi1pk": "STATUS#EMBEDDED",
           ":s": "EMBEDDED",
           ":t": now,
         },
@@ -356,84 +324,6 @@ async function putChunkRecord(
     if (error instanceof ConditionalCheckFailedException) return false;
     throw error;
   }
-}
-
-/** Sets the document status and its status index keys. */
-async function updateStatus(documentId: string, status: string, now: string) {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET #s = :s, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":deleting": "DELETING",
-        ":s": status,
-        ":t": now,
-        ":gsi1pk": `STATUS#${status}`,
-        ":gsi1sk": now,
-      },
-    }),
-  );
-}
-
-/** Records a chunk failure, marking the document FAILED on the third attempt. */
-async function writeError(documentId: string, err: unknown, attempt: number) {
-  const now = new Date().toISOString();
-  // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
-  const lastError =
-    err instanceof ContentError
-      ? err.message
-      : "Processing failed. Reindex to try again.";
-
-  if (attempt >= 3) {
-    await dynamo.send(
-      new UpdateCommand({
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression:
-          "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":deleting": "DELETING",
-          ":s": "FAILED",
-          ":e": lastError,
-          ":r": attempt,
-          ":f": "CHUNKING",
-          ":t": now,
-          ":gsi1pk": "STATUS#FAILED",
-          ":gsi1sk": now,
-        },
-      }),
-    );
-    console.log(
-      `[chunk] Marked ${documentId} as FAILED after ${attempt} retries`,
-    );
-    return;
-  }
-
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression:
-        "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
-      ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":deleting": "DELETING",
-        ":e": lastError,
-        ":r": attempt,
-        ":f": "CHUNKING",
-        ":t": now,
-      },
-    }),
-  );
-
-  console.log(`[chunk] Retry ${attempt}/3 for ${documentId}`);
 }
 
 /** Splits page text into overlapping token windows, capped at maxChunks. Windows

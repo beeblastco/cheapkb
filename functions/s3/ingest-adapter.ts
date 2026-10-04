@@ -1,8 +1,4 @@
-import type { S3Event } from "aws-lambda";
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-} from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
   DeleteObjectCommand,
   HeadObjectCommand,
@@ -11,22 +7,25 @@ import {
 } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type { S3Event } from "aws-lambda";
+import type { DocumentRow } from "../types";
 import {
   checkUsageLimit,
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
   deleteDocumentVectors,
+  dynamo,
   getDocument,
+  MAX_IMAGE_UPLOAD_BYTES,
+  MAX_UPLOAD_BYTES,
   recordUsage,
   updateStorageBytes,
 } from "../utils";
-import type { DocumentRow } from "../types";
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const sqs = new SQSClient({});
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
@@ -37,14 +36,6 @@ const DISPATCH_LEASE_MS = 60 * 1000;
 // A POST that starts just before its form expires can finish minutes later; edits
 // and reindex wait out the same grace, so nothing races a replacement before it.
 const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
-const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES ?? "52428800",
-  10,
-);
-const MAX_IMAGE_UPLOAD_BYTES = Math.min(
-  parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
-  5 * 1024 * 1024,
-);
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -56,7 +47,7 @@ const ALLOWED_MIME_TYPES = new Set([
 ]);
 
 /** S3 ObjectCreated handler for raw/ uploads; validates the file and queues the parse stage. */
-export async function handler(event: S3Event) {
+export async function handler(event: S3Event): Promise<void> {
   for (const record of event.Records ?? []) {
     const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
     const parts = key.split("/");
@@ -158,25 +149,13 @@ export async function handler(event: S3Event) {
   }
 }
 
-/** The old token-less POST can still overwrite the source while a replacement
- * is pending, so charge whatever now sits there. */
-async function chargeStaleOverwrite(
-  documentId: string,
-  doc: DocumentRow,
-  key: string,
-  eventId: string,
-): Promise<void> {
-  if (!isDispatched(doc)) return;
-  await recountStorage(documentId, doc, key, eventId);
-}
-
 /** Claims the document for dispatch with a lease; returns false when another event owns it. */
 async function claimDispatch(
   documentId: string,
   doc: DocumentRow,
   now: string,
   eventId: string,
-) {
+): Promise<boolean> {
   if (doc.status !== "UPLOADED" && doc.status !== "QUEUED") return false;
   if (doc.status === "QUEUED") {
     if (doc.dispatchState === "SENT") return false;
@@ -193,7 +172,7 @@ async function claimDispatch(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :queued, dispatchState = :claimed, dispatchEventId = :eventId, dispatchLeaseUntil = :leaseUntil, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now",
+          "SET #s = :queued, dispatchState = :claimed, dispatchEventId = :eventId, dispatchLeaseUntil = :leaseUntil, updatedAt = :now",
         ConditionExpression: wasUploaded
           ? "#s = :uploaded"
           : "#s = :queued AND (attribute_not_exists(dispatchLeaseUntil) OR dispatchLeaseUntil <= :now) AND (attribute_not_exists(dispatchState) OR dispatchState = :claimed)",
@@ -201,7 +180,6 @@ async function claimDispatch(
         ExpressionAttributeValues: {
           ":claimed": "CLAIMED",
           ":eventId": eventId,
-          ":gsi1pk": "STATUS#QUEUED",
           ":leaseUntil": new Date(
             Date.parse(now) + DISPATCH_LEASE_MS,
           ).toISOString(),
@@ -258,7 +236,7 @@ async function finalizeReplacement(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, gsi1pk = :gsi1pk, gsi1sk = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
         ConditionExpression: "replacementToken = :token AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
@@ -269,7 +247,6 @@ async function finalizeReplacement(
           ":authors": doc.pendingAuthors,
           ":year": doc.pendingYear,
           ":now": now,
-          ":gsi1pk": "STATUS#UPLOADED",
           ":token": doc.replacementToken,
           ":deleting": "DELETING",
         },
@@ -284,7 +261,10 @@ async function finalizeReplacement(
 }
 
 /** Marks the claimed dispatch as sent once the parse message is on the queue. */
-async function markDispatchSent(documentId: string, eventId: string) {
+async function markDispatchSent(
+  documentId: string,
+  eventId: string,
+): Promise<void> {
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
@@ -308,7 +288,7 @@ async function recountStorage(
   doc: DocumentRow,
   key: string,
   eventId: string,
-) {
+): Promise<void> {
   let objectSize: number;
   try {
     const object = await s3.send(
@@ -441,14 +421,17 @@ async function revertReplacement(
 }
 
 /** Returns a claimed document to UPLOADED when dispatch fails, so a retry can claim it. */
-async function rollbackQueueStatus(documentId: string, eventId: string) {
+async function rollbackQueueStatus(
+  documentId: string,
+  eventId: string,
+): Promise<void> {
   const now = new Date().toISOString();
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
       UpdateExpression:
-        "SET #s = :uploaded, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk REMOVE dispatchState, dispatchEventId, dispatchLeaseUntil",
+        "SET #s = :uploaded, updatedAt = :t REMOVE dispatchState, dispatchEventId, dispatchLeaseUntil",
       ExpressionAttributeNames: { "#s": "status" },
       ConditionExpression:
         "#s = :queued AND dispatchState = :claimed AND dispatchEventId = :eventId",
@@ -458,15 +441,16 @@ async function rollbackQueueStatus(documentId: string, eventId: string) {
         ":queued": "QUEUED",
         ":uploaded": "UPLOADED",
         ":t": now,
-        ":gsi1pk": "STATUS#UPLOADED",
-        ":gsi1sk": now,
       },
     }),
   );
 }
 
 /** Stores the source bytes already charged to the user for this document. */
-async function setCountedBytes(documentId: string, countedBytes: number) {
+async function setCountedBytes(
+  documentId: string,
+  countedBytes: number,
+): Promise<void> {
   await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
@@ -495,7 +479,8 @@ async function skipStaleReplacement(
     new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
   );
   if (object.Metadata?.["upload-token"] === doc.replacementToken) return false;
-  await chargeStaleOverwrite(documentId, doc, key, eventId);
+  // The old token-less POST can still overwrite a dispatched source, so charge what now sits there.
+  if (isDispatched(doc)) await recountStorage(documentId, doc, key, eventId);
   console.log(
     `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
   );
@@ -516,7 +501,7 @@ async function updateFailure(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
         // Another event may have claimed the upload since it was read.
         ConditionExpression: onlyIfUploaded ? "#s = :uploaded" : undefined,
         ExpressionAttributeNames: { "#s": "status" },
@@ -525,8 +510,6 @@ async function updateFailure(
           ":e": error,
           ":f": "UPLOAD",
           ":t": now,
-          ":gsi1pk": "STATUS#FAILED",
-          ":gsi1sk": now,
           ...(onlyIfUploaded ? { ":uploaded": "UPLOADED" } : {}),
         },
       }),
@@ -540,8 +523,10 @@ async function updateFailure(
   }
 }
 
-/** Dispatch already charged this document once, so later events only recount. */
+/** Dispatch already charged this document once, so later events only recount.
+ * The handler skips DELETING documents before this runs. */
 function isDispatched(doc: DocumentRow): boolean {
-  if (doc.status === "UPLOADED" || doc.status === "DELETING") return false;
+  if (doc.status === "UPLOADED") return false;
+
   return doc.status !== "QUEUED" || doc.dispatchState === "SENT";
 }

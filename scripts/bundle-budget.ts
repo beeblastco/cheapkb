@@ -1,6 +1,5 @@
-// Size budget for the JavaScript the web app ships. Run after the web build.
-//   node scripts/bundle-budget.ts --check    grade against bundle-budgets.json
-//   node scripts/bundle-budget.ts --record   adopt the current sizes as the baseline
+// Size budget for the JavaScript the web app ships, run after the web build:
+// --check grades against bundle-budgets.json, --record adopts the current sizes.
 
 import {
   appendFileSync,

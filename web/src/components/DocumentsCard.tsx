@@ -80,7 +80,6 @@ import {
   getStatusBadgeVariant,
   isActiveStatus,
   MAX_PROCESSING_DOCUMENTS,
-  PROCESSING_LIMIT_ERROR,
   updateDocumentTags,
   uploadDocument,
   validateUploadFile,
@@ -141,10 +140,6 @@ const EDITABLE_TAG_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 // An edit whose handler died keeps UPDATING; the API takes it over after this.
 const EDIT_LEASE_TTL_MS = 5 * 60 * 1000;
 
-type DocumentTableRow =
-  | { document: Document; kind: "document" }
-  | { item: UploadQueueItem; kind: "upload" };
-
 const TABLE_FEATURES = tableFeatures({
   columnFilteringFeature: columnFilteringFeature,
   filteredRowModel: createFilteredRowModel(),
@@ -193,6 +188,10 @@ const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
   { id: "actions", enableSorting: false },
 ];
 
+type DocumentTableRow =
+  | { document: Document; kind: "document" }
+  | { item: UploadQueueItem; kind: "upload" };
+
 export function DocumentsCard({
   documents,
   loading,
@@ -217,9 +216,9 @@ export function DocumentsCard({
   onDeleteSelected: (documentIds: string[]) => Promise<string[]>;
   onReindex: (documentId: string) => void;
   onView: (documentId: string) => void;
-  onUsageChange?: () => void;
+  onUsageChange: () => void;
   tagVocabulary: TagVocabulary;
-}) {
+}): React.JSX.Element {
   const {
     colorOf,
     createTag: handleCreateTag,
@@ -250,7 +249,7 @@ export function DocumentsCard({
   const fileInput = useRef<HTMLInputElement>(null);
   const documentsRef = useRef(documents);
   const itemsRef = useRef(items);
-  const syncingRef = useRef(syncing);
+  const syncingRef = useRef(false);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -260,12 +259,8 @@ export function DocumentsCard({
     itemsRef.current = items;
   }, [items]);
 
-  useEffect(() => {
-    syncingRef.current = syncing;
-  }, [syncing]);
-
   const handleUpdateDocumentTags = useCallback(
-    async (documentId: string, nextTags: string[]) => {
+    async (documentId: string, nextTags: string[]): Promise<void> => {
       // Errors propagate to the sheet, which renders them next to the save
       // button.
       const saved = await updateDocumentTags(token, documentId, nextTags);
@@ -281,7 +276,7 @@ export function DocumentsCard({
   );
 
   const addFiles = useCallback(
-    async (files: File[]) => {
+    async (files: File[]): Promise<void> => {
       if (syncingRef.current) return;
       const supportedFiles = files.filter((file) =>
         SUPPORTED_EXTENSIONS.some((extension) =>
@@ -353,7 +348,7 @@ export function DocumentsCard({
   );
 
   useEffect(() => {
-    function dragEnter(event: DragEvent) {
+    function dragEnter(event: DragEvent): void {
       if (syncingRef.current || !event.dataTransfer?.types.includes("Files")) {
         return;
       }
@@ -362,20 +357,20 @@ export function DocumentsCard({
       setDragging(true);
     }
 
-    function dragOver(event: DragEvent) {
-      if (!event.dataTransfer?.types.includes("Files")) return;
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-    }
-
-    function dragLeave(event: DragEvent) {
+    function dragLeave(event: DragEvent): void {
       if (!event.dataTransfer?.types.includes("Files")) return;
       event.preventDefault();
       dragDepth.current = Math.max(0, dragDepth.current - 1);
       if (!dragDepth.current) setDragging(false);
     }
 
-    function drop(event: DragEvent) {
+    function dragOver(event: DragEvent): void {
+      if (!event.dataTransfer?.types.includes("Files")) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    }
+
+    function drop(event: DragEvent): void {
       if (syncingRef.current || !event.dataTransfer?.files.length) return;
       event.preventDefault();
       dragDepth.current = 0;
@@ -469,17 +464,6 @@ export function DocumentsCard({
     );
   }, [query, sorting]);
 
-  /** Clears every row on this page, including rows that turned unselectable
-   * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
-  function clearPageSelection() {
-    const pageRowIds = new Set(visible.map((row) => row.id));
-    setRowSelection((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(([id]) => !pageRowIds.has(id)),
-      ),
-    );
-  }
-
   useEffect(() => {
     if (pageCount === 0 || pagination.pageIndex < pageCount) return;
     setPagination((current) => ({
@@ -488,150 +472,9 @@ export function DocumentsCard({
     }));
   }, [pageCount, pagination.pageIndex]);
 
-  function isStillQueued(itemId: string): boolean {
-    return itemsRef.current.some((current) => current.id === itemId);
-  }
-
-  /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
-   * reloads documents and usage. Wired to the Sync button. */
-  async function syncAll() {
-    if (syncingRef.current) return;
-    const pending = itemsRef.current.filter((item) =>
-      ["READY", "FAILED"].includes(item.state),
-    );
-    if (!pending.length) return;
-
-    syncingRef.current = true;
-    setSyncing(true);
-    let succeeded = 0;
-    let failed = 0;
-
-    let nextIndex = 0;
-    let uploading = 0;
-    const retries = new Map<string, number>();
-    const workers = Array.from(
-      { length: Math.min(UPLOAD_CONCURRENCY, pending.length) },
-      async () => {
-        while (nextIndex < pending.length) {
-          const item = pending[nextIndex];
-          nextIndex += 1;
-          let counted = false;
-          // Files wait their turn as READY and can be removed before a worker
-          // reaches them, which now takes minutes under the processing cap.
-          if (!isStillQueued(item.id)) continue;
-          updateItem(item.id, {
-            error: "",
-            progress: "Requesting upload URL",
-            state: "SYNCING",
-          });
-          try {
-            // Each queued file keeps counting until it finishes, so wait for room
-            // under the server's cap rather than spend upload requests on 429s.
-            while (
-              countProcessingDocuments(documentsRef.current, Date.now()) +
-                uploading >=
-              MAX_PROCESSING_DOCUMENTS
-            ) {
-              updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
-              });
-              await delay(PROCESSING_POLL_MS);
-            }
-            uploading += 1;
-            counted = true;
-            const documentId = await uploadDocument(
-              token,
-              item.file,
-              {
-                authors: splitList(item.authors),
-                tags: item.tags.length ? item.tags : undefined,
-                title: item.title.trim() || item.file.name,
-                year: Number(item.year) || undefined,
-              },
-              (progress) => updateItem(item.id, { progress: progress }),
-            );
-            const now = new Date().toISOString();
-            const queued: Document = {
-              createdAt: now,
-              documentId: documentId,
-              mimeType: getFileMimeType(item.file),
-              status: "QUEUED",
-              title: item.title.trim() || item.file.name,
-              updatedAt: now,
-            };
-            // The ref catches up only after a render, and this worker checks the
-            // cap again right away, so count the new document now.
-            documentsRef.current = [...documentsRef.current, queued];
-            setDocuments((current) => {
-              const byId = new Map(
-                current.map((document) => [document.documentId, document]),
-              );
-              byId.set(documentId, queued);
-              const next = Array.from(byId.values());
-              writePendingDocuments(next);
-              return next;
-            });
-            setItems((current) =>
-              current.filter((currentItem) => currentItem.id !== item.id),
-            );
-            succeeded += 1;
-          } catch (error) {
-            // Another tab or a pending replacement can still hit the cap.
-            const attempts = retries.get(item.id) ?? 0;
-            if (
-              (error as Error).message === PROCESSING_LIMIT_ERROR &&
-              attempts < PROCESSING_RETRIES
-            ) {
-              retries.set(item.id, attempts + 1);
-              updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
-              });
-              await delay(PROCESSING_RETRY_MS);
-              pending.push(item);
-              continue;
-            }
-            updateItem(item.id, {
-              error: (error as Error).message,
-              progress: "Sync failed",
-              state: "FAILED",
-            });
-            failed += 1;
-          } finally {
-            if (counted) uploading -= 1;
-          }
-        }
-      },
-    );
-    await Promise.all(workers);
-
-    syncingRef.current = false;
-    setSyncing(false);
-    await loadDocuments();
-    // Notify App to refresh usage. Future backend can emit billing events
-    // here instead of relying on the client to poll.
-    onUsageChange?.();
-    if (failed) {
-      notify(
-        "Sync failed",
-        `${succeeded} synced, ${failed} failed. See the rows for details.`,
-      );
-    }
-  }
-
-  function updateItem(id: string, values: Partial<UploadQueueItem>) {
-    setItems((current) =>
-      current.map((item) => (item.id === id ? { ...item, ...values } : item)),
-    );
-  }
-
-  function removeItem(id: string) {
-    setItems((current) => current.filter((item) => item.id !== id));
-    if (selectedItemId === id) setSelectedItemId(null);
-  }
-
   /** Deletes the selected documents, drops the selected staged uploads, and keeps
    * failed documents selected. Wired to the bulk delete confirm. */
-  async function deleteSelected() {
+  async function deleteSelected(): Promise<void> {
     if (!selectedCount || deletingSelected) return;
     setDeletingSelected(true);
     setDeleteMessage("");
@@ -666,6 +509,156 @@ export function DocumentsCard({
       ),
     );
     setDeletingSelected(false);
+  }
+
+  /** Uploads every READY or FAILED staged file, UPLOAD_CONCURRENCY at a time, then
+   * reloads documents and usage. Wired to the Sync button. */
+  async function syncAll(): Promise<void> {
+    if (syncingRef.current) return;
+    const pending = itemsRef.current.filter((item) =>
+      ["READY", "FAILED"].includes(item.state),
+    );
+    if (!pending.length) return;
+
+    syncingRef.current = true;
+    setSyncing(true);
+    let succeeded = 0;
+    let failed = 0;
+
+    let nextIndex = 0;
+    let uploading = 0;
+    const retries = new Map<string, number>();
+    const workers = Array.from(
+      { length: Math.min(UPLOAD_CONCURRENCY, pending.length) },
+      async () => {
+        while (nextIndex < pending.length) {
+          const item = pending[nextIndex];
+          nextIndex += 1;
+          let counted = false;
+          // Files wait their turn as READY and can be removed before a worker
+          // reaches them, which now takes minutes under the processing cap.
+          if (!isStillQueued(item.id)) continue;
+          updateItem(item.id, {
+            error: "",
+            progress: "Requesting upload URL",
+            state: "SYNCING",
+          });
+          try {
+            // Each queued file keeps counting until it finishes, so wait for room
+            // under the server's cap rather than spend upload requests on 429s.
+            while (
+              countProcessingDocuments(documentsRef.current) + uploading >=
+              MAX_PROCESSING_DOCUMENTS
+            ) {
+              updateItem(item.id, {
+                progress: "Waiting for earlier files to finish processing",
+              });
+              await delay(PROCESSING_POLL_MS);
+              // The app's poll pauses in hidden tabs, so only then does the wait refresh the list.
+              if (window.document.hidden) await loadDocuments(false);
+            }
+            uploading += 1;
+            counted = true;
+            const documentId = await uploadDocument(
+              token,
+              item.file,
+              {
+                authors: splitList(item.authors),
+                tags: item.tags.length ? item.tags : undefined,
+                title: item.title.trim() || item.file.name,
+                year: Number(item.year) || undefined,
+              },
+              (progress) => updateItem(item.id, { progress: progress }),
+            );
+            const now = new Date().toISOString();
+            const queued: Document = {
+              createdAt: now,
+              documentId: documentId,
+              inFlight: true,
+              mimeType: getFileMimeType(item.file),
+              status: "QUEUED",
+              title: item.title.trim() || item.file.name,
+              updatedAt: now,
+            };
+            // The ref catches up only after a render, and this worker checks the
+            // cap again right away, so count the new document now.
+            documentsRef.current = [...documentsRef.current, queued];
+            setDocuments((current) => {
+              const byId = new Map(
+                current.map((document) => [document.documentId, document]),
+              );
+              byId.set(documentId, queued);
+              const next = Array.from(byId.values());
+              writePendingDocuments(next);
+              return next;
+            });
+            setItems((current) =>
+              current.filter((currentItem) => currentItem.id !== item.id),
+            );
+            succeeded += 1;
+          } catch (error) {
+            // Another tab or a pending replacement can still hit the cap.
+            const attempts = retries.get(item.id) ?? 0;
+            const { code, message } = error as Error & { code?: string };
+            if (code === "PROCESSING_LIMIT" && attempts < PROCESSING_RETRIES) {
+              retries.set(item.id, attempts + 1);
+              updateItem(item.id, {
+                progress: "Waiting for earlier files to finish processing",
+              });
+              await delay(PROCESSING_RETRY_MS);
+              pending.push(item);
+              continue;
+            }
+            updateItem(item.id, {
+              error: message,
+              progress: "Sync failed",
+              state: "FAILED",
+            });
+            failed += 1;
+          } finally {
+            if (counted) uploading -= 1;
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+
+    syncingRef.current = false;
+    setSyncing(false);
+    await loadDocuments();
+    onUsageChange();
+    if (failed) {
+      notify(
+        "Sync failed",
+        `${succeeded} synced, ${failed} failed. See the rows for details.`,
+      );
+    }
+  }
+
+  /** Clears every row on this page, including rows that turned unselectable
+   * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
+  function clearPageSelection(): void {
+    const pageRowIds = new Set(visible.map((row) => row.id));
+    setRowSelection((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([id]) => !pageRowIds.has(id)),
+      ),
+    );
+  }
+
+  function isStillQueued(itemId: string): boolean {
+    return itemsRef.current.some((current) => current.id === itemId);
+  }
+
+  function removeItem(id: string): void {
+    setItems((current) => current.filter((item) => item.id !== id));
+    if (selectedItemId === id) setSelectedItemId(null);
+  }
+
+  function updateItem(id: string, values: Partial<UploadQueueItem>): void {
+    setItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...values } : item)),
+    );
   }
 
   return (
@@ -943,148 +936,35 @@ export function DocumentsCard({
   );
 }
 
-/** Table header that toggles sorting for its column on click. */
-function SortableHead({
-  className,
-  column,
+/** Icon button with a tooltip, used for the per-row actions. */
+function ActionButton({
+  children,
+  disabled,
   label,
+  onClick,
 }: {
-  className?: string;
-  column: Column<typeof TABLE_FEATURES, DocumentTableRow, unknown>;
+  children: React.ReactNode;
+  disabled?: boolean;
   label: string;
-}) {
-  const sorted = column.getIsSorted();
+  onClick: () => void;
+}): React.JSX.Element {
   return (
-    <TableHead
-      aria-sort={
-        sorted === "asc"
-          ? "ascending"
-          : sorted === "desc"
-            ? "descending"
-            : "none"
-      }
-      className={className}
-    >
-      {/* A plain button keeps the label flush with the cell text below it. */}
-      <button
-        className="inline-flex cursor-pointer items-center gap-1.5 font-medium"
-        onClick={column.getToggleSortingHandler()}
-        type="button"
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={label}
+            disabled={disabled}
+            onClick={onClick}
+            size="icon-sm"
+            variant="ghost"
+          />
+        }
       >
-        {label}
-        <ArrowDownUp className="size-3.5" />
-      </button>
-    </TableHead>
-  );
-}
-
-/** Renders a document's tags as colored badges, or a dash when there are none. */
-function TagList({
-  colorOf,
-  tags,
-}: {
-  colorOf: (name: string) => TagColor;
-  tags: string[];
-}) {
-  if (!tags.length) return <span className="text-muted-foreground">—</span>;
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      {tags.map((name) => (
-        <TagBadge color={colorOf(name)} key={name} name={name} />
-      ))}
-    </div>
-  );
-}
-
-/** Table row for a staged upload, with edit and remove actions. */
-function UploadRow({
-  colorOf,
-  item,
-  onEdit,
-  onRemove,
-  onSelectedChange,
-  selected,
-}: {
-  colorOf: (name: string) => TagColor;
-  item: UploadQueueItem;
-  onEdit: () => void;
-  onRemove: () => void;
-  onSelectedChange: (selected?: boolean) => void;
-  selected: boolean;
-}) {
-  return (
-    <TableRow
-      aria-label={`Edit ${item.title}`}
-      className="cursor-pointer"
-      data-state={selected ? "selected" : undefined}
-      onClick={onEdit}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onEdit();
-      }}
-      role="button"
-      tabIndex={0}
-    >
-      <TableCell
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <Checkbox
-          aria-label={`Select ${item.title}`}
-          checked={selected}
-          disabled={item.state === "SYNCING"}
-          onCheckedChange={onSelectedChange}
-        />
-      </TableCell>
-      <TableCell className="max-w-0">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="truncate font-medium">{item.title}</span>
-          <span className="truncate text-muted-foreground">
-            {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
-          </span>
-          {item.error ? (
-            <span className="truncate text-destructive">{item.error}</span>
-          ) : null}
-        </div>
-      </TableCell>
-      <TableCell className="max-w-0">
-        <TagList colorOf={colorOf} tags={item.tags} />
-      </TableCell>
-      <TableCell className="max-w-0">
-        <div className="flex items-center gap-2">
-          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
-            <Spinner />
-          ) : null}
-          <Badge variant="outline">{item.state}</Badge>
-        </div>
-      </TableCell>
-      <TableCell>—</TableCell>
-      <TableCell>—</TableCell>
-      <TableCell
-        className="max-w-0"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => event.stopPropagation()}
-      >
-        <div className="flex justify-end gap-1">
-          <ActionButton
-            disabled={item.state === "SYNCING"}
-            label="Edit metadata"
-            onClick={onEdit}
-          >
-            <Pencil />
-          </ActionButton>
-          <ActionButton
-            disabled={item.state === "SYNCING"}
-            label="Remove file"
-            onClick={onRemove}
-          >
-            <Trash2 />
-          </ActionButton>
-        </div>
-      </TableCell>
-    </TableRow>
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -1107,7 +987,7 @@ function DocumentRow({
   onSelectedChange: (selected?: boolean) => void;
   onView: (documentId: string) => void;
   selected: boolean;
-}) {
+}): React.JSX.Element {
   const updatedAt = Date.parse(document.updatedAt ?? document.createdAt ?? "");
   const stalled =
     isActiveStatus(document.status) &&
@@ -1250,7 +1130,7 @@ function DocumentTagsSheet({
   onSave: (documentId: string, tags: string[]) => Promise<void>;
   tagError: string | null;
   tags: Tag[];
-}) {
+}): React.JSX.Element | null {
   const [value, setValue] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1267,7 +1147,7 @@ function DocumentTagsSheet({
   const dirty = JSON.stringify(value) !== JSON.stringify(document.tags ?? []);
 
   /** Saves the picked tags and closes the sheet, or shows the error inline. */
-  async function save() {
+  async function save(): Promise<void> {
     if (!document || saving) return;
     setSaving(true);
     setError("");
@@ -1325,6 +1205,60 @@ function DocumentTagsSheet({
   );
 }
 
+/** Table header that toggles sorting for its column on click. */
+function SortableHead({
+  className,
+  column,
+  label,
+}: {
+  className?: string;
+  column: Column<typeof TABLE_FEATURES, DocumentTableRow, unknown>;
+  label: string;
+}): React.JSX.Element {
+  const sorted = column.getIsSorted();
+  return (
+    <TableHead
+      aria-sort={
+        sorted === "asc"
+          ? "ascending"
+          : sorted === "desc"
+            ? "descending"
+            : "none"
+      }
+      className={className}
+    >
+      {/* A plain button keeps the label flush with the cell text below it. */}
+      <button
+        className="inline-flex cursor-pointer items-center gap-1.5 font-medium"
+        onClick={column.getToggleSortingHandler()}
+        type="button"
+      >
+        {label}
+        <ArrowDownUp className="size-3.5" />
+      </button>
+    </TableHead>
+  );
+}
+
+/** Renders a document's tags as colored badges, or a dash when there are none. */
+function TagList({
+  colorOf,
+  tags,
+}: {
+  colorOf: (name: string) => TagColor;
+  tags: string[];
+}): React.JSX.Element {
+  if (!tags.length) return <span className="text-muted-foreground">—</span>;
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {tags.map((name) => (
+        <TagBadge color={colorOf(name)} key={name} name={name} />
+      ))}
+    </div>
+  );
+}
+
 /** Side sheet that edits a staged upload's title, authors, year and tags. */
 function UploadMetadataSheet({
   colorOf,
@@ -1348,7 +1282,7 @@ function UploadMetadataSheet({
   syncing: boolean;
   tagError: string | null;
   tags: Tag[];
-}) {
+}): React.JSX.Element {
   return (
     <Sheet onOpenChange={(open) => !open && onClose()} open={Boolean(item)}>
       <SheetContent className="overflow-y-auto">
@@ -1420,36 +1354,108 @@ function UploadMetadataSheet({
   );
 }
 
-/** Icon button with a tooltip, used for the per-row actions. */
-function ActionButton({
-  children,
-  disabled,
-  label,
-  onClick,
+/** Table row for a staged upload, with edit and remove actions. */
+function UploadRow({
+  colorOf,
+  item,
+  onEdit,
+  onRemove,
+  onSelectedChange,
+  selected,
 }: {
-  children: React.ReactNode;
-  disabled?: boolean;
-  label: string;
-  onClick: () => void;
-}) {
+  colorOf: (name: string) => TagColor;
+  item: UploadQueueItem;
+  onEdit: () => void;
+  onRemove: () => void;
+  onSelectedChange: (selected?: boolean) => void;
+  selected: boolean;
+}): React.JSX.Element {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            aria-label={label}
-            disabled={disabled}
-            onClick={onClick}
-            size="icon-sm"
-            variant="ghost"
-          />
-        }
+    <TableRow
+      aria-label={`Edit ${item.title}`}
+      className="cursor-pointer"
+      data-state={selected ? "selected" : undefined}
+      onClick={onEdit}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onEdit();
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <TableCell
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
       >
-        {children}
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+        <Checkbox
+          aria-label={`Select ${item.title}`}
+          checked={selected}
+          disabled={item.state === "SYNCING"}
+          onCheckedChange={onSelectedChange}
+        />
+      </TableCell>
+      <TableCell className="max-w-0">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate font-medium">{item.title}</span>
+          <span className="truncate text-muted-foreground">
+            {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+          </span>
+          {item.error ? (
+            <span className="truncate text-destructive">{item.error}</span>
+          ) : null}
+        </div>
+      </TableCell>
+      <TableCell className="max-w-0">
+        <TagList colorOf={colorOf} tags={item.tags} />
+      </TableCell>
+      <TableCell className="max-w-0">
+        <div className="flex items-center gap-2">
+          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
+            <Spinner />
+          ) : null}
+          <Badge variant="outline">{item.state}</Badge>
+        </div>
+      </TableCell>
+      <TableCell>—</TableCell>
+      <TableCell>—</TableCell>
+      <TableCell
+        className="max-w-0"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex justify-end gap-1">
+          <ActionButton
+            disabled={item.state === "SYNCING"}
+            label="Edit metadata"
+            onClick={onEdit}
+          >
+            <Pencil />
+          </ActionButton>
+          <ActionButton
+            disabled={item.state === "SYNCING"}
+            label="Remove file"
+            onClick={onRemove}
+          >
+            <Trash2 />
+          </ActionButton>
+        </div>
+      </TableCell>
+    </TableRow>
   );
+}
+
+function canEditTags(document: Document): boolean {
+  if (EDITABLE_TAG_STATUSES.has(document.status)) return true;
+  if (document.status !== "UPDATING") return false;
+
+  return Date.now() - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 /** Lowercased text the table's global filter matches a row against. */
@@ -1468,19 +1474,6 @@ function getSearchValue(row: DocumentTableRow): string {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-}
-
-function canEditTags(document: Document): boolean {
-  if (EDITABLE_TAG_STATUSES.has(document.status)) return true;
-  if (document.status !== "UPDATING") return false;
-
-  return Date.now() - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
 
 function splitList(value: string): string[] | undefined {

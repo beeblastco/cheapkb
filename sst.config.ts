@@ -180,14 +180,11 @@ export default $config({
       fields: {
         pk: "string",
         sk: "string",
-        gsi1pk: "string",
-        gsi1sk: "string",
         gsi2pk: "string",
         gsi2sk: "string",
       },
       primaryIndex: { hashKey: "pk", rangeKey: "sk" },
       globalIndexes: {
-        GSI1: { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
         GSI2: { hashKey: "gsi2pk", rangeKey: "gsi2sk" },
       },
       ttl: "ttl",
@@ -579,7 +576,7 @@ export default $config({
             "dynamodb:Query",
             "dynamodb:UpdateItem",
           ],
-          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+          resources: [accountsTable.arn, rateLimitsTable.arn],
         },
         {
           actions: ["dynamodb:GetItem"],

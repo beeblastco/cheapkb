@@ -77,7 +77,7 @@ describe("reindex migration", () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body).restartFrom).toBe("EMBEDDING");
+    expect(JSON.parse(response.body!).restartFrom).toBe("EMBEDDING");
     expect(sqsMock.commandCalls(SendMessageBatchCommand)).toHaveLength(1);
     const chunkReset = dynamoMock
       .commandCalls(UpdateCommand)
@@ -188,7 +188,7 @@ describe("reindex migration", () => {
     );
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body).restartFrom).toBe("PARSING");
+    expect(JSON.parse(response.body!).restartFrom).toBe("PARSING");
     expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
   });
