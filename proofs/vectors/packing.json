@@ -2625,4 +2625,14 @@
  {"items":
   [{"userId": "user-0", "text": "a", "repeat": 100},
    {"userId": "user-0", "text": "z", "repeat": 19922944}],
-  "batchSizes": null}]
+  "batchSizes": null},
+ {"items":
+  [{"userId": "user-0", "text": "a", "repeat": 1000},
+   {"userId": "user-0", "text": "b", "repeat": 19921730}],
+  "batchSizes": [2]},
+ {"items":
+  [{"userId": "user-0", "text": "a", "repeat": 1000},
+   {"userId": "user-0", "text": "b", "repeat": 19921731}],
+  "batchSizes": [1, 1]},
+ {"items": [{"userId": "user-0", "text": "c", "repeat": 19922770}], "batchSizes": [1]},
+ {"items": [{"userId": "user-0", "text": "c", "repeat": 19922771}], "batchSizes": null}]

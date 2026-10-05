@@ -1,8 +1,11 @@
 name = "proofs"
-defaultTargets = ["Proofs", "vectors"]
+defaultTargets = ["Proofs", "Audit", "vectors"]
 
 [[lean_lib]]
 name = "Proofs"
+
+[[lean_lib]]
+name = "Audit"
 
 [[lean_exe]]
 name = "vectors"

@@ -47,6 +47,11 @@ def pendingReplacement (p : Params) (d : Doc) (now : Nat) : Bool :=
   | none => false
   | some e => decide (now ≤ e + p.grace)
 
+/-- PROCESSING_STATUSES in functions/admin/reindex.ts. -/
+def processing : Status → Bool
+  | .queued | .parsing | .parsed | .chunking | .chunked | .embedding => true
+  | _ => false
+
 def pipelineStatus : Status → Bool
   | .updating | .deleting | .uploaded => false
   | _ => true
@@ -84,8 +89,11 @@ inductive Step (v : Variant) (p : Params) : St → St → Prop
   | finalize (s : St) (d : Doc) (e : Nat) (hd : s.doc = some d) (he : d.replacement = some e)
       (hnd : d.status ≠ .deleting) (hlate : s.clock ≤ e + p.grace) :
       Step v p s { s with doc := some { d with status := .uploaded, replacement := none } }
-  /-- Reindex restarts a settled document once any replacement is past its grace. -/
-  | reindex (s : St) (d : Doc) (hd : s.doc = some d) (hs : settled d.status = true)
+  /-- Reindex restarts a settled document, or one stuck processing for an hour (the hour
+  is left out, so the step allows more than the code), once any replacement is past its
+  grace. -/
+  | reindex (s : St) (d : Doc) (hd : s.doc = some d)
+      (hs : settled d.status = true ∨ processing d.status = true)
       (hrep : pendingReplacement p d s.clock = false) :
       Step v p s { s with doc := some { d with status := .queued } }
 
@@ -107,7 +115,7 @@ theorem deleting_absorbing (p : Params) (s t : St) (d : Doc) (hd : s.doc = some 
   | remove => exact Or.inl rfl
   | reserve d' hd' hs => rw [hd] at hd'; cases hd'; simp [hdel, settled] at hs
   | finalize d' e hd' he hnd _ => rw [hd] at hd'; cases hd'; exact absurd hdel hnd
-  | reindex d' hd' hs => rw [hd] at hd'; cases hd'; simp [hdel, settled] at hs
+  | reindex d' hd' hs => rw [hd] at hd'; cases hd'; simp [hdel, settled, processing] at hs
 
 /-- A deleted document stays deleted: no write recreates its row. -/
 theorem no_resurrection (p : Params) (s t : St) (hd : s.doc = none) (h : Step ⟨true⟩ p s t) :
@@ -175,6 +183,7 @@ def anchors : List (String × String) :=
    ("functions/s3/ingest-adapter.ts", ": \"attribute_exists(pk) AND #s <> :deleting\","),
    ("functions/admin/update.ts", "ConditionExpression: \"#s = :updating AND updatedAt = :heldSince\","),
    ("functions/s3/ingest-adapter.ts", "ConditionExpression: \"replacementToken = :token AND #s <> :deleting\","),
-   ("functions/sweeper/index.ts", "\"attribute_exists(pk) AND NOT #s IN (:deleting, :embedded, :failed, :updating)\",")]
+   ("functions/sweeper/index.ts", "\"attribute_exists(pk) AND NOT #s IN (:deleting, :embedded, :failed, :updating)\","),
+   ("functions/admin/reindex.ts", "PROCESSING_STATUSES.has(status) &&")]
 
 end Proofs.Lifecycle

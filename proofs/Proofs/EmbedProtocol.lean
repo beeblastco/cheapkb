@@ -6,7 +6,9 @@ stage bumps in the same transaction that marks a chunk row EMBEDDED, and which
 Here every chunk row carries its generation (`createdAt`), every queued embed message
 names the generation it was made for, and messages are never consumed: SQS may deliver
 any of them again, late, in any order. A reindex resets the counter and records
-`reindexedAt`; a replacement removes the rows and the counter.
+`reindexedAt`. A replacement is the ingest adapter's separate writes: it deletes the
+rows one by one while older chunk runs may still write, then resets the counter and
+records `reindexedAt` in one conditional write.
 
 Assumptions: DynamoDB conditional writes and transactions are atomic; a reindex is stamped
 later than every chunk row written before it (Lambda clocks agree to within the time from
@@ -31,6 +33,8 @@ structure St where
   /-- META's reindexedAt; 0 when the document was never reindexed. -/
   resetAt : Nat := 0
   msgs : List Msg := []
+  /-- A replacement is between its first row delete and its META write. -/
+  replacing : Bool := false
 
 /-- Which of the two guards the protocol has. Before this change the embed stage counted
 chunks of any generation (`freshOnly := false`), and a chunk message that reported a first
@@ -67,9 +71,15 @@ inductive Step (v : Variant) : St → St → Prop
   /-- Reindex: embeddedCount := 0, reindexedAt := now, which is later than every row. -/
   | reindex (s : St) (t n : Nat) (ht : ∀ i r, s.rows i = some r → r.gen < t) (hle : s.resetAt ≤ t) :
       Step v s { s with count := 0, resetAt := t, chunkCount := n }
-  /-- A finalized replacement deletes the rows and removes the counters. -/
-  | replace (s : St) (n : Nat) :
-      Step v s { s with rows := fun _ => none, count := 0, chunkCount := n }
+  /-- finalizeReplacement starts deleting the old chunk rows. -/
+  | replaceStart (s : St) : Step v s { s with replacing := true }
+  /-- It deletes any row; older chunk runs can still write rows meanwhile. -/
+  | replaceDeleteRow (s : St) (i : Nat) (h : s.replacing = true) : Step v s (s.put i none)
+  /-- Its META write: REMOVE embeddedCount and chunkCount, SET reindexedAt = now, which is
+  later than every row written so far. -/
+  | replaceFinish (s : St) (t n : Nat) (h : s.replacing = true)
+      (ht : ∀ i r, s.rows i = some r → r.gen < t) (hle : s.resetAt ≤ t) :
+      Step v s { s with count := 0, resetAt := t, chunkCount := n, replacing := false }
 
 inductive Reachable (v : Variant) : St → Prop
   | init : Reachable v {}
@@ -83,7 +93,7 @@ def cnt (resetAt : Nat) : Option Row → Bool
 def counted (s : St) (i : Nat) : Bool := cnt s.resetAt (s.rows i)
 
 structure Inv (s : St) : Prop where
-  count : s.count = (List.range s.chunkCount).countP (counted s)
+  count : s.replacing = false → s.count = (List.range s.chunkCount).countP (counted s)
   /-- Rows past chunkCount are left over from before the last reset. -/
   outside : ∀ i r, s.chunkCount ≤ i → s.rows i = some r → r.gen ≤ s.resetAt
 
@@ -122,10 +132,10 @@ theorem inv_step (s t : St) (hi : Inv s) (h : Step fixed s t) : Inv t := by
         rcases hp with hp | hp
         · exact Or.inl hp
         · exact Or.inr (by omega)
-    refine ⟨?_, fun j r hj hr => ?_⟩
+    refine ⟨fun hrep => ?_, fun j r hj hr => ?_⟩
     · show s.count = (List.range s.chunkCount).countP
         (fun j => cnt s.resetAt (if j = i then some ⟨g, false⟩ else s.rows j))
-      rw [hc]; apply countP_congr; intro j _
+      rw [hc hrep]; apply countP_congr; intro j _
       show counted s j = _
       split
       · subst_vars; rw [hold]; rfl
@@ -136,10 +146,10 @@ theorem inv_step (s t : St) (hi : Inv s) (h : Step fixed s t) : Inv t := by
       · omega
       · exact ho j r hj this
   | removeRow i hle =>
-    refine ⟨?_, fun j r hj hr => ?_⟩
+    refine ⟨fun hrep => ?_, fun j r hj hr => ?_⟩
     · show s.count = (List.range s.chunkCount).countP
         (fun j => cnt s.resetAt (if j = i then none else s.rows j))
-      rw [hc]; apply countP_congr; intro j hj
+      rw [hc hrep]; apply countP_congr; intro j hj
       show counted s j = _
       split
       · omega
@@ -155,11 +165,11 @@ theorem inv_step (s t : St) (hi : Inv s) (h : Step fixed s t) : Inv t := by
       refine Nat.lt_of_not_le fun hle => ?_
       have := ho m.chunk r hle hr; omega
     have hold : counted s m.chunk = false := by unfold counted cnt; rw [hr]; simp [hne]
-    refine ⟨?_, fun j r' hj hr' => ?_⟩
+    refine ⟨fun hrep => ?_, fun j r' hj hr' => ?_⟩
     · show s.count + 1 = (List.range s.chunkCount).countP
         (fun j => cnt s.resetAt (if j = m.chunk then some ⟨r.gen, true⟩ else s.rows j))
       rw [countP_update s.chunkCount m.chunk hlt (counted s) _ (fun j hj => by simp [hj, counted])
-        hold (by simp [cnt]; omega), hc]
+        hold (by simp [cnt]; omega), hc hrep]
     · change s.chunkCount ≤ j at hj; change r'.gen ≤ s.resetAt
       have : (if j = m.chunk then some ⟨r.gen, true⟩ else s.rows j) = some r' := hr'
       split at this
@@ -170,31 +180,45 @@ theorem inv_step (s t : St) (hi : Inv s) (h : Step fixed s t) : Inv t := by
       intro j; unfold cnt; split
       · rfl
       · rename_i r hr; have := ht j r hr; simp; omega
-    refine ⟨?_, fun j r _ hr => Nat.le_of_lt (ht j r hr)⟩
+    refine ⟨fun _ => ?_, fun j r _ hr => Nat.le_of_lt (ht j r hr)⟩
     show 0 = (List.range n).countP (fun j => cnt t (s.rows j))
     rw [List.countP_eq_zero.2 fun j _ => by rw [hz]; simp]
-  | replace n =>
-    refine ⟨?_, fun j r _ hr => nomatch hr⟩
-    show 0 = (List.range n).countP (fun _ => cnt s.resetAt none)
-    simp [cnt]
+  | replaceStart => exact ⟨(fun h => nomatch h), ho⟩
+  | replaceDeleteRow i hrep =>
+    refine ⟨fun h => absurd hrep (by simp_all [St.put]), fun j r hj hr => ?_⟩
+    change s.chunkCount ≤ j at hj; change r.gen ≤ s.resetAt
+    have : (if j = i then none else s.rows j) = some r := hr
+    split at this
+    · cases this
+    · exact ho j r hj this
+  | replaceFinish t n hrep ht hle =>
+    have hz : ∀ j, cnt t (s.rows j) = false := by
+      intro j; unfold cnt; split
+      · rfl
+      · rename_i r hr; have := ht j r hr; simp; omega
+    refine ⟨fun _ => ?_, fun j r _ hr => Nat.le_of_lt (ht j r hr)⟩
+    show 0 = (List.range n).countP (fun j => cnt t (s.rows j))
+    rw [List.countP_eq_zero.2 fun j _ => by rw [hz]; simp]
 
 theorem inv_reachable (s : St) (h : Reachable fixed s) : Inv s := by
   induction h with
-  | init => exact ⟨by simp, fun _ _ _ h => nomatch h⟩
+  | init => exact ⟨fun _ => by simp, fun _ _ _ h => nomatch h⟩
   | step s t _ hst ih => exact inv_step s t ih hst
 
-/-- embeddedCount never drifts: it equals the number of current chunks that are EMBEDDED
-in a generation newer than the last reindex, however messages are duplicated or delayed. -/
-theorem count_exact (s : St) (h : Reachable fixed s) :
+/-- embeddedCount never drifts: outside a replacement's own cleanup, it equals the number
+of current chunks that are EMBEDDED in a generation newer than the last reindex or
+replacement, however messages are duplicated or delayed and whatever older chunk runs
+write while a replacement deletes rows. -/
+theorem count_exact (s : St) (h : Reachable fixed s) (hrep : s.replacing = false) :
     s.count = (List.range s.chunkCount).countP (counted s) :=
-  (inv_reachable s h).count
+  (inv_reachable s h).count hrep
 
 /-- markEmbedded finishes a document when embeddedCount reaches chunkCount; by then
 every one of its chunks really is EMBEDDED in the current generation. -/
-theorem done_means_all_embedded (s : St) (h : Reachable fixed s) (hdone : s.chunkCount ≤ s.count) :
-    ∀ i, i < s.chunkCount → counted s i = true := by
+theorem done_means_all_embedded (s : St) (h : Reachable fixed s) (hrep : s.replacing = false)
+    (hdone : s.chunkCount ≤ s.count) : ∀ i, i < s.chunkCount → counted s i = true := by
   intro i hi
-  have hc := count_exact s h
+  have hc := count_exact s h hrep
   have hle := List.countP_le_length (p := counted s) (l := List.range s.chunkCount)
   have hall : (List.range s.chunkCount).countP (counted s) = (List.range s.chunkCount).length := by
     simp at hle ⊢; omega
@@ -251,6 +275,10 @@ def anchors : List (String × String) :=
    ("functions/chunk/index.ts", ": \"attribute_not_exists(pk) OR #s <> :embedded\","),
    ("functions/chunk/index.ts", "resetAt && now <= resetAt"),
    ("functions/admin/reindex.ts", "embeddedCount = :zero, failedStep = :null, updatedAt = :t, reindexedAt = :t"),
-   ("functions/embed/index.ts", "\"attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting\",")]
+   ("functions/embed/index.ts", "\"attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting\","),
+   ("functions/embed/index.ts", ".reduce((oldest, next) => (next < oldest ? next : oldest)),"),
+   ("functions/embed/index.ts", "if (doc.reindexedAt && chunk.createdAt <= doc.reindexedAt) {"),
+   ("functions/chunk/index.ts", "\"attribute_exists(pk) AND embeddedCount >= :count AND #s <> :deleting\","),
+   ("functions/s3/ingest-adapter.ts", "updatedAt = :now, reindexedAt = :now REMOVE chunkCount, embeddedCount,")]
 
 end Proofs.EmbedProtocol

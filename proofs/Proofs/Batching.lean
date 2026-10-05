@@ -212,6 +212,8 @@ def anchors : List (String × String) :=
    ("functions/utils.ts", "const VECTOR_GET_BATCH = 100;"),
    ("functions/utils.ts", "const VECTOR_DELETE_BATCH = 500;"),
    ("functions/utils.ts", "for (let i = 0; i < chunkItems.length; i += 25) {"),
-   ("functions/chunk/index.ts", "const sendSize = 10;")]
+   ("functions/chunk/index.ts", "const sendSize = 10;"),
+   ("functions/embed/index.ts", "requestBytes > MAX_COHERE_REQUEST_BYTES)"),
+   ("functions/embed/index.ts", "if (currentBytes > MAX_COHERE_REQUEST_BYTES) {")]
 
 end Proofs.Batching

@@ -142,6 +142,7 @@ def anchors : List (String × String) :=
   [("functions/utils.ts", "const MAX_FILTERABLE_METADATA_BYTES = 2048;"),
    ("functions/utils.ts", "if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {"),
    ("functions/utils.ts", "if (title !== undefined && fits({ ...fitted, title: title })) {"),
-   ("functions/utils.ts", "if (fits({ ...fitted, [field]: next })) fitted[field] = next;")]
+   ("functions/utils.ts", "if (fits({ ...fitted, [field]: next })) fitted[field] = next;"),
+   ("functions/utils.ts", ") <= MAX_FILTERABLE_METADATA_BYTES;")]
 
 end Proofs.Metadata

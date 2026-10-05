@@ -398,6 +398,26 @@ describe("upload validation", () => {
     });
   });
 
+  it("stores normalized tags and signs a form that expires with its in-flight window", async () => {
+    await handler(
+      jsonApiEvent({
+        filename: "paper.pdf",
+        mimeType: "application/pdf",
+        tags: [" Alpha ", "alpha", "", "Beta"],
+      }),
+    );
+
+    const meta =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![1].Put!.Item!;
+    // Edits store tags through the same normalization, so both keep one set.
+    expect(meta.tags).toEqual(["Alpha", "Beta"]);
+    const expires = vi.mocked(createPresignedPost).mock.calls[0][1].Expires!;
+    // The caps stop counting an UPLOADED document 15 minutes after its updatedAt.
+    expect(expires).toBeLessThan(900);
+    expect(expires).toBeGreaterThan(890);
+  });
+
   it("starts the uploadSeq for an account that has none", async () => {
     await handler(
       jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),

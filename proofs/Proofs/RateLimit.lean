@@ -125,6 +125,7 @@ theorem old_check_double_spends :
 
 /-- Source the model above stands for; tests/proofs.test.ts fails when any of it changes. -/
 def anchors : List (String × String) :=
-  [("functions/utils.ts", "ConditionExpression: \"lastRefill = :oldLr AND tokens = :oldTokens\",")]
+  [("functions/utils.ts", "ConditionExpression: \"lastRefill = :oldLr AND tokens = :oldTokens\","),
+   ("functions/utils.ts", "Math.max(Date.now(), Date.parse(String(item?.lastRefill ?? \"\")) || 0),")]
 
 end Proofs.RateLimit

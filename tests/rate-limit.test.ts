@@ -37,4 +37,23 @@ describe("rate limit buckets", () => {
       (update![0] as any).input.ExpressionAttributeValues[":oldTokens"],
     ).toBe(1);
   });
+  it("never moves lastRefill back when this Lambda's clock trails it", async () => {
+    const { checkRateLimit } = await import("../functions/utils");
+    const lastRefill = new Date(Date.now() + 60_000).toISOString();
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Item: { tokens: 1, lastRefill: lastRefill } })
+      .mockResolvedValue({});
+    const client = { send: send } as any;
+
+    await checkRateLimit("user", "table", "QUERY", 100, 100, client);
+
+    const update = send.mock.calls.find(
+      ([command]) => (command as any).constructor?.name === "UpdateCommand",
+    );
+    expect((update![0] as any).input.ExpressionAttributeValues[":lr"]).toBe(
+      lastRefill,
+    );
+    expect((update![0] as any).input.ExpressionAttributeValues[":t"]).toBe(0);
+  });
 });

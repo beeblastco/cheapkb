@@ -389,26 +389,29 @@ structure Chunk where
   pageEnd : Nat
   deriving DecidableEq, Repr
 
-def toChunk (decode : List Nat → String) (w : Window) : Option Chunk :=
-  let text := (decode (w.toks.map Tok.id)).trimAscii.copy
+/-- `trim` stands for JavaScript's `String.prototype.trim`; no theorem depends on it. -/
+def toChunk (decode : List Nat → String) (trim : String → String) (w : Window) : Option Chunk :=
+  let text := trim (decode (w.toks.map Tok.id))
   if text.isEmpty then none else
     some ⟨text, (w.toks.head?.map Tok.page).getD 0, (w.toks.getLast?.map Tok.page).getD 0⟩
 
 /-- The chunk stage's result: the chunks, or the ContentError past maxChunks. -/
 def chunks (maxT overlap maxChunks : Nat) (sepToks : List Nat) (decode : List Nat → String)
-    (pages : List Page) : Except String (List Chunk) :=
-  let cs := (windows maxT overlap sepToks pages).filterMap (toChunk decode)
+    (trim : String → String) (pages : List Page) : Except String (List Chunk) :=
+  let cs := (windows maxT overlap sepToks pages).filterMap (toChunk decode trim)
   if maxChunks < cs.length then .error s!"Document exceeds the {maxChunks} chunk limit" else .ok cs
 
 theorem chunks_le_cap (maxT overlap maxChunks : Nat) (sepToks : List Nat) (decode : List Nat → String)
-    (pages : List Page) (cs : List Chunk) (h : chunks maxT overlap maxChunks sepToks decode pages = .ok cs) :
+    (trim : String → String) (pages : List Page) (cs : List Chunk)
+    (h : chunks maxT overlap maxChunks sepToks decode trim pages = .ok cs) :
     cs.length ≤ maxChunks := by
   unfold chunks at h; dsimp only at h; split at h
   · cases h
   · cases h; omega
 
 /-- The parse guard in functions/parse/index.ts: reject text longer than
-maxChunks × maxTokens × 16 characters before chunking it. -/
+maxChunks × maxTokens × 16 characters before chunking it. Its length counts every page,
+blank ones and whitespace included, which `hdensity` below must then cover. -/
 def parseGuardRejects (maxChunks maxT textLength : Nat) : Bool :=
   maxChunks * maxT * 16 < textLength
 

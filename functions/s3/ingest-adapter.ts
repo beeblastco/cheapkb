@@ -18,6 +18,7 @@ import {
   dynamo,
   getDocument,
   MAX_IMAGE_UPLOAD_BYTES,
+  MAX_STORAGE_BYTES,
   MAX_UPLOAD_BYTES,
   recordUsage,
   updateStorageBytes,
@@ -212,7 +213,8 @@ async function claimDispatch(
 }
 
 /** Deletes the old derived data and promotes the pending replacement metadata. Returns
- * false for a stale event. Edits and reindex wait out the window, so only a delete or a
+ * false for a stale event. reindexedAt makes chunk rows and embed messages that an older
+ * chunk run writes after the delete count as stale. Edits and reindex wait out the window, so only a delete or a
  * stray write from the old version's pipeline can change the row meanwhile. */
 async function finalizeReplacement(
   documentId: string,
@@ -249,7 +251,7 @@ async function finalizeReplacement(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, reindexedAt = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
         ConditionExpression: "replacementToken = :token AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
@@ -295,7 +297,8 @@ async function markDispatchSent(
 }
 
 /** Charges the source's current size after dispatch, since a presigned POST can overwrite it
- * for 15 minutes. The document's count moves in the same transaction. */
+ * for 15 minutes. The document's count moves in the same transaction. An overwrite that
+ * would pass the storage cap is removed instead. */
 async function recountStorage(
   documentId: string,
   doc: DocumentRow,
@@ -303,11 +306,13 @@ async function recountStorage(
   eventId: string,
 ): Promise<void> {
   let objectSize: number;
+  let versionId: string | undefined;
   try {
     const object = await s3.send(
       new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
     );
     objectSize = object.ContentLength ?? 0;
+    versionId = object.VersionId;
   } catch (error) {
     if ((error as Error).name === "NotFound") return;
     throw error;
@@ -315,7 +320,9 @@ async function recountStorage(
   const countedBytes = doc.countedBytes ?? 0;
   if (objectSize === countedBytes) return;
 
-  await updateStorageBytes(
+  // An upload form stays valid after its document settles, so an overwrite of a counted
+  // source is held to the storage cap; a first upload is bounded by the in-flight cap.
+  const charged = await updateStorageBytes(
     doc.userId,
     AccountsTableName,
     objectSize - countedBytes,
@@ -339,6 +346,20 @@ async function recountStorage(
         },
       },
     },
+    undefined,
+    doc.countedBytes === undefined ? undefined : MAX_STORAGE_BYTES,
+  );
+  if (charged) return;
+  // Removing the refused version makes S3 serve the source the search data came from.
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: StorageBucketName,
+      Key: key,
+      VersionId: versionId,
+    }),
+  );
+  console.log(
+    `[ingest-adapter] Refused an overwrite of ${documentId} over the storage cap`,
   );
 }
 

@@ -20,6 +20,7 @@ import {
   listDocumentChunkItems,
   MAX_METADATA_BYTES,
   metadataBytes,
+  normalizeTags,
   retagDocumentVectors,
 } from "../utils";
 
@@ -161,22 +162,6 @@ export async function handler(
     }
     return json(500, { error: "Failed to update document tags" });
   }
-}
-
-/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
-export function normalizeTags(tags: unknown): string[] | null {
-  if (!Array.isArray(tags)) return null;
-  const deduped = new Map<string, string>();
-  for (const tag of tags as string[]) {
-    const trimmed = tag.trim();
-    if (!trimmed) continue;
-    // First occurrence wins, so the casing the user picked first survives a
-    // case-insensitive duplicate.
-    const key = trimmed.toLowerCase();
-    if (!deduped.has(key)) deduped.set(key, trimmed);
-  }
-
-  return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
 /** Returns the lease, or null if it was not taken. updatedAt doubles as the

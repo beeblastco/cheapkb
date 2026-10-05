@@ -805,4 +805,93 @@ describe("multimodal pipeline", () => {
     expect(result.batchItemFailures).toEqual([]);
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
   });
+  it("never cuts the chunk preview inside a surrogate pair", async () => {
+    // 199 ASCII characters put the 200-unit cut between an emoji's two halves.
+    const text = `${"a".repeat(199)}😀 tail`;
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    await embed(
+      sqsEvent(
+        "embed-emoji",
+        embedMessage("doc-1", "chunk_doc-1_0", {
+          modality: "text",
+          text: text,
+        }),
+      ),
+    );
+
+    const metadata = vectorsMock.commandCalls(PutVectorsCommand)[0].args[0]
+      .input.vectors?.[0].metadata as Record<string, string>;
+    expect(metadata.chunkPreview).toBe("a".repeat(199));
+  });
+
+  it("writes vectors when VECTOR_BATCH is set to zero", async () => {
+    process.env.VECTOR_BATCH = "0";
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    try {
+      await embed(
+        sqsEvent("embed-zero", embedMessage("doc-1", "chunk_doc-1_0")),
+      );
+    } finally {
+      delete process.env.VECTOR_BATCH;
+    }
+
+    // A batch size of zero used to loop forever.
+    expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
+  });
+
+  it("drops a chunk created in the same millisecond as the reindex", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "user-1", reindexedAt: CHUNKED_AT },
+    });
+
+    const result = await embed(
+      sqsEvent("embed-tie", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    // The chunk stage stamps rows strictly after reindexedAt, so a tie is an old row.
+    expect(bedrockMock.calls()).toHaveLength(0);
+  });
+
+  it("conditions a mixed-generation group on its oldest chunk", async () => {
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const newer = sqsEvent(
+      "embed-new",
+      JSON.stringify({
+        ...JSON.parse(embedMessage("doc-1", "chunk_doc-1_0")),
+        createdAt: "2026-03-01T00:00:00.000Z",
+      }),
+    );
+    const older = sqsEvent("embed-old", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    await embed({ Records: [...newer.Records, ...older.Records] });
+
+    // Any chunk not newer than reindexedAt must cancel the group, so the oldest decides.
+    const meta = dynamoMock
+      .commandCalls(TransactWriteCommand)[0]
+      .args[0].input.TransactItems?.at(-1)?.Update;
+    expect(meta?.ExpressionAttributeValues?.[":createdAt"]).toBe(CHUNKED_AT);
+  });
 });

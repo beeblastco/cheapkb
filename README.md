@@ -50,7 +50,7 @@ npm run bundle:check
 cd proofs && lake build && lake exe vectors   # Lean proofs and the vectors the tests use
 ```
 
-The upload caps, embedding counter, storage accounting, billing, rate limits and document lifecycle are proved in Lean 4. See [Proofs](proofs/README.md).
+The safety of the upload and tag caps, embedding counter, storage accounting, billing, rate limits and document lifecycle is proved in Lean 4. See [Proofs](proofs/README.md).
 
 ## Deploy
 

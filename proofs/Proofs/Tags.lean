@@ -73,7 +73,9 @@ theorem first_spelling_wins (trim key : String → String) (t : String) (ts : Li
 
 /-- Source the model above stands for; tests/proofs.test.ts fails when any of it changes. -/
 def anchors : List (String × String) :=
-  [("functions/admin/update.ts", "const key = trimmed.toLowerCase();"),
-   ("functions/admin/update.ts", "if (!deduped.has(key)) deduped.set(key, trimmed);")]
+  [("functions/utils.ts", "const key = trimmed.toLowerCase();"),
+   ("functions/utils.ts", "if (!deduped.has(key)) deduped.set(key, trimmed);"),
+   ("functions/admin/upload.ts", "tags: normalizeTags(body.tags),"),
+   ("functions/admin/upload.ts", "\":tags\": normalizeTags(body.tags),")]
 
 end Proofs.Tags

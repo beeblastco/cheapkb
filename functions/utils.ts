@@ -55,6 +55,10 @@ export const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
 );
+export const MAX_STORAGE_BYTES = parseInt(
+  process.env.MAX_STORAGE_BYTES ?? "1073741824",
+  10,
+);
 export const MAX_IMAGE_UPLOAD_BYTES = Math.min(
   parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
   5 * 1024 * 1024,
@@ -125,7 +129,6 @@ export async function checkRateLimit(
   refillPerHour: number,
   documentClient: DynamoDBDocumentClient = dynamo,
 ): Promise<{ allowed: boolean; remaining: number }> {
-  const now = new Date();
   const maxAttempts = 3;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -136,6 +139,11 @@ export async function checkRateLimit(
       }),
     );
     const item = result.Item as Record<string, unknown> | null;
+    // A clock behind the last write's is moved up to it, so refill never goes negative
+    // and lastRefill never moves back (proofs/Proofs/RateLimit.lean assumes both).
+    const now = new Date(
+      Math.max(Date.now(), Date.parse(String(item?.lastRefill ?? "")) || 0),
+    );
 
     if (!item) {
       try {
@@ -422,14 +430,15 @@ export async function getUsageSummary(
   tableName: string,
 ): Promise<UsageSummary> {
   const account = await getOrCreateAccount(userId, tableName);
-  const nowMs = Date.now();
+  const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
+  // A clock behind the last storage write's is moved up to it, so its accrued cost is kept.
+  const nowMs = Math.max(Date.now(), storageUpdatedAt || 0);
   const cycle = currentCycle(account, nowMs);
 
   const startDay = dayKey(cycle.startMs);
   const endDay = dayKey(cycle.endMs - 1);
   const spentNano = await sumUsageNano(userId, tableName, startDay, endDay);
 
-  const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
   const tracksCurrentCycle =
     startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
     Number.isFinite(storageUpdatedAt) &&
@@ -791,7 +800,8 @@ export async function setDocumentStatus(
 }
 
 /** Adds deltaBytes to the account's storage and accrued cost, once per operationId.
- * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches. */
+ * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches.
+ * Returns false, writing nothing, when growth would take the total past capBytes. */
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
@@ -799,9 +809,10 @@ export async function updateStorageBytes(
   operationId?: string,
   alsoWrite?: TransactItem,
   expectedBytes?: number,
-): Promise<void> {
+  capBytes?: number,
+): Promise<boolean> {
   // A paired write must still run, with its condition, when the bytes do not change.
-  if (deltaBytes === 0 && !alsoWrite) return;
+  if (deltaBytes === 0 && !alsoWrite) return true;
   const pk = `ACCOUNT#${userId}`;
   const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
 
@@ -814,7 +825,7 @@ export async function updateStorageBytes(
           ConsistentRead: true,
         }),
       );
-      if (existing.Item) return;
+      if (existing.Item) return true;
     }
 
     const result = await dynamo.send(
@@ -827,12 +838,23 @@ export async function updateStorageBytes(
     const account = result.Item as AccountRow | undefined;
     if (!account) throw new Error("Account profile not found");
 
-    const nowMs = Date.now();
+    const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
+    // A clock behind the last write's is moved up to it, so accrued cost is never dropped.
+    const nowMs = Math.max(Date.now(), previousUpdateMs || 0);
     const now = new Date(nowMs).toISOString();
     const cycle = currentCycle(account, nowMs);
     const cycleStart = new Date(cycle.startMs).toISOString();
     const storageBytes = account.storageBytes ?? 0;
-    if (expectedBytes !== undefined && storageBytes !== expectedBytes) return;
+    if (expectedBytes !== undefined && storageBytes !== expectedBytes) {
+      return true;
+    }
+    if (
+      capBytes !== undefined &&
+      deltaBytes > 0 &&
+      storageBytes + deltaBytes > capBytes
+    ) {
+      return false;
+    }
     // A delete can outrun a reset that already removed its bytes; it settles at
     // 0 instead of failing, so the cleanup never gets stuck.
     const nextStorageBytes = Math.max(0, storageBytes + deltaBytes);
@@ -842,7 +864,6 @@ export async function updateStorageBytes(
       });
     }
 
-    const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
     const tracksCurrentCycle =
       startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
       Number.isFinite(previousUpdateMs) &&
@@ -899,7 +920,7 @@ export async function updateStorageBytes(
       await dynamo.send(
         new TransactWriteCommand({ TransactItems: transactItems }),
       );
-      return;
+      return true;
     } catch (error) {
       if ((error as Error).name !== "TransactionCanceledException") throw error;
       if (attempt < 2) {
@@ -1119,6 +1140,23 @@ export function metadataBytes(
   return Buffer.byteLength(
     JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
   );
+}
+
+/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain.
+ * Upload and edit store tags through it, so both keep the same set. */
+export function normalizeTags(tags: unknown): string[] | null {
+  if (!Array.isArray(tags)) return null;
+  const deduped = new Map<string, string>();
+  for (const tag of tags as string[]) {
+    const trimmed = tag.trim();
+    if (!trimmed) continue;
+    // First occurrence wins, so the casing the user picked first survives a
+    // case-insensitive duplicate.
+    const key = trimmed.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, trimmed);
+  }
+
+  return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
 export function storageCostNanoUsd(bytes: number, seconds: number): number {

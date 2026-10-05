@@ -316,11 +316,12 @@ describe("chunk records", () => {
       .commandCalls(UpdateCommand)
       .find((call) => call.args[0].input.ExpressionAttributeValues?.[":c"]);
     expect(finish?.args[0].input.ExpressionAttributeValues?.[":c"]).toBe(1);
-    // No embed step will run, so the document is finished here.
-    expect(
-      dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
-        .ExpressionAttributeValues,
-    ).toEqual(expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }));
+    // No embed step will run, so the document is finished here, once every chunk counted.
+    const done = dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input;
+    expect(done?.ExpressionAttributeValues).toEqual(
+      expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }),
+    );
+    expect(done?.ConditionExpression).toContain("embeddedCount >= :count");
   });
 
   it("keeps embedded chunks when a duplicate delivery reports a first receive", async () => {

@@ -7,6 +7,7 @@ import Proofs.Metadata
 import Proofs.QueryFilter
 import Proofs.RateLimit
 import Proofs.StorageAccounting
+import Proofs.TagCap
 import Proofs.Tags
 import Proofs.Truncate
 import Proofs.UploadCaps

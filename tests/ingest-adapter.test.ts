@@ -402,6 +402,44 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
+  it("removes an overwrite that would take the account past its storage cap", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 500,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 1,
+        },
+      };
+    });
+    // A settled document's form is re-posted with a larger file.
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 1000, VersionId: "v-overwrite" });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(
+      s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.VersionId,
+    ).toBe("v-overwrite");
+  });
+
   it("does not recount a source whose size is already counted", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {
@@ -499,6 +537,15 @@ describe("S3 ingest adapter", () => {
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(1);
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(1);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+    // An older chunk run can still write rows after the delete; reindexedAt makes them stale.
+    const promote = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) =>
+        call.args[0].input.UpdateExpression?.includes("filename = :filename"),
+      );
+    expect(promote?.args[0].input.UpdateExpression).toContain(
+      "reindexedAt = :now",
+    );
   });
 
   it("rolls back a replacement that lands after its window instead of wiping data", async () => {

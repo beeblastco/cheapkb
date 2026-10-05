@@ -54,9 +54,9 @@ export async function handler(
     };
   }
 
-  // Pipeline stages refuse to write to a DELETING document, so nothing they
-  // write after this point outlives the cleanup below. Nothing changes countedBytes
-  // after the mark either, so the refund uses the value the mark returns.
+  // Pipeline stages refuse to write to a DELETING document, so nothing they write after
+  // this point outlives the cleanup below. Only this delete sets countedBytes after the
+  // mark, for a legacy document, so the refund uses the value the mark returns.
   let countedBytes: number | undefined;
   try {
     ({ countedBytes } = await markDeleting(documentId, null));

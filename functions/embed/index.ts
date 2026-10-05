@@ -125,7 +125,11 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     };
   }
 
-  const batchSize = Math.max(1, parseInt(process.env.EMBED_BATCH ?? "10", 10));
+  // A zero or unparsable setting would loop forever or skip every record.
+  const batchSize = Math.max(
+    1,
+    parseInt(process.env.EMBED_BATCH ?? "10", 10) || 10,
+  );
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const documents = new Map<string, { attempt: number; error: unknown }>();
@@ -396,7 +400,10 @@ async function batchProcess(
           embeddingModel: embeddingModel(),
         }),
         text: truncateUtf8(fullText, MAX_VECTOR_TEXT_BYTES),
-        chunkPreview: fullText.substring(0, 200),
+        // A cut inside a surrogate pair would store an unpaired half.
+        chunkPreview: fullText
+          .substring(0, 200)
+          .replace(/[\uD800-\uDBFF]$/, ""),
       },
     });
   }
@@ -409,7 +416,11 @@ async function batchProcess(
     return failures;
   }
 
-  const vectorBatchSize = parseInt(process.env.VECTOR_BATCH ?? "500", 10);
+  // PutVectors takes 1 to 500 vectors, so the setting is clamped to that range.
+  const vectorBatchSize = Math.min(
+    500,
+    Math.max(1, parseInt(process.env.VECTOR_BATCH ?? "500", 10) || 500),
+  );
   const writtenVectors: typeof vectorBatch = [];
   for (let i = 0; i < vectorBatch.length; i += vectorBatchSize) {
     const chunk = vectorBatch.slice(i, i + vectorBatchSize);

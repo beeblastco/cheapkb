@@ -1,9 +1,11 @@
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
@@ -100,20 +102,32 @@ describe("tag APIs", () => {
   });
 
   describe("POST /tags", () => {
+    // The tag Put is the first item of the create transaction.
+    function createdTag(): Record<string, unknown> | undefined {
+      return dynamoMock.commandCalls(TransactWriteCommand)[0]?.args[0].input
+        .TransactItems?.[0].Put as Record<string, unknown> | undefined;
+    }
+
+    function cancelled(codes: string[]): TransactionCanceledException {
+      return new TransactionCanceledException({
+        $metadata: {},
+        message: "cancelled",
+        CancellationReasons: codes.map((code) => ({ Code: code })),
+      });
+    }
+
     it("creates a tag under the user partition with a normalized key", async () => {
       dynamoMock.on(GetCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Count: 0 });
-      dynamoMock.on(PutCommand).resolves({});
+      dynamoMock.on(TransactWriteCommand).resolves({});
 
       const response = await createTag(
         apiEvent({ body: JSON.stringify({ name: "  Research  " }) }),
       );
 
       expect(response.statusCode).toBe(200);
-      const put = dynamoMock
-        .commandCalls(PutCommand)
-        .find((c) => !isRateLimitCall(c))!.args[0].input;
-      expect(put.Item).toEqual(
+      const put = createdTag();
+      expect(put?.Item).toEqual(
         expect.objectContaining({
           pk: "USER#owner",
           sk: "TAG#research",
@@ -121,14 +135,59 @@ describe("tag APIs", () => {
           color: "gray",
         }),
       );
-      expect(put.ConditionExpression).toBe("attribute_not_exists(pk)");
+      expect(put?.ConditionExpression).toBe("attribute_not_exists(pk)");
       expect(JSON.parse(response.body!).tag.name).toBe("Research");
+    });
+
+    it("commits against the user's tag sequence so concurrent creates cannot pass the cap", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock
+        .on(GetCommand, { Key: { pk: "USER#owner", sk: "TAGSEQ" } })
+        .resolves({ Item: { seq: 7 } });
+      dynamoMock.on(QueryCommand).resolves({ Count: 199 });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      await createTag(apiEvent({ body: JSON.stringify({ name: "last" }) }));
+
+      const sequence =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[1].Update;
+      expect(sequence?.Key).toEqual({ pk: "USER#owner", sk: "TAGSEQ" });
+      expect(sequence?.ConditionExpression).toBe(
+        "attribute_not_exists(seq) OR seq = :seen",
+      );
+      expect(sequence?.ExpressionAttributeValues).toEqual({
+        ":next": 8,
+        ":seen": 7,
+      });
+      expect(
+        dynamoMock.commandCalls(QueryCommand)[0].args[0].input.ConsistentRead,
+      ).toBe(true);
+    });
+
+    it("recounts when another create moves the sequence first", async () => {
+      dynamoMock.on(GetCommand).resolves({});
+      dynamoMock
+        .on(QueryCommand)
+        .resolvesOnce({ Count: 199 })
+        .resolves({ Count: 200 });
+      dynamoMock
+        .on(TransactWriteCommand)
+        .rejects(cancelled(["None", "ConditionalCheckFailed"]));
+
+      const response = await createTag(
+        apiEvent({ body: JSON.stringify({ name: "overflow" }) }),
+      );
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body!).error).toContain("Tag limit reached");
+      expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
     });
 
     it("stores the requested color", async () => {
       dynamoMock.on(GetCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Count: 0 });
-      dynamoMock.on(PutCommand).resolves({});
+      dynamoMock.on(TransactWriteCommand).resolves({});
 
       const response = await createTag(
         apiEvent({
@@ -137,10 +196,9 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(200);
-      expect(
-        dynamoMock.commandCalls(PutCommand).find((c) => !isRateLimitCall(c))!
-          .args[0].input.Item,
-      ).toEqual(expect.objectContaining({ color: "purple" }));
+      expect(createdTag()?.Item).toEqual(
+        expect.objectContaining({ color: "purple" }),
+      );
       expect(JSON.parse(response.body!).tag.color).toBe("purple");
     });
 
@@ -152,9 +210,7 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(400);
-      expect(
-        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
-      ).toHaveLength(0);
+      expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
     });
 
     it("returns the stored canonical tag when a differently-cased duplicate is created", async () => {
@@ -178,14 +234,13 @@ describe("tag APIs", () => {
         color: "green",
         createdAt: "2026-01-01T00:00:00.000Z",
       });
-      expect(
-        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
-      ).toHaveLength(0);
+      expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
     });
 
     it("returns the winner's record when a concurrent create wins the race", async () => {
       dynamoMock
         .on(GetCommand)
+        .resolvesOnce({})
         .resolvesOnce({})
         .resolves({
           Item: {
@@ -195,11 +250,9 @@ describe("tag APIs", () => {
           },
         });
       dynamoMock.on(QueryCommand).resolves({ Count: 0 });
-      dynamoMock.on(PutCommand).rejects(
-        Object.assign(new Error("conditional"), {
-          name: "ConditionalCheckFailedException",
-        }),
-      );
+      dynamoMock
+        .on(TransactWriteCommand)
+        .rejects(cancelled(["ConditionalCheckFailed", "None"]));
 
       const response = await createTag(
         apiEvent({ body: JSON.stringify({ name: "research" }) }),
@@ -212,11 +265,9 @@ describe("tag APIs", () => {
     it("reports a conflict when the raced tag is gone rather than claiming success", async () => {
       dynamoMock.on(GetCommand).resolves({});
       dynamoMock.on(QueryCommand).resolves({ Count: 0 });
-      dynamoMock.on(PutCommand).rejects(
-        Object.assign(new Error("conditional"), {
-          name: "ConditionalCheckFailedException",
-        }),
-      );
+      dynamoMock
+        .on(TransactWriteCommand)
+        .rejects(cancelled(["ConditionalCheckFailed", "None"]));
 
       const response = await createTag(
         apiEvent({ body: JSON.stringify({ name: "research" }) }),
@@ -234,9 +285,7 @@ describe("tag APIs", () => {
       );
 
       expect(response.statusCode).toBe(409);
-      expect(
-        dynamoMock.commandCalls(PutCommand).filter((c) => !isRateLimitCall(c)),
-      ).toHaveLength(0);
+      expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
     });
 
     it("rejects an empty tag name", async () => {

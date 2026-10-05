@@ -22,7 +22,27 @@ def jsonStringBytes (s : String) : Nat :=
     n + if c = '"' ∨ c = '\\' ∨ c = '\n' ∨ c = '\r' ∨ c = '\t' ∨ c.toNat = 8 ∨ c.toNat = 12 then 2
       else if c.toNat < 32 then 6 else c.utf8Size) 0
 
-def jsonNatBytes (n : Nat) : Nat := (toString n).length
+/-- JavaScript's WhiteSpace and LineTerminator code points, which `String.prototype.trim`
+strips. -/
+def jsIsSpace (c : Char) : Bool :=
+  [9, 10, 11, 12, 13, 32, 160, 5760, 8232, 8233, 8239, 8287, 12288, 65279].contains c.toNat ||
+    (8192 ≤ c.toNat && c.toNat ≤ 8202)
+
+def jsTrim (s : String) : String :=
+  String.ofList ((s.toList.dropWhile jsIsSpace).reverse.dropWhile jsIsSpace).reverse
+
+/-- `String.prototype.toLowerCase` on ASCII, Latin-1, basic Greek and Cyrillic capitals. The
+vectors use only those letters, and no final Σ, whose lowercase depends on context. -/
+def jsLowerChar (c : Char) : Char :=
+  let n := c.toNat
+  if 65 ≤ n && n ≤ 90 then Char.ofNat (n + 32)
+  else if 192 ≤ n && n ≤ 222 && n != 215 then Char.ofNat (n + 32)
+  else if 913 ≤ n && n ≤ 937 && n != 930 then Char.ofNat (n + 32)
+  else if 1040 ≤ n && n ≤ 1071 then Char.ofNat (n + 32)
+  else if 1024 ≤ n && n ≤ 1039 then Char.ofNat (n + 80)
+  else c
+
+def jsLower (s : String) : String := String.ofList (s.toList.map jsLowerChar)
 
 def jsonArrayBytes (xs : List String) : Nat :=
   2 + (xs.map jsonStringBytes).sum + (xs.length - 1)
@@ -99,12 +119,32 @@ def metadataCases : List Json := Id.run do
       -- text and chunkPreview are not filterable, so they never count against the cap.
       let extra : List (String × Json) := if variant % 2 = 0 then [("text", .str (word seed 3000)), ("chunkPreview", .str (word seed 200))] else []
       out := out ++ [obj [("input", metaJson m extra), ("expected", metaJson (Proofs.Metadata.fit fits m) extra)]]
+  -- Records of exactly 2,048 and 2,049 filterable bytes: the first is kept whole.
+  let tags := ["alpha", "beta", "gamma"]
+  let base := metaBytes { title := some "", tags := some tags }
+  for n in [2048 - base, 2049 - base] do
+    let m : Proofs.Metadata.Meta := { title := some (String.ofList (List.replicate n 'x')), tags := some tags }
+    out := out ++ [obj [("input", metaJson m []), ("expected", metaJson (Proofs.Metadata.fit fits m) [])]]
   return out
 
 /-! ### splitIntoChunks with a one-token-per-character tokenizer -/
 
+/-- One chunker vector: pages, settings and the proved model's chunks or error. -/
+def chunkerCase (pages : List (Nat × String)) (maxT overlap maxChunks : Nat) : Json :=
+  let model : List Proofs.Chunker.Page := pages.map fun (n, t) =>
+    { number := n, toks := t.toList.map Char.toNat, blank := (jsTrim t).isEmpty }
+  let decode : List Nat → String := fun ts => String.ofList (ts.map Char.ofNat)
+  let expected : Json := match Proofs.Chunker.chunks maxT overlap maxChunks [10, 10] decode jsTrim model with
+    | .ok cs => obj [("chunks", Json.arr (cs.map fun c =>
+        obj [("text", .str c.text), ("pageStart", toJson c.pageStart), ("pageEnd", toJson c.pageEnd)]).toArray)]
+    | .error e => obj [("error", .str e)]
+  let pagesJson := Json.arr (pages.map fun (n, t) => obj [("pageNumber", toJson n), ("text", .str t)]).toArray
+  obj [("pages", pagesJson), ("maxTokens", toJson maxT), ("overlapTokens", toJson overlap),
+    ("maxChunks", toJson maxChunks), ("expected", expected)]
+
 def chunkerCases : List Json := Id.run do
-  let vocab := ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "x", "yz", "\n", "  ", "         "]
+  let vocab := ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "x", "yz", "\n", "  ",
+    "         ", "\x0c", "\u00a0", "\u3000", "ñandú", "Ωmega", "日本"]
   let mut out := []
   let mut seed := 4242
   for (maxT, overlap) in [(5, 0), (5, 1), (8, 2), (13, 4), (21, 5), (50, 10), (3, 2)] do
@@ -118,19 +158,11 @@ def chunkerCases : List Json := Id.run do
           seed := lcg seed
           number := number + 1 + seed % 3
           let words := (List.range (seed % 12)).map fun i => pick (seed / 5 + i * 31 + p) vocab "x"
-          let text := if seed % 7 = 0 then "   " else String.intercalate " " words
-          pages := pages ++ [(number, text.trimAscii.copy)]
-        let model : List Proofs.Chunker.Page := pages.map fun (n, t) =>
-          { number := n, toks := t.toList.map Char.toNat, blank := t.trimAscii.isEmpty }
-        let decode : List Nat → String := fun ts => String.ofList (ts.map Char.ofNat)
-        let expected : Json := match Proofs.Chunker.chunks maxT overlap maxChunks [10, 10] decode model with
-          | .ok cs => obj [("chunks", Json.arr (cs.map fun c =>
-              obj [("text", .str c.text), ("pageStart", toJson c.pageStart), ("pageEnd", toJson c.pageEnd)]).toArray)]
-          | .error e => obj [("error", .str e)]
-        let pagesJson := Json.arr (pages.map fun (n, t) => obj [("pageNumber", toJson n), ("text", .str t)]).toArray
-        out := out ++ [obj [("pages", pagesJson), ("maxTokens", toJson maxT), ("overlapTokens", toJson overlap),
-          ("maxChunks", toJson maxChunks), ("expected", expected)]]
-  return out
+          let text := if seed % 7 = 0 then "\x0c \u00a0" else String.intercalate " " words
+          pages := pages ++ [(number, jsTrim text)]
+        out := out ++ [chunkerCase pages maxT overlap maxChunks]
+  -- A window of only form feeds is blank to JavaScript's trim, so it is no chunk.
+  return out ++ [chunkerCase [(1, "ab\x0c\x0ccd")] 2 0 2, chunkerCase [(1, "ab\u3000\u3000cd")] 2 0 2]
 
 /-! ### currentCycle on the Gregorian calendar -/
 
@@ -180,10 +212,10 @@ def cycleCases : List Json := Id.run do
 
 /-! ### storageCostNanoUsd -/
 
+/-- storageCostNanoUsd as the proved `piece`: 23,000,000 nano USD per GiB-month, with time
+in milliseconds, so the denominator is 1000 × 2,592,000 s × 2^30 bytes. -/
 def storageCost (bytes ms : Nat) : Nat :=
-  let gb := bytes.toFloat / 1073741824.0
-  let prorated := (ms.toFloat / 1000.0 / 2592000.0) * gb
-  (prorated * 23000000.0).round.toUInt64.toNat
+  Proofs.Billing.piece (1000 * 2592000 * 1073741824) 23000000 bytes ms
 
 def storageCostCases : List Json := Id.run do
   let mut out := []
@@ -223,6 +255,13 @@ def packingCases : List Json := Id.run do
     inputs := inputs ++ [(List.range count).map fun i =>
       packItem lim s!"user-{(seed + i / 4) % 2}" text ((mb * 1048576 + (seed + i * 7919) % 900000) / text.length)]
   inputs := inputs ++ [[packItem lim "user-0" "a" 100, packItem lim "user-0" "z" (19 * 1048576)]]
+  -- Requests of exactly 19 MiB and one byte more, as two inputs and as one.
+  let base := inputBytes ""
+  let pair := lim.maxBytes - emptyRequestBytes - 2 * base - 1 - 1000
+  let single := lim.maxBytes - emptyRequestBytes - base
+  inputs := inputs ++ [[packItem lim "user-0" "a" 1000, packItem lim "user-0" "b" pair],
+    [packItem lim "user-0" "a" 1000, packItem lim "user-0" "b" (pair + 1)],
+    [packItem lim "user-0" "c" single], [packItem lim "user-0" "c" (single + 1)]]
   return inputs.map fun items =>
     let sizes := match Proofs.Batching.packAll lim (items.map Prod.snd) with
       | .ok bs => nats (bs.map List.length)
@@ -278,12 +317,13 @@ def filterCases : List Json := Id.run do
 /-! ### normalizeTags -/
 
 def tagCases : List Json :=
-  let trim : String → String := fun s => s.trimAscii.copy
   let cases : List (List String) :=
     [[], ["  "], ["a"], ["Alpha", "alpha", "ALPHA"], [" x ", "X", "y", "\ty\t"], ["b", "", "  ", "B ", "c"],
-     ["Report 2024", "report 2024", "Report-2024"], ["one", "two", "One", "three", "TWO"]]
+     ["Report 2024", "report 2024", "Report-2024"], ["one", "two", "One", "three", "TWO"],
+     ["\x0cform\x0c", "FORM", "\u00a0nbsp\u3000", "NBSP"], ["Ñandú", "ñANDÚ", "Ωmega", "ωMEGA"],
+     ["Привет", "пРИВЕТ", "Ёлка", "ёлка", "日本", " 日本 "], ["\x0c\u00a0\u3000"]]
   cases.map fun tags =>
-    obj [("tags", strs tags), ("expected", match Proofs.Tags.normalize trim String.toLower tags with
+    obj [("tags", strs tags), ("expected", match Proofs.Tags.normalize jsTrim jsLower tags with
       | some kept => strs kept
       | none => .null)]
 
@@ -293,7 +333,7 @@ def anchors : List (String × String) :=
   Proofs.UploadCaps.anchors ++ Proofs.EmbedProtocol.anchors ++ Proofs.StorageAccounting.anchors ++
   Proofs.RateLimit.anchors ++ Proofs.Lifecycle.anchors ++ Proofs.Chunker.anchors ++
   Proofs.Metadata.anchors ++ Proofs.Truncate.anchors ++ Proofs.Batching.anchors ++
-  Proofs.Billing.anchors ++ Proofs.QueryFilter.anchors ++ Proofs.Tags.anchors
+  Proofs.Billing.anchors ++ Proofs.QueryFilter.anchors ++ Proofs.Tags.anchors ++ Proofs.TagCap.anchors
 
 end Vectors
 

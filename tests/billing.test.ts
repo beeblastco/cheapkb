@@ -189,6 +189,37 @@ describe("billing", () => {
         PRICING.storagePerGbMonth / 2,
       );
     });
+    it("keeps accrued storage cost when this Lambda's clock trails the last write", async () => {
+      const lastWrite = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(lastWrite - 5_000);
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 1024,
+          storageCostCycleStart: "2024-01-01T00:00:00.000Z",
+          storageCostNano: 777,
+          storageCostUpdatedAt: new Date(lastWrite).toISOString(),
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      try {
+        await updateStorageBytes("user-1", "table", 1024);
+      } finally {
+        clock.mockRestore();
+      }
+
+      // A skewed clock used to start the cycle's cost over and drop the 777 already accrued.
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(777);
+      expect(update?.ExpressionAttributeValues?.[":now"]).toBe(
+        new Date(lastWrite).toISOString(),
+      );
+    });
   });
 
   describe("billing cycle", () => {

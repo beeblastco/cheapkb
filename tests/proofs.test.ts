@@ -10,11 +10,11 @@ vi.mock("gpt-tokenizer", () => ({
 
 import { splitIntoChunks } from "../functions/chunk/index";
 import { packEmbeddingBatches, truncateUtf8 } from "../functions/embed/index";
-import { normalizeTags } from "../functions/admin/update";
 import { buildFilter } from "../functions/query/index";
 import {
   currentCycle,
   fitFilterableMetadata,
+  normalizeTags,
   storageCostNanoUsd,
 } from "../functions/utils";
 

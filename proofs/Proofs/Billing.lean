@@ -154,17 +154,13 @@ theorem billed_once (costOf : Nat → Nat) :
       · exact Or.inl (Or.inr h)
       · exact Or.inr h
 
-/-- Spend only grows within a cycle: usage rows add and storage cost accrues, so once the
-allowance is reached the account stays paused until the cycle resets. -/
-theorem paused_monotone (allowance spent extra : Nat) (h : allowance ≤ spent) :
-    allowance ≤ spent + extra := Nat.le_add_right_of_le h
-
 /-- Source the model above stands for; tests/proofs.test.ts fails when any of it changes. -/
 def anchors : List (String × String) :=
   [("functions/utils.ts", "while (monthAnchor(year, month + index + 1, anchorDay) <= nowMs) index += 1;"),
    ("functions/utils.ts", "return Date.UTC(year, monthIndex, Math.min(day, lastDay));"),
    ("functions/utils.ts", "return Math.round(prorated * PRICING.storagePerGbMonth);"),
    ("functions/utils.ts", "Item: { pk: pk, sk: `USAGEEVENT#${operationId}`, ttl: ttl },"),
-   ("functions/utils.ts", "paused: totalSpentNano >= allowanceNano,")]
+   ("functions/utils.ts", "const nowMs = Math.max(Date.now(), previousUpdateMs || 0);"),
+   ("functions/utils.ts", "const nowMs = Math.max(Date.now(), storageUpdatedAt || 0);")]
 
 end Proofs.Billing
