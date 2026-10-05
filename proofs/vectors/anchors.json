@@ -15,6 +15,7 @@
  {"text": "? \"attribute_not_exists(pk) OR #s <> :embedded OR createdAt < :reindexedAt\"",
   "file": "functions/chunk/index.ts"},
  {"text": ": \"attribute_not_exists(pk) OR #s <> :embedded\",", "file": "functions/chunk/index.ts"},
+ {"text": "resetAt && now <= resetAt", "file": "functions/chunk/index.ts"},
  {"text": "embeddedCount = :zero, failedStep = :null, updatedAt = :t, reindexedAt = :t",
   "file": "functions/admin/reindex.ts"},
  {"text":
@@ -22,6 +23,7 @@
   "file": "functions/embed/index.ts"},
  {"text": "ConditionExpression: `storageBytes = :currentBytes AND ${storageUpdatedCondition}`,",
   "file": "functions/utils.ts"},
+ {"text": "if (deltaBytes === 0 && !alsoWrite) return;", "file": "functions/utils.ts"},
  {"text": "UpdateExpression: \"SET countedBytes = :counted\",",
   "file": "functions/s3/ingest-adapter.ts"},
  {"text": "ConditionExpression: \"#s = :queued\",", "file": "functions/s3/ingest-adapter.ts"},

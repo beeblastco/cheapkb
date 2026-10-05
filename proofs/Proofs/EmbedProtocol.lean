@@ -8,10 +8,11 @@ names the generation it was made for, and messages are never consumed: SQS may d
 any of them again, late, in any order. A reindex resets the counter and records
 `reindexedAt`; a replacement removes the rows and the counter.
 
-Assumptions: DynamoDB conditional writes and transactions are atomic; timestamps from
-different Lambdas order the same way as the events (a reindex is later than every row
-written before it); chunking after a reset is deterministic, so every run since the
-reset produces the same `chunkCount`.
+Assumptions: DynamoDB conditional writes and transactions are atomic; a reindex is stamped
+later than every chunk row written before it (Lambda clocks agree to within the time from
+one chunk run to the next reindex); chunking after a reset is deterministic, so every run
+since the reset produces the same `chunkCount`. Rows written after a reset are later than
+it by construction: the chunk stage stamps them at least 1 ms after `reindexedAt`.
 -/
 namespace Proofs.EmbedProtocol
 
@@ -248,6 +249,7 @@ def anchors : List (String × String) :=
    ("functions/embed/index.ts", "\"attribute_exists(pk) AND #s <> :deleting AND (attribute_not_exists(reindexedAt) OR reindexedAt < :createdAt)\","),
    ("functions/chunk/index.ts", "? \"attribute_not_exists(pk) OR #s <> :embedded OR createdAt < :reindexedAt\""),
    ("functions/chunk/index.ts", ": \"attribute_not_exists(pk) OR #s <> :embedded\","),
+   ("functions/chunk/index.ts", "resetAt && now <= resetAt"),
    ("functions/admin/reindex.ts", "embeddedCount = :zero, failedStep = :null, updatedAt = :t, reindexedAt = :t"),
    ("functions/embed/index.ts", "\"attribute_exists(pk) AND embeddedCount >= :expected AND #s <> :s AND #s <> :deleting\",")]
 

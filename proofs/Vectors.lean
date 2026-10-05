@@ -200,23 +200,34 @@ def emptyRequestBytes : Nat :=
 def inputBytes (text : String) : Nat :=
   ("{\"content\":[{\"type\":\"text\",\"text\":}]}").utf8ByteSize + jsonStringBytes text
 
+/-- A packing input: its owner, a text and how often the text repeats (to reach MBs). -/
+def packItem (lim : Proofs.Batching.Limits) (owner text : String) (rep : Nat) :
+    Json × Proofs.Batching.Item :=
+  let _ := lim
+  (obj [("userId", .str owner), ("text", .str text), ("repeat", toJson rep)],
+   { owner := owner.hash.toNat, bytes := inputBytes "" + rep * (jsonStringBytes text - 2) })
+
 def packingCases : List Json := Id.run do
   let lim : Proofs.Batching.Limits := { maxItems := 96, maxBytes := 19 * 1024 * 1024, emptyBytes := emptyRequestBytes }
-  let mut out := []
+  let mut inputs : List (List (Json × Proofs.Batching.Item)) := []
   let mut seed := 99
   for n in [0, 1, 5, 96, 97, 150, 200, 300] do
     for owners in [1, 2, 3] do
       seed := lcg seed
-      let items := (List.range n).map fun i =>
+      inputs := inputs ++ [(List.range n).map fun i =>
         let owner := if owners = 1 then 0 else (seed / (i / 40 + 1) + i / 37) % owners
-        (s!"user-{owner}", word (seed + i) (1 + (seed + i) % 40))
-      let model := items.map fun (u, t) => ({ owner := u.hash.toNat, bytes := inputBytes t } : Proofs.Batching.Item)
-      let sizes := match Proofs.Batching.packAll lim model with
-        | .ok bs => nats (bs.map List.length)
-        | .error _ => .null
-      out := out ++ [obj [("items", Json.arr (items.map fun (u, t) => obj [("userId", .str u), ("text", .str t)]).toArray),
-        ("batchSizes", sizes)]]
-  return out
+        packItem lim s!"user-{owner}" (word (seed + i) (1 + (seed + i) % 40)) 1]
+  -- Inputs of several MB, so the 19 MB request limit decides the split, and one too large.
+  for (count, text, mb) in [(6, "a", 4), (5, "€", 2), (9, "ab\"c", 1), (3, "x", 9), (2, "😀", 3)] do
+    seed := lcg seed
+    inputs := inputs ++ [(List.range count).map fun i =>
+      packItem lim s!"user-{(seed + i / 4) % 2}" text ((mb * 1048576 + (seed + i * 7919) % 900000) / text.length)]
+  inputs := inputs ++ [[packItem lim "user-0" "a" 100, packItem lim "user-0" "z" (19 * 1048576)]]
+  return inputs.map fun items =>
+    let sizes := match Proofs.Batching.packAll lim (items.map Prod.snd) with
+      | .ok bs => nats (bs.map List.length)
+      | .error _ => .null
+    obj [("items", Json.arr (items.map Prod.fst).toArray), ("batchSizes", sizes)]
 
 /-! ### buildFilter -/
 

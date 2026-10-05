@@ -126,10 +126,10 @@ describe("Lean models agree with the TypeScript", () => {
   it("packs Cohere requests like Proofs.Batching", () => {
     process.env.EMBEDDING_DIMENSION = "1024";
     for (const { items, batchSizes } of vectors<{
-      items: Array<{ userId: string; text: string }>;
-      batchSizes: number[];
+      items: Array<{ userId: string; text: string; repeat: number }>;
+      batchSizes: number[] | null;
     }>("packing")) {
-      const work = items.map(({ userId, text }, index) => ({
+      const work = items.map(({ userId, text, repeat }, index) => ({
         attempt: 1,
         createdAt: "2026-01-01T00:00:00.000Z",
         messageId: `m-${index}`,
@@ -139,8 +139,14 @@ describe("Lean models agree with the TypeScript", () => {
           modality: "text" as const,
           userId: userId,
         },
-        text: text,
+        text: text.repeat(repeat),
       }));
+      if (batchSizes === null) {
+        expect(() => packEmbeddingBatches(work)).toThrow(
+          "One Cohere embedding input exceeds the request limit",
+        );
+        continue;
+      }
       const batches = packEmbeddingBatches(work);
       expect(batches.map((batch) => batch.length)).toEqual(batchSizes);
       expect(batches.flat()).toEqual(work);

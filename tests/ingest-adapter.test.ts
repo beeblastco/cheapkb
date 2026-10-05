@@ -121,6 +121,39 @@ describe("S3 ingest adapter", () => {
     ).toBe("attribute_exists(pk) AND #s <> :deleting");
   });
 
+  it("keeps the queued check when a re-ingest does not change the size", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: { storageBytes: 100, createdAt: new Date().toISOString() },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "UPLOADED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 100,
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 100));
+
+    // Without it, a delete that lands meanwhile would still get a parse message.
+    const charge = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems ?? [])
+      .find(
+        (items) => items[1]?.Update?.ConditionExpression === "#s = :queued",
+      );
+    expect(charge).toBeDefined();
+  });
+
   it("charges only the source size delta on re-ingest", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(GetCommand).callsFake((input) => {

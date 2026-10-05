@@ -387,6 +387,39 @@ describe("chunk records", () => {
     );
   });
 
+  it("stamps chunks after the reindex even when this Lambda's clock trails it", async () => {
+    const reindexedAt = new Date(Date.now() + 60_000).toISOString();
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title", reindexedAt: reindexedAt },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler(
+      sqsEvent(
+        "chunk-skewed",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+          reindexedAt: reindexedAt,
+        }),
+      ),
+    );
+
+    // The embed stage drops chunks not created after the reindex, so this must be later.
+    const stamp = new Date(Date.parse(reindexedAt) + 1).toISOString();
+    expect(
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item?.createdAt,
+    ).toBe(stamp);
+    expect(sentMessages()[0].createdAt).toBe(stamp);
+  });
+
   it("redoes chunks embedded before the reindex that a redelivery restarts", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { userId: "owner", title: "Title" },

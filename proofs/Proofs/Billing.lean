@@ -76,13 +76,15 @@ theorem cycle_contains_now (c : Calendar) (day now : Nat) (hd : 1 ≤ day)
 
 /-! ### Storage cost accrual -/
 
-/-- Exact accrued cost of `bytes` held for `seconds`, in nano USD times `den`. -/
-def exactScaled (price bytes seconds : Nat) : Nat := price * bytes * seconds
+/-- Exact accrued cost of `bytes` held for `ms` milliseconds, in nano USD times `den`. TS passes
+milliseconds / 1000 as seconds, so whole milliseconds model it exactly, up to float rounding;
+`den` is 1000 × 2,592,000 × 2^30 for the shipped price. -/
+def exactScaled (price bytes ms : Nat) : Nat := price * bytes * ms
 
 /-- storageCostNanoUsd rounds each piece to the nearest nano USD. -/
-def piece (den price bytes seconds : Nat) : Nat := (exactScaled price bytes seconds + den / 2) / den
+def piece (den price bytes ms : Nat) : Nat := (exactScaled price bytes ms + den / 2) / den
 
-/-- The pieces updateStorageBytes adds up for a sequence of (bytes, seconds) holdings. -/
+/-- The pieces updateStorageBytes adds up for a sequence of (bytes, milliseconds) holdings. -/
 def accrued (den price : Nat) (pieces : List (Nat × Nat)) : Nat :=
   (pieces.map fun p => piece den price p.1 p.2).sum
 

@@ -176,6 +176,12 @@ async function chunkDocument(
   const previousCount = doc?.chunkCount ?? 0;
   // A re-parse after a reindex carries no reindexedAt, so META's is used when it has one.
   const resetAt = doc?.reindexedAt ?? reindexedAt;
+  // The embed stage counts only chunks created after the reindex, so a clock that trails
+  // the reindex Lambda's, or the same millisecond, still yields a later stamp.
+  const createdAt =
+    resetAt && now <= resetAt
+      ? new Date(Date.parse(resetAt) + 1).toISOString()
+      : now;
 
   const resp = await s3.send(
     new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
@@ -191,7 +197,7 @@ async function chunkDocument(
         pageStart: 1,
         pageEnd: 1,
         status: "QUEUED",
-        createdAt: now,
+        createdAt: createdAt,
       },
       resetAt,
     );
@@ -199,7 +205,7 @@ async function chunkDocument(
       stage: "embed",
       documentId: documentId,
       chunkId: chunkId,
-      createdAt: now,
+      createdAt: createdAt,
       modality: "image",
       pageStart: 1,
       pageEnd: 1,
@@ -244,7 +250,7 @@ async function chunkDocument(
               pageEnd: chunk.pageEnd,
               tokenCount: tokenCount,
               status: "QUEUED",
-              createdAt: now,
+              createdAt: createdAt,
             },
             resetAt,
           );
@@ -253,7 +259,7 @@ async function chunkDocument(
                 stage: "embed",
                 documentId: documentId,
                 chunkId: chunkId,
-                createdAt: now,
+                createdAt: createdAt,
                 modality: "text",
                 text: chunk.text,
                 tokenCount: tokenCount,

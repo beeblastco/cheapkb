@@ -800,7 +800,8 @@ export async function updateStorageBytes(
   alsoWrite?: TransactItem,
   expectedBytes?: number,
 ): Promise<void> {
-  if (deltaBytes === 0) return;
+  // A paired write must still run, with its condition, when the bytes do not change.
+  if (deltaBytes === 0 && !alsoWrite) return;
   const pk = `ACCOUNT#${userId}`;
   const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
 

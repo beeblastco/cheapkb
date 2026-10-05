@@ -224,6 +224,7 @@ theorem drifts_without_snapAtMark :
 /-- Source the model above stands for; tests/proofs.test.ts fails when any of it changes. -/
 def anchors : List (String × String) :=
   [("functions/utils.ts", "ConditionExpression: `storageBytes = :currentBytes AND ${storageUpdatedCondition}`,"),
+   ("functions/utils.ts", "if (deltaBytes === 0 && !alsoWrite) return;"),
    ("functions/s3/ingest-adapter.ts", "UpdateExpression: \"SET countedBytes = :counted\","),
    ("functions/s3/ingest-adapter.ts", "ConditionExpression: \"#s = :queued\","),
    ("functions/s3/ingest-adapter.ts", ": \"countedBytes = :previous AND #s <> :deleting\","),
