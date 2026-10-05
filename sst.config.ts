@@ -493,8 +493,9 @@ export default $config({
         handler: "./functions/pipeline/index.handler",
         runtime: "nodejs22.x",
         timeout: "300 seconds",
-        // Parsing a 50 MB PDF holds the whole document in memory.
-        memory: "2048 MB",
+        // Measured peaks: ~570 MB embedding ten 5 MB images, ~470 MB parsing and
+        // chunking a 2,000-page PDF, so 1 GB keeps about 1.8x headroom.
+        memory: "1024 MB",
         description:
           "Route pipeline messages to the parse, chunk and embed stages",
         environment: {

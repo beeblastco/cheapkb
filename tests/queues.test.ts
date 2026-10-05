@@ -1,4 +1,8 @@
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -58,6 +62,40 @@ describe("SQS partial failures", () => {
       dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
         .ExpressionAttributeValues,
     ).toEqual(expect.objectContaining({ ":s": "FAILED", ":f": "PARSING" }));
+  });
+
+  it("fails text too long to fit the chunk cap before it is tokenized", async () => {
+    // 1,000 chunks x 700 tokens x 16 characters per token, plus one.
+    const text = "a".repeat(1000 * 700 * 16 + 1);
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToByteArray: async () => new TextEncoder().encode(text),
+      } as any,
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+
+    const result = await parse(
+      sqsEvent(
+        "parse-huge",
+        JSON.stringify({
+          documentId: "doc-1",
+          sourceKey: "raw/doc-1/huge.txt",
+          mimeType: "text/plain",
+        }),
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    expect(
+      dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
+        .ExpressionAttributeValues,
+    ).toEqual(
+      expect.objectContaining({
+        ":e": "Document exceeds the 1000 chunk limit",
+        ":s": "FAILED",
+      }),
+    );
   });
 
   it("returns failed embedding records to SQS and records the attempt", async () => {
