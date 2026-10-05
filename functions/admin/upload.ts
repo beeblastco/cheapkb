@@ -1,9 +1,9 @@
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
 import {
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
-  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import type { Conditions } from "@aws-sdk/s3-presigned-post/dist-types/types";
@@ -16,6 +16,7 @@ import type { DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
+  docId,
   dynamo,
   extractUserId,
   getDocument,
@@ -42,6 +43,11 @@ const MAX_STORAGE_BYTES = parseInt(
 // the pipeline queue.
 const MAX_DOCUMENTS = 1000;
 const MAX_IN_FLIGHT_DOCUMENTS = 10;
+// Uploads that lose the account's uploadSeq race recount and retry this many times.
+const MAX_COMMIT_ATTEMPTS = 3;
+// GSI2 can trail a commit, so the account row also lists commits this recent.
+const RECENT_UPLOAD_WINDOW_MS = 30_000;
+const COMMIT_RETRY_BACKOFF_MS = 50;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -140,65 +146,58 @@ export async function handler(
       }),
     );
     const now = new Date().toISOString();
-    let documentId: string;
-    let sourceKey: string;
-    let replacementToken: string | undefined;
-    let reused = false;
-
-    const limitError = await checkAccountLimits(
-      userId,
-      summary.storageBytes,
-      !mapping?.Item,
-    );
-    if (limitError) {
-      return {
-        statusCode: 429,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(limitError),
-      };
-    }
-
+    let document: DocumentRow | null = null;
     if (mapping?.Item) {
-      ({ documentId } = mapping.Item);
-      const document = await getDocument(documentId, dynamo, TableName);
+      document = await getDocument(mapping.Item.documentId, dynamo, TableName);
       if (!document) return conflictResponse("Document mapping is invalid");
       if (!REPLACEABLE_STATUSES.has(document.status)) {
         return conflictResponse("Document is being processed");
       }
-
-      replacementToken = randomUUID();
-      const reserved = await reserveReplacement(
-        document,
-        replacementToken,
-        filename,
-        body,
-        now,
-      );
-      if (!reserved) return conflictResponse("Document is being processed");
-      sourceKey = document.sourceKey ?? "";
-      reused = true;
-    } else {
-      documentId = `doc_${randomUUID()}`;
-      sourceKey = `raw/${documentId}/${filename}`;
-      const created = await createDocument(
-        documentId,
-        userId,
-        filename,
-        mimeType,
-        dedupeKey,
-        sourceKey,
-        body,
-        now,
-      );
-      if (!created) return conflictResponse("Document is being uploaded");
     }
+    const documentId: string =
+      mapping?.Item?.documentId ?? `doc_${randomUUID()}`;
+    const sourceKey = document
+      ? (document.sourceKey ?? "")
+      : `raw/${documentId}/${filename}`;
+    const replacementToken = randomUUID();
+
+    const refusal = await commitWithinCaps(
+      userId,
+      documentId,
+      summary.storageBytes,
+      !document,
+      (seenSeq, recentUploads): Promise<"busy" | "committed" | "conflict"> =>
+        document
+          ? reserveReplacement(
+              document,
+              replacementToken,
+              filename,
+              body,
+              now,
+              seenSeq,
+              recentUploads,
+            )
+          : createDocument(
+              documentId,
+              userId,
+              filename,
+              mimeType,
+              dedupeKey,
+              sourceKey,
+              body,
+              now,
+              seenSeq,
+              recentUploads,
+            ),
+    );
+    if (refusal) return refusal;
 
     const fields: Record<string, string> = { "Content-Type": mimeType };
     const conditions: Conditions[] = [
       ["content-length-range", 1, maxUploadBytes],
       ["eq", "$Content-Type", mimeType],
     ];
-    if (replacementToken) {
+    if (document) {
       fields["x-amz-meta-upload-token"] = replacementToken;
       conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
     }
@@ -225,7 +224,7 @@ export async function handler(
         uploadFields: upload.fields,
         sourceKey: sourceKey,
         maxUploadBytes: maxUploadBytes,
-        reused: reused,
+        reused: Boolean(document),
       }),
     };
   } catch (error) {
@@ -241,11 +240,12 @@ export async function handler(
 }
 
 /** Returns the 429 body when the account is at its storage or in-flight cap, or at its
- * document cap for a new document, else null. Concurrent requests can overshoot. */
+ * document cap for a new document, else null. Used by commitWithinCaps before each write. */
 async function checkAccountLimits(
   userId: string,
   storageBytes: number,
   isNew: boolean,
+  recentUploads: Record<string, number>,
 ): Promise<{ error: string; code?: string } | null> {
   // Bytes are counted when S3 accepts a file, so an account can pass the cap
   // by the uploads already in flight.
@@ -253,8 +253,9 @@ async function checkAccountLimits(
     return { error: "Storage limit reached. Delete documents to upload more." };
   }
   const nowMs = Date.now();
-  let total = 0;
-  let inFlight = 0;
+  // Recent commits are in flight by definition; the sets merge them with what GSI2 already shows.
+  const documentIds = new Set(Object.keys(recentUploads));
+  const inFlightIds = new Set(Object.keys(recentUploads));
   let lastKey: Record<string, unknown> | undefined;
   do {
     const result = await dynamo.send(
@@ -262,26 +263,27 @@ async function checkAccountLimits(
         TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
-        ProjectionExpression: "#s, updatedAt, replacementExpiresAt",
+        ProjectionExpression: "pk, #s, updatedAt, replacementExpiresAt",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },
         ExclusiveStartKey: lastKey,
       }),
     );
     for (const item of result.Items ?? []) {
-      total += 1;
-      if (isDocumentInFlight(item, nowMs)) inFlight += 1;
+      const documentId = docId(String(item.pk));
+      documentIds.add(documentId);
+      if (isDocumentInFlight(item, nowMs)) inFlightIds.add(documentId);
     }
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
 
-  if (isNew && total >= MAX_DOCUMENTS) {
+  if (isNew && documentIds.size >= MAX_DOCUMENTS) {
     return {
       error: "Document limit reached. Delete documents to upload more.",
     };
   }
-  if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
-    // web/src/lib/client.ts waits and retries on this code.
+  if (inFlightIds.size >= MAX_IN_FLIGHT_DOCUMENTS) {
+    // DocumentsCard's bulk sync waits and retries on this code.
     return {
       error: "Too many documents processing. Try again when they finish.",
       code: "PROCESSING_LIMIT",
@@ -291,7 +293,82 @@ async function checkAccountLimits(
   return null;
 }
 
-/** Writes the dedupe mapping and META row together; false when the file is already being uploaded. */
+/** Counts the account's documents and runs the write, which commits only while uploadSeq
+ * still holds the value read before the count. Returns the refusal response, or null on commit. */
+async function commitWithinCaps(
+  userId: string,
+  documentId: string,
+  storageBytes: number,
+  isNew: boolean,
+  write: (
+    seenSeq: number,
+    recentUploads: Record<string, number>,
+  ) => Promise<"busy" | "committed" | "conflict">,
+): Promise<APIGatewayProxyStructuredResultV2 | null> {
+  // A commit between the count and the write moves uploadSeq, so concurrent uploads cannot both
+  // pass the caps. Each commit also lands in recentUploads, which covers GSI2 replication lag.
+  for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt += 1) {
+    const account = await dynamo.send(
+      new GetCommand({
+        TableName: AccountsTableName,
+        Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
+        ProjectionExpression: "uploadSeq, recentUploads",
+        ConsistentRead: true,
+      }),
+    );
+    const seenSeq: number = account.Item?.uploadSeq ?? 0;
+    const nowMs = Date.now();
+    const recentUploads = Object.fromEntries(
+      Object.entries(
+        (account.Item?.recentUploads ?? {}) as Record<string, number>,
+      ).filter(([, at]) => nowMs - at < RECENT_UPLOAD_WINDOW_MS),
+    );
+    const limitError = await checkAccountLimits(
+      userId,
+      storageBytes,
+      isNew,
+      recentUploads,
+    );
+    if (limitError) {
+      return {
+        statusCode: 429,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(limitError),
+      };
+    }
+    const outcome = await write(seenSeq, {
+      ...recentUploads,
+      [documentId]: nowMs,
+    });
+    if (outcome === "committed") return null;
+    if (outcome === "conflict") {
+      return conflictResponse(
+        isNew ? "Document is being uploaded" : "Document is being processed",
+      );
+    }
+    if (attempt + 1 < MAX_COMMIT_ATTEMPTS) {
+      await new Promise((resolve) => {
+        setTimeout(
+          resolve,
+          (attempt + 1 + Math.random()) * COMMIT_RETRY_BACKOFF_MS,
+        );
+      });
+    }
+  }
+
+  // DocumentsCard's bulk sync waits and retries on this code.
+  return {
+    statusCode: 429,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      error: "Too many uploads at once. Try again shortly.",
+      code: "PROCESSING_LIMIT",
+    }),
+  };
+}
+
+/** Writes the dedupe mapping, META row and account uploadSeq together. Returns "conflict"
+ * when the file is already being uploaded, "busy" when another upload moved uploadSeq. */
 async function createDocument(
   documentId: string,
   userId: string,
@@ -301,7 +378,9 @@ async function createDocument(
   sourceKey: string,
   body: Record<string, unknown>,
   now: string,
-): Promise<boolean> {
+  seenSeq: number,
+  recentUploads: Record<string, number>,
+): Promise<"busy" | "committed" | "conflict"> {
   try {
     await dynamo.send(
       new TransactWriteCommand({
@@ -342,58 +421,110 @@ async function createDocument(
               ConditionExpression: "attribute_not_exists(pk)",
             },
           },
+          {
+            Update: {
+              TableName: AccountsTableName,
+              Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
+              UpdateExpression:
+                "SET uploadSeq = :next, recentUploads = :recentUploads",
+              ConditionExpression:
+                "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
+              ExpressionAttributeValues: {
+                ":next": seenSeq + 1,
+                ":recentUploads": recentUploads,
+                ":seen": seenSeq,
+              },
+            },
+          },
         ],
       }),
     );
-    return true;
+    return "committed";
   } catch (error) {
-    if ((error as Error).name === "TransactionCanceledException") return false;
-    throw error;
+    if (!(error instanceof TransactionCanceledException)) throw error;
+    // The account row is last. Only a failed condition on a document item is a real conflict;
+    // a lost uploadSeq race, a transaction conflict or a throttle is retried.
+    const reasons = error.CancellationReasons ?? [];
+    const documentConflict = reasons
+      .slice(0, -1)
+      .some((reason) => reason.Code === "ConditionalCheckFailed");
+
+    return reasons.length > 0 && !documentConflict ? "busy" : "conflict";
   }
 }
 
-/** Claims an existing document for a re-upload; false when another upload holds it or it is busy. */
+/** Claims an existing document for a re-upload and moves the account uploadSeq. Returns "conflict"
+ * when another upload holds the document or it is busy, "busy" when another upload moved uploadSeq. */
 async function reserveReplacement(
   document: DocumentRow,
   replacementToken: string,
   filename: string,
   body: Record<string, unknown>,
   now: string,
-): Promise<boolean> {
+  seenSeq: number,
+  recentUploads: Record<string, number>,
+): Promise<"busy" | "committed" | "conflict"> {
   const replacementExpiresAt = new Date(
     Date.now() + REPLACEMENT_TTL_MS,
   ).toISOString();
 
   try {
     await dynamo.send(
-      new UpdateCommand({
-        TableName: TableName,
-        Key: { pk: document.pk, sk: document.sk },
-        UpdateExpression:
-          "SET replacementToken = :token, replacementExpiresAt = :expires, replacementPreviousStatus = :previous, pendingFilename = :filename, pendingTitle = :title, pendingTags = :tags, pendingAuthors = :authors, pendingYear = :year, updatedAt = :now",
-        ConditionExpression:
-          "userId = :userId AND #s = :expected AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :now)",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":token": replacementToken,
-          ":expires": replacementExpiresAt,
-          ":previous": document.status,
-          ":filename": filename,
-          ":title": body.title ?? filename,
-          ":tags": body.tags ?? null,
-          ":authors": body.authors ?? null,
-          ":year": body.year ?? null,
-          ":now": now,
-          ":userId": document.userId,
-          ":expected": document.status,
-        },
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: TableName,
+              Key: { pk: document.pk, sk: document.sk },
+              UpdateExpression:
+                "SET replacementToken = :token, replacementExpiresAt = :expires, replacementPreviousStatus = :previous, pendingFilename = :filename, pendingTitle = :title, pendingTags = :tags, pendingAuthors = :authors, pendingYear = :year, updatedAt = :now",
+              ConditionExpression:
+                "userId = :userId AND #s = :expected AND (attribute_not_exists(replacementToken) OR replacementExpiresAt < :now)",
+              ExpressionAttributeNames: { "#s": "status" },
+              ExpressionAttributeValues: {
+                ":token": replacementToken,
+                ":expires": replacementExpiresAt,
+                ":previous": document.status,
+                ":filename": filename,
+                ":title": body.title ?? filename,
+                ":tags": body.tags ?? null,
+                ":authors": body.authors ?? null,
+                ":year": body.year ?? null,
+                ":now": now,
+                ":userId": document.userId,
+                ":expected": document.status,
+              },
+            },
+          },
+          {
+            Update: {
+              TableName: AccountsTableName,
+              Key: { pk: `ACCOUNT#${document.userId}`, sk: "PROFILE" },
+              UpdateExpression:
+                "SET uploadSeq = :next, recentUploads = :recentUploads",
+              ConditionExpression:
+                "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
+              ExpressionAttributeValues: {
+                ":next": seenSeq + 1,
+                ":recentUploads": recentUploads,
+                ":seen": seenSeq,
+              },
+            },
+          },
+        ],
       }),
     );
-    return true;
+    return "committed";
   } catch (error) {
-    if ((error as Error).name === "ConditionalCheckFailedException")
-      return false;
-    throw error;
+    if (!(error instanceof TransactionCanceledException)) throw error;
+    // The account row is last. Only a failed condition on a document item is a real conflict;
+    // a lost uploadSeq race, a transaction conflict or a throttle is retried.
+    const reasons = error.CancellationReasons ?? [];
+    const documentConflict = reasons
+      .slice(0, -1)
+      .some((reason) => reason.Code === "ConditionalCheckFailed");
+
+    return reasons.length > 0 && !documentConflict ? "busy" : "conflict";
   }
 }
 

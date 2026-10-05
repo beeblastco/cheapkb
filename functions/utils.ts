@@ -68,6 +68,8 @@ export const MAX_IMAGE_UPLOAD_BYTES = Math.min(
 const VECTOR_GET_BATCH = 100;
 const VECTOR_DELETE_BATCH = 500;
 const CHUNK_DELETE_BACKOFF_MS = 100;
+// Upload commits also write the account row, so a lost storage update waits a moment.
+const STORAGE_RETRY_BACKOFF_MS = 50;
 
 const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 
@@ -938,6 +940,9 @@ export async function updateStorageBytes(
       return;
     } catch (error) {
       if ((error as Error).name !== "TransactionCanceledException") throw error;
+      if (attempt < 2) {
+        await delay((attempt + 1 + Math.random()) * STORAGE_RETRY_BACKOFF_MS);
+      }
     }
   }
   throw new Error("Storage usage changed concurrently");

@@ -1,9 +1,9 @@
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
-  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { mockClient } from "aws-sdk-client-mock";
@@ -147,8 +147,8 @@ describe("upload validation", () => {
           sourceKey: "raw/doc-existing/file.pdf",
           status: "EMBEDDED",
         },
-      });
-    dynamoMock.on(UpdateCommand).resolves({});
+      })
+      .resolvesOnce({ Item: { uploadSeq: 4 } });
 
     const response = await handler(
       jsonApiEvent({ filename: "file.pdf", mimeType: "application/pdf" }),
@@ -159,7 +159,17 @@ describe("upload validation", () => {
     expect(body.documentId).toBe("doc-existing");
     expect(body.reused).toBe(true);
     expect(body.sourceKey).toBe("raw/doc-existing/file.pdf");
-    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    const [meta, account] =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems!;
+    expect(meta.Update!.ConditionExpression).toContain("#s = :expected");
+    expect(account.Update!.ConditionExpression).toBe(
+      "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
+    );
+    expect(account.Update!.ExpressionAttributeValues).toMatchObject({
+      ":next": 5,
+      ":seen": 4,
+    });
   });
 
   it.each([
@@ -247,7 +257,8 @@ describe("upload validation", () => {
   it("rejects a new document while ten are still processing", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 10 }, () => ({
+      Items: Array.from({ length: 10 }, (_, i) => ({
+        pk: `DOC#doc-embedding-${i}`,
         status: "EMBEDDING",
         updatedAt: now,
       })),
@@ -266,11 +277,13 @@ describe("upload validation", () => {
     const now = new Date().toISOString();
     dynamoMock.on(QueryCommand).resolves({
       Items: [
-        ...Array.from({ length: 10 }, () => ({
+        ...Array.from({ length: 10 }, (_, i) => ({
+          pk: `DOC#doc-uploaded-${i}`,
           status: "UPLOADED",
           updatedAt: stale,
         })),
-        ...Array.from({ length: 10 }, () => ({
+        ...Array.from({ length: 10 }, (_, i) => ({
+          pk: `DOC#doc-updating-${i}`,
           status: "UPDATING",
           updatedAt: now,
         })),
@@ -287,7 +300,8 @@ describe("upload validation", () => {
   it("counts a pending replacement as processing", async () => {
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 10 }, () => ({
+      Items: Array.from({ length: 10 }, (_, i) => ({
+        pk: `DOC#doc-embedded-${i}`,
         status: "EMBEDDED",
         replacementExpiresAt: expires,
       })),
@@ -353,7 +367,10 @@ describe("upload validation", () => {
 
   it("rejects a new document at the per-account document cap", async () => {
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 1000 }, () => ({ status: "EMBEDDED" })),
+      Items: Array.from({ length: 1000 }, (_, i) => ({
+        pk: `DOC#doc-${i}`,
+        status: "EMBEDDED",
+      })),
     });
 
     const response = await handler(
@@ -363,4 +380,186 @@ describe("upload validation", () => {
     expect(response.statusCode).toBe(429);
     expect(createPresignedPost).not.toHaveBeenCalled();
   });
+
+  it("commits a new document with the account uploadSeq it counted under", async () => {
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1" ? { Item: { uploadSeq: 7 } } : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const account =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![2].Update!;
+    expect(account.Key).toEqual({ pk: "ACCOUNT#user-1", sk: "PROFILE" });
+    expect(account.ConditionExpression).toBe(
+      "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
+    );
+    expect(account.ExpressionAttributeValues).toMatchObject({
+      ":next": 8,
+      ":seen": 7,
+    });
+  });
+
+  it("starts the uploadSeq for an account that has none", async () => {
+    await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    const account =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![2].Update!;
+    // No upload ever stores 0, so this passes only while uploadSeq is missing.
+    expect(account.ConditionExpression).toContain(
+      "attribute_not_exists(uploadSeq)",
+    );
+    expect(account.ExpressionAttributeValues).toMatchObject({
+      ":next": 1,
+      ":seen": 0,
+    });
+  });
+
+  it("counts recent commits that GSI2 does not show yet", async () => {
+    const nowMs = Date.now();
+    const recentUploads = Object.fromEntries(
+      Array.from({ length: 10 }, (_, i) => [`doc-recent-${i}`, nowMs - 1000]),
+    );
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? { Item: { uploadSeq: 3, recentUploads: recentUploads } }
+          : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body).code).toBe("PROCESSING_LIMIT");
+  });
+
+  it("counts a document once when GSI2 and recent commits both list it", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(QueryCommand).resolves({
+      Items: Array.from({ length: 9 }, (_, i) => ({
+        pk: `DOC#doc-${i}`,
+        status: "QUEUED",
+        updatedAt: now,
+      })),
+    });
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? { Item: { uploadSeq: 9, recentUploads: { "doc-8": Date.now() } } }
+          : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("records the commit and drops recent commits past the window", async () => {
+    const nowMs = Date.now();
+    dynamoMock.on(GetCommand).callsFake((input) =>
+      input.Key?.pk === "ACCOUNT#user-1"
+        ? {
+            Item: {
+              uploadSeq: 3,
+              recentUploads: {
+                "doc-old": nowMs - 60_000,
+                "doc-new": nowMs - 1000,
+              },
+            },
+          }
+        : {},
+    );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const { documentId } = JSON.parse(response.body);
+    const recent =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![2].Update!.ExpressionAttributeValues![":recentUploads"];
+    expect(Object.keys(recent).sort()).toEqual(["doc-new", documentId].sort());
+  });
+
+  it("recounts and retries when another upload moves the uploadSeq first", async () => {
+    dynamoMock
+      .on(TransactWriteCommand)
+      .rejectsOnce(cancelled(["None", "None", "ConditionalCheckFailed"]))
+      .resolves({});
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
+    expect(dynamoMock.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
+  it("retries a throttled document write instead of returning 409", async () => {
+    dynamoMock
+      .on(TransactWriteCommand)
+      .rejectsOnce(cancelled(["ThrottlingError", "None", "None"]))
+      .resolves({});
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
+  });
+
+  it("asks the client to retry after repeated uploadSeq conflicts", async () => {
+    dynamoMock
+      .on(TransactWriteCommand)
+      .rejects(cancelled(["None", "None", "ConditionalCheckFailed"]));
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body!).code).toBe("PROCESSING_LIMIT");
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(3);
+    expect(createPresignedPost).not.toHaveBeenCalled();
+  });
+
+  it("keeps the 409 when the same file is already being uploaded", async () => {
+    dynamoMock
+      .on(TransactWriteCommand)
+      .rejects(cancelled(["ConditionalCheckFailed", "None", "None"]));
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body!).error).toBe("Document is being uploaded");
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
+  });
 });
+
+function cancelled(codes: string[]): TransactionCanceledException {
+  return new TransactionCanceledException({
+    message: "Transaction cancelled",
+    $metadata: {},
+    CancellationReasons: codes.map((code) => ({ Code: code })),
+  });
+}
