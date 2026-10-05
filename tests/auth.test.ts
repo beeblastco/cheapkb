@@ -52,6 +52,12 @@ describe("API authorizer", () => {
     });
   });
 
+  it("accepts the bearer scheme in any case", async () => {
+    await handler(authorizerEvent("bearer lower"));
+
+    expect(vi.mocked(jwtVerify).mock.lastCall?.[0]).toBe("lower");
+  });
+
   it("denies a token that fails verification", async () => {
     vi.mocked(jwtVerify).mockRejectedValueOnce(
       new errors.JWTExpired("expired", {}),

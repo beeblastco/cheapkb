@@ -16,7 +16,7 @@ export async function handler(
   event: APIGatewayRequestAuthorizerEventV2,
 ): Promise<APIGatewaySimpleAuthorizerWithContextResult<{ userId: string }>> {
   const authHeader = event.headers?.authorization ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const token = /^bearer /i.test(authHeader) ? authHeader.slice(7) : "";
   const appOrigin = process.env.APP_ORIGIN ?? "http://localhost:5173";
   try {
     const userId = await verifyShooToken(token, appOrigin);
