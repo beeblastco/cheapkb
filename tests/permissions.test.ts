@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// The IAM action each AWS SDK command needs. TransactWrite and DeleteObject also need
-// the per-item and per-version actions, added from the request shape below.
+// The IAM action each AWS call needs, checked per function but not per resource. TransactWrite
+// and DeleteObject also need the per-item and per-version actions, read from the request.
 const COMMAND_ACTIONS: Record<string, string> = {
   BatchWriteCommand: "dynamodb:BatchWriteItem",
   DeleteCommand: "dynamodb:DeleteItem",
@@ -16,6 +16,7 @@ const COMMAND_ACTIONS: Record<string, string> = {
   GetVectorsCommand: "s3vectors:GetVectors",
   HeadObjectCommand: "s3:GetObject",
   InvokeCommand: "lambda:InvokeFunction",
+  InvokeModelCommand: "bedrock:InvokeModel",
   ListObjectVersionsCommand: "s3:ListBucketVersions",
   PutCommand: "dynamodb:PutItem",
   PutObjectCommand: "s3:PutObject",
@@ -56,6 +57,10 @@ describe("Lambda IAM permissions", () => {
           ([, action]) => action,
         ),
       );
+      // This shared grant is InvokeModel, or AssumeRole into a role that has it.
+      if (block.includes("embeddingInvocationPermission")) {
+        granted.add("bedrock:InvokeModel");
+      }
       const missing = [...neededActions(resolve(`${match[1]}.ts`))].filter(
         (action) =>
           !granted.has(action) && !UNREACHABLE[match[1]]?.includes(action),
@@ -112,6 +117,8 @@ function addActions(source: string, actions: Set<string>): void {
   for (const [, command] of source.matchAll(/new (\w+Command)\(/g)) {
     if (COMMAND_ACTIONS[command]) actions.add(COMMAND_ACTIONS[command]);
   }
+  // A presigned POST is signed with the function's own credentials.
+  if (source.includes("createPresignedPost(")) actions.add("s3:PutObject");
   if (source.includes("new TransactWriteCommand(")) {
     for (const [, kind] of source.matchAll(
       /\b(ConditionCheck|Delete|Put|Update): \{/g,

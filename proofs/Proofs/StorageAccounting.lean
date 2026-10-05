@@ -231,6 +231,8 @@ def anchors : List (String × String) :=
    ("functions/admin/delete.ts", "({ countedBytes } = await markDeleting(documentId, null));"),
    ("functions/s3/cleanup-adapter.ts", "({ countedBytes } = marked);"),
    ("functions/admin/delete.ts", "`delete:${documentId}`,"),
-   ("functions/s3/cleanup-adapter.ts", "`delete:${documentId}`,")]
+   ("functions/s3/cleanup-adapter.ts", "`delete:${documentId}`,"),
+   ("functions/s3/ingest-adapter.ts", "if (latest?.countedBytes === objectSize) return;"),
+   ("functions/s3/ingest-adapter.ts", "\"SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t\",")]
 
 end Proofs.StorageAccounting

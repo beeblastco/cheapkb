@@ -9,9 +9,9 @@ Assumptions, each a DynamoDB or timing fact rather than code:
 * the commit transaction is atomic and its `uploadSeq = :seen` condition linearizable;
 * the count sees every committed document (GSI2 lag stays under RECENT_UPLOAD_WINDOW_MS),
   so a count may only over-count, which is the 30 s deleted-document gap;
-* a committed upload's first file is charged without the cap only while
-  `isDocumentInFlight` still counts it for this invocation's full 60 s; the ingest adapter
-  holds a later one to the cap, and the form is signed to expire inside that window.
+* a committed upload's file is charged without the cap only while `isDocumentInFlight`
+  still counts it for this invocation's full 60 s; the ingest adapter holds a later one to
+  the cap. A replacement counts until its late grace ends and is reverted a minute before.
 -/
 namespace Proofs.UploadCaps
 
@@ -306,6 +306,8 @@ def anchors : List (String × String) :=
    ("functions/s3/ingest-adapter.ts", "late ? MAX_STORAGE_BYTES : undefined,"),
    ("functions/s3/ingest-adapter.ts", "const late = !isDocumentInFlight(doc, Date.parse(now) + INVOCATION_MS);"),
    ("functions/s3/ingest-adapter.ts", "const INVOCATION_MS = 60 * 1000;"),
+   ("functions/s3/ingest-adapter.ts", "if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now) + INVOCATION_MS) {"),
+   ("functions/utils.ts", "LATE_REPLACEMENT_GRACE_MS;\n  if (replacementEnd > nowMs) return true;"),
    ("functions/s3/ingest-adapter.ts", "await recountStorage(documentId, doc, key, eventId, true);"),
    ("functions/utils.ts", "storageBytes + deltaBytes > capBytes"),
    ("functions/admin/upload.ts", "Math.floor((Date.parse(now) + REPLACEMENT_TTL_MS - Date.now()) / 1000)"),

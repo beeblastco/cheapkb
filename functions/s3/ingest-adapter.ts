@@ -18,6 +18,7 @@ import {
   dynamo,
   getDocument,
   isDocumentInFlight,
+  LATE_REPLACEMENT_GRACE_MS,
   MAX_IMAGE_UPLOAD_BYTES,
   MAX_STORAGE_BYTES,
   MAX_UPLOAD_BYTES,
@@ -35,9 +36,6 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
-// A POST that starts just before its form expires can finish minutes later; edits
-// and reindex wait out the same grace, so nothing races a replacement before it.
-const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 // This function's timeout, so a charge decided now commits within it.
 const INVOCATION_MS = 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
@@ -237,10 +235,10 @@ async function finalizeReplacement(
   key: string,
   now: string,
 ): Promise<boolean> {
-  // Past the grace, edits and reindex may run again, so even a redriven event for a
-  // timely upload is rolled back rather than reset a document mid-operation.
+  // Past the grace, edits and reindex may run again and the caps stop counting it, so
+  // even a redriven event for a timely upload is rolled back, with this invocation's margin.
   const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
-  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now) + INVOCATION_MS) {
     await revertReplacement(
       documentId,
       doc,
@@ -334,7 +332,10 @@ async function recountStorage(
       if ((error as Error).name === "NotFound") return;
       throw error;
     }
-    const countedBytes = doc.countedBytes ?? 0;
+    // Each pass reads the count consistently, since another event may have moved it.
+    const current = await getDocument(documentId, dynamo, TableName);
+    if (!current || current.status === "DELETING") return;
+    const countedBytes = current.countedBytes ?? 0;
     if (objectSize === countedBytes) return;
 
     const charged = await updateStorageBytes(
@@ -348,16 +349,16 @@ async function recountStorage(
           Key: { pk: `DOC#${documentId}`, sk: "META" },
           UpdateExpression: "SET countedBytes = :counted",
           ConditionExpression:
-            doc.countedBytes === undefined
+            current.countedBytes === undefined
               ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
               : "countedBytes = :previous AND #s <> :deleting",
           ExpressionAttributeNames: { "#s": "status" },
           ExpressionAttributeValues: {
             ":counted": objectSize,
             ":deleting": "DELETING",
-            ...(doc.countedBytes === undefined
+            ...(current.countedBytes === undefined
               ? {}
-              : { ":previous": doc.countedBytes }),
+              : { ":previous": current.countedBytes }),
           },
         },
       },
@@ -365,6 +366,9 @@ async function recountStorage(
       capped ? MAX_STORAGE_BYTES : undefined,
     );
     if (charged) return;
+    // Another event may have charged this version since; then it stays.
+    const latest = await getDocument(documentId, dynamo, TableName);
+    if (latest?.countedBytes === objectSize) return;
     // Removing the refused version makes S3 serve the version under it again.
     await s3.send(
       new DeleteObjectCommand({
@@ -379,8 +383,8 @@ async function recountStorage(
   }
 }
 
-/** Fails a late first file that would pass the storage cap and removes it. countedBytes 0
- * makes a retried event recount the source as a capped overwrite. */
+/** Fails a late file that would pass the storage cap and removes it. Its count is left as
+ * is, so it still matches the version S3 serves once this one is gone. */
 async function refuseLateUpload(
   documentId: string,
   key: string,
@@ -393,7 +397,7 @@ async function refuseLateUpload(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, countedBytes = :zero",
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
         ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
@@ -402,7 +406,6 @@ async function refuseLateUpload(
           ":f": "UPLOAD",
           ":s": "FAILED",
           ":t": now,
-          ":zero": 0,
         },
       }),
     );

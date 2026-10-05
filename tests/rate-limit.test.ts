@@ -85,4 +85,26 @@ describe("rate limit buckets", () => {
       Date.parse((update![0] as any).input.ExpressionAttributeValues[":lr"]),
     ).toBeLessThan(Date.parse(lastRefill));
   });
+  it("refills a bucket whose lastRefill is far in the future, so it never stays locked", async () => {
+    const { checkRateLimit } = await import("../functions/utils");
+    const lastRefill = new Date(
+      Date.now() + 365 * 24 * 3600 * 1000,
+    ).toISOString();
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Item: { tokens: 0, lastRefill: lastRefill } })
+      .mockResolvedValue({});
+    const client = { send: send } as any;
+
+    const result = await checkRateLimit(
+      "user",
+      "table",
+      "QUERY",
+      100,
+      100,
+      client,
+    );
+
+    expect(result).toEqual({ allowed: true, remaining: 99 });
+  });
 });

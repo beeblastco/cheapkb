@@ -75,6 +75,8 @@ const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 // form's TTL and the settled statuses are shared so upload, list and sweeper agree.
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
 export const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+// A replacement POST that starts just before its form expires can land this much later.
+export const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
 // A clock this far behind the last write is moved up to it; a write further ahead is
 // treated as a bad clock and ignored, so the row heals.
 const MAX_CLOCK_SKEW_MS = 60 * 1000;
@@ -168,11 +170,12 @@ export async function checkRateLimit(
       }
     }
 
-    const lastRefill = new Date(item.lastRefill as string);
-    const hoursPassed = Math.max(
-      0,
-      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60),
-    );
+    const lastRefillMs = Date.parse(String(item.lastRefill));
+    // A stamp further ahead than the skew allowance is a bad clock, so the bucket refills.
+    const hoursPassed =
+      lastRefillMs - now.getTime() > MAX_CLOCK_SKEW_MS
+        ? Infinity
+        : Math.max(0, (now.getTime() - lastRefillMs) / (1000 * 60 * 60));
     let tokens = Math.min(
       maxTokens,
       (item.tokens as number) + hoursPassed * refillPerHour,
@@ -1070,8 +1073,8 @@ export function fitFilterableMetadata<T extends Record<string, unknown>>(
   return fitted as T;
 }
 
-/** Whether a document still counts against the in-flight limit: a pending replacement
- * until it expires, UPLOADED for 15 minutes and other unsettled statuses for an hour. */
+/** Whether a document counts against the in-flight limit: a pending replacement until it can
+ * no longer land, UPLOADED for 15 minutes and other unsettled statuses for an hour. */
 export function isDocumentInFlight(
   item: {
     status?: unknown;
@@ -1080,7 +1083,10 @@ export function isDocumentInFlight(
   },
   nowMs: number,
 ): boolean {
-  if (Date.parse(String(item.replacementExpiresAt ?? "")) > nowMs) return true;
+  const replacementEnd =
+    Date.parse(String(item.replacementExpiresAt ?? "")) +
+    LATE_REPLACEMENT_GRACE_MS;
+  if (replacementEnd > nowMs) return true;
   if (SETTLED_STATUSES.has(String(item.status))) return false;
   const windowMs =
     item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
