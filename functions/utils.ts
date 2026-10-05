@@ -75,6 +75,9 @@ const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 // form's TTL and the settled statuses are shared so upload, list and sweeper agree.
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
 export const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+// A clock this far behind the last write is moved up to it; a write further ahead is
+// treated as a bad clock and ignored, so the row heals.
+const MAX_CLOCK_SKEW_MS = 60 * 1000;
 export const SETTLED_STATUSES = new Set([
   "DELETING",
   "EMBEDDED",
@@ -139,10 +142,9 @@ export async function checkRateLimit(
       }),
     );
     const item = result.Item as Record<string, unknown> | null;
-    // A clock behind the last write's is moved up to it, so refill never goes negative
-    // and lastRefill never moves back (proofs/Proofs/RateLimit.lean assumes both).
+    // Within the skew allowance lastRefill never moves back (proofs/Proofs/RateLimit.lean).
     const now = new Date(
-      Math.max(Date.now(), Date.parse(String(item?.lastRefill ?? "")) || 0),
+      skewTolerantNow(Date.parse(String(item?.lastRefill ?? ""))),
     );
 
     if (!item) {
@@ -167,8 +169,10 @@ export async function checkRateLimit(
     }
 
     const lastRefill = new Date(item.lastRefill as string);
-    const hoursPassed =
-      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
+    const hoursPassed = Math.max(
+      0,
+      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60),
+    );
     let tokens = Math.min(
       maxTokens,
       (item.tokens as number) + hoursPassed * refillPerHour,
@@ -431,8 +435,7 @@ export async function getUsageSummary(
 ): Promise<UsageSummary> {
   const account = await getOrCreateAccount(userId, tableName);
   const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
-  // A clock behind the last storage write's is moved up to it, so its accrued cost is kept.
-  const nowMs = Math.max(Date.now(), storageUpdatedAt || 0);
+  const nowMs = skewTolerantNow(storageUpdatedAt);
   const cycle = currentCycle(account, nowMs);
 
   const startDay = dayKey(cycle.startMs);
@@ -839,8 +842,8 @@ export async function updateStorageBytes(
     if (!account) throw new Error("Account profile not found");
 
     const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
-    // A clock behind the last write's is moved up to it, so accrued cost is never dropped.
-    const nowMs = Math.max(Date.now(), previousUpdateMs || 0);
+    // Within the skew allowance accrued cost is never dropped.
+    const nowMs = skewTolerantNow(previousUpdateMs);
     const now = new Date(nowMs).toISOString();
     const cycle = currentCycle(account, nowMs);
     const cycleStart = new Date(cycle.startMs).toISOString();
@@ -1244,6 +1247,16 @@ function monthAnchor(year: number, monthIndex: number, day: number): number {
 
 function nanoUsdToUsd(nano: number): number {
   return nano / NANO_PER_USD;
+}
+
+/** Returns now, or the last write's time when this clock trails it by at most the skew
+ * allowance. Used where a row's time must not move back. */
+function skewTolerantNow(lastWriteMs: number): number {
+  const nowMs = Date.now();
+
+  return lastWriteMs > nowMs && lastWriteMs - nowMs <= MAX_CLOCK_SKEW_MS
+    ? lastWriteMs
+    : nowMs;
 }
 
 // Cycles used to start at the account's creation time; one stored from that

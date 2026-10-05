@@ -143,7 +143,11 @@ describe("upload validation", () => {
       .resolvesOnce({ Item: { uploadSeq: 4 } });
 
     const response = await handler(
-      jsonApiEvent({ filename: "file.pdf", mimeType: "application/pdf" }),
+      jsonApiEvent({
+        filename: "file.pdf",
+        mimeType: "application/pdf",
+        tags: ["Beta ", "beta", "  "],
+      }),
     );
     const body = JSON.parse(response.body!);
 
@@ -155,6 +159,8 @@ describe("upload validation", () => {
       dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
         .TransactItems!;
     expect(meta.Update!.ConditionExpression).toContain("#s = :expected");
+    // The pending tags replace the document's on success, so they are normalized too.
+    expect(meta.Update!.ExpressionAttributeValues?.[":tags"]).toEqual(["Beta"]);
     expect(account.Update!.ConditionExpression).toBe(
       "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
     );

@@ -63,9 +63,12 @@ describe("DELETE /account/data", () => {
         { pk: "DOC#b", sk: "META", countedBytes: 50, sourceKey: "raw/b/b.md" },
       ],
     });
-    dynamoMock
-      .on(QueryCommand, { TableName: "tags" })
-      .resolves({ Items: [{ pk: "USER#owner", sk: "TAG#research" }] });
+    dynamoMock.on(QueryCommand, { TableName: "tags" }).resolves({
+      Items: [
+        { pk: "USER#owner", sk: "TAG#research" },
+        { pk: "USER#owner", sk: "TAGSEQ" },
+      ],
+    });
     s3Mock.on(DeleteObjectCommand).resolves({});
   });
 
@@ -112,6 +115,16 @@ describe("DELETE /account/data", () => {
         .map((c) => c.args[0].input.ExpressionAttributeValues?.[":s"]),
     ).toEqual(["DELETING", "DELETING"]);
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(1);
+    // The tag sequence goes too, but only real tags are reported.
+    const [deletes] = Object.values(
+      dynamoMock.commandCalls(BatchWriteCommand)[0].args[0].input
+        .RequestItems ?? {},
+    );
+    expect(deletes?.map((request) => request.DeleteRequest?.Key?.sk)).toEqual([
+      "TAG#research",
+      "TAGSEQ",
+    ]);
+    expect(JSON.parse(response.body!).deletedTags).toBe(1);
   });
 
   it("backs off before resending throttled tag deletes", async () => {

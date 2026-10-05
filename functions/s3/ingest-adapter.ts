@@ -17,6 +17,7 @@ import {
   deleteDocumentVectors,
   dynamo,
   getDocument,
+  isDocumentInFlight,
   MAX_IMAGE_UPLOAD_BYTES,
   MAX_STORAGE_BYTES,
   MAX_UPLOAD_BYTES,
@@ -37,6 +38,8 @@ const DISPATCH_LEASE_MS = 60 * 1000;
 // A POST that starts just before its form expires can finish minutes later; edits
 // and reindex wait out the same grace, so nothing races a replacement before it.
 const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
+// This function's timeout, so a charge decided now commits within it.
+const INVOCATION_MS = 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -66,6 +69,9 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
+    // The upload caps count a document only while it is in flight, so a file that lands
+    // later, or by the end of this invocation, is held to the storage cap.
+    const late = !isDocumentInFlight(doc, Date.parse(now) + INVOCATION_MS);
     if (await skipStaleReplacement(documentId, doc, key, eventId)) continue;
 
     const objectSize = Number(record.s3.object.size ?? 0);
@@ -87,7 +93,7 @@ export async function handler(event: S3Event): Promise<void> {
       continue;
     }
 
-    if (await refuseOverAllowance(documentId, doc, key, eventId, now)) {
+    if (await refuseOverAllowance(documentId, doc, key, eventId, now, late)) {
       continue;
     }
 
@@ -103,7 +109,7 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     if (isDispatched(doc)) {
-      await recountStorage(documentId, doc, key, eventId);
+      await recountStorage(documentId, doc, key, eventId, true);
       console.log(
         `[ingest-adapter] Document ${documentId} already dispatched, skipping`,
       );
@@ -119,11 +125,10 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     try {
-      await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
       // Charge only the change in source size so a re-ingest or replacement does not
       // double-count bytes. The document's count moves in the same transaction, so a
       // dispatch that fails afterwards cannot leave bytes no document accounts for.
-      await updateStorageBytes(
+      const charged = await updateStorageBytes(
         doc.userId,
         AccountsTableName,
         objectSize - (doc.countedBytes ?? 0),
@@ -141,7 +146,19 @@ export async function handler(event: S3Event): Promise<void> {
             },
           },
         },
+        undefined,
+        late ? MAX_STORAGE_BYTES : undefined,
       );
+      if (!charged) {
+        await refuseLateUpload(
+          documentId,
+          key,
+          record.s3.object.versionId,
+          now,
+        );
+        continue;
+      }
+      await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: PipelineQueueUrl,
@@ -212,10 +229,8 @@ async function claimDispatch(
   }
 }
 
-/** Deletes the old derived data and promotes the pending replacement metadata. Returns
- * false for a stale event. reindexedAt makes chunk rows and embed messages that an older
- * chunk run writes after the delete count as stale. Edits and reindex wait out the window, so only a delete or a
- * stray write from the old version's pipeline can change the row meanwhile. */
+/** Promotes a pending replacement after deleting the old derived data; false for a stale
+ * event. reindexedAt marks rows an older chunk run writes after the delete as stale. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
@@ -296,70 +311,110 @@ async function markDispatchSent(
   );
 }
 
-/** Charges the source's current size after dispatch, since a presigned POST can overwrite it
- * for 15 minutes. The document's count moves in the same transaction. An overwrite that
- * would pass the storage cap is removed instead. */
+/** Charges the source's current size, since a presigned POST can overwrite it for 15
+ * minutes. When capped, a version over the storage cap is removed and the one below rechecked. */
 async function recountStorage(
   documentId: string,
   doc: DocumentRow,
   key: string,
   eventId: string,
+  capped: boolean,
 ): Promise<void> {
-  let objectSize: number;
-  let versionId: string | undefined;
-  try {
-    const object = await s3.send(
-      new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
-    );
-    objectSize = object.ContentLength ?? 0;
-    versionId = object.VersionId;
-  } catch (error) {
-    if ((error as Error).name === "NotFound") return;
-    throw error;
-  }
-  const countedBytes = doc.countedBytes ?? 0;
-  if (objectSize === countedBytes) return;
+  // Two events can both refuse the newest version, so the one under it is recounted too.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let objectSize: number;
+    let versionId: string | undefined;
+    try {
+      const object = await s3.send(
+        new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
+      );
+      objectSize = object.ContentLength ?? 0;
+      versionId = object.VersionId;
+    } catch (error) {
+      if ((error as Error).name === "NotFound") return;
+      throw error;
+    }
+    const countedBytes = doc.countedBytes ?? 0;
+    if (objectSize === countedBytes) return;
 
-  // An upload form stays valid after its document settles, so an overwrite of a counted
-  // source is held to the storage cap; a first upload is bounded by the in-flight cap.
-  const charged = await updateStorageBytes(
-    doc.userId,
-    AccountsTableName,
-    objectSize - countedBytes,
-    `recount:${eventId}:${objectSize}`,
-    {
-      Update: {
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression: "SET countedBytes = :counted",
-        ConditionExpression:
-          doc.countedBytes === undefined
-            ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
-            : "countedBytes = :previous AND #s <> :deleting",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":counted": objectSize,
-          ":deleting": "DELETING",
-          ...(doc.countedBytes === undefined
-            ? {}
-            : { ":previous": doc.countedBytes }),
+    const charged = await updateStorageBytes(
+      doc.userId,
+      AccountsTableName,
+      objectSize - countedBytes,
+      `recount:${eventId}:${objectSize}`,
+      {
+        Update: {
+          TableName: TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          UpdateExpression: "SET countedBytes = :counted",
+          ConditionExpression:
+            doc.countedBytes === undefined
+              ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
+              : "countedBytes = :previous AND #s <> :deleting",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: {
+            ":counted": objectSize,
+            ":deleting": "DELETING",
+            ...(doc.countedBytes === undefined
+              ? {}
+              : { ":previous": doc.countedBytes }),
+          },
         },
       },
-    },
-    undefined,
-    doc.countedBytes === undefined ? undefined : MAX_STORAGE_BYTES,
-  );
-  if (charged) return;
-  // Removing the refused version makes S3 serve the source the search data came from.
+      undefined,
+      capped ? MAX_STORAGE_BYTES : undefined,
+    );
+    if (charged) return;
+    // Removing the refused version makes S3 serve the version under it again.
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: versionId,
+      }),
+    );
+    console.log(
+      `[ingest-adapter] Refused a version of ${documentId} over the storage cap`,
+    );
+  }
+}
+
+/** Fails a late first file that would pass the storage cap and removes it. countedBytes 0
+ * makes a retried event recount the source as a capped overwrite. */
+async function refuseLateUpload(
+  documentId: string,
+  key: string,
+  versionId: string | undefined,
+  now: string,
+): Promise<void> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t, countedBytes = :zero",
+        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":deleting": "DELETING",
+          ":e": "Storage limit reached. Delete documents to upload more.",
+          ":f": "UPLOAD",
+          ":s": "FAILED",
+          ":t": now,
+          ":zero": 0,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
   await s3.send(
     new DeleteObjectCommand({
       Bucket: StorageBucketName,
       Key: key,
       VersionId: versionId,
     }),
-  );
-  console.log(
-    `[ingest-adapter] Refused an overwrite of ${documentId} over the storage cap`,
   );
 }
 
@@ -371,6 +426,7 @@ async function refuseOverAllowance(
   key: string,
   eventId: string,
   now: string,
+  late: boolean,
 ): Promise<boolean> {
   if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
   const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
@@ -386,7 +442,7 @@ async function refuseOverAllowance(
     throw new Error(`Upload ${documentId} was claimed concurrently`);
   }
   // A failed upload keeps its source, so its bytes are charged like any other.
-  await recountStorage(documentId, doc, key, eventId);
+  await recountStorage(documentId, doc, key, eventId, late);
 
   return true;
 }
@@ -494,7 +550,9 @@ async function skipStaleReplacement(
   );
   if (object.Metadata?.["upload-token"] === doc.replacementToken) return false;
   // The old token-less POST can still overwrite a dispatched source, so charge what now sits there.
-  if (isDispatched(doc)) await recountStorage(documentId, doc, key, eventId);
+  if (isDispatched(doc)) {
+    await recountStorage(documentId, doc, key, eventId, true);
+  }
   console.log(
     `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
   );

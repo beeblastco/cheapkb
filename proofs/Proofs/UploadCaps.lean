@@ -9,8 +9,9 @@ Assumptions, each a DynamoDB or timing fact rather than code:
 * the commit transaction is atomic and its `uploadSeq = :seen` condition linearizable;
 * the count sees every committed document (GSI2 lag stays under RECENT_UPLOAD_WINDOW_MS),
   so a count may only over-count, which is the 30 s deleted-document gap;
-* a committed upload stays in flight until its bytes are counted or its form expires; the
-  form is signed to expire within the window `isDocumentInFlight` counts it in.
+* a committed upload's first file is charged without the cap only while
+  `isDocumentInFlight` still counts it for this invocation's full 60 s; the ingest adapter
+  holds a later one to the cap, and the form is signed to expire inside that window.
 -/
 namespace Proofs.UploadCaps
 
@@ -85,6 +86,10 @@ inductive Step (c : Caps) (var : Variant) : St → St → Prop
   charges it only while the total stays within the cap, and removes it otherwise. -/
   | overwrite (s : St) (x : Nat) (h : var.capOverwrite = true → s.storage + x ≤ c.maxStorage) :
       Step c var s { s with storage := s.storage + x }
+  /-- A first file that lands after its upload stopped counting in flight (a POST started
+  just before its form expired) is charged under the same cap as an overwrite. -/
+  | lateFirstFile (s : St) (b : Nat) (h : var.capOverwrite = true → s.storage + b ≤ c.maxStorage) :
+      Step c var s { s with storage := s.storage + b }
   /-- A smaller overwrite, a delete's refund or a reset lowers storage. -/
   | shrink (s : St) (x : Nat) : Step c var s { s with storage := s.storage - x }
   | settle (s : St) (h : s.pending < s.inFlight) :
@@ -215,6 +220,10 @@ theorem inv_step (c : Caps) (s t : St) (hi : Inv c s)
     have hx := hx rfl
     refine ⟨h1, h2, h3, h3', h4, by simp only; omega, fun q => procInv_keep c s _ _ (h6 q) rfl
       (Nat.le_refl _) (Nat.le_refl _) (by simp) (Nat.le_refl _) (by simp only; omega)⟩
+  | lateFirstFile b hb =>
+    have hb := hb rfl
+    refine ⟨h1, h2, h3, h3', h4, by simp only; omega, fun q => procInv_keep c s _ _ (h6 q) rfl
+      (Nat.le_refl _) (Nat.le_refl _) (by simp) (Nat.le_refl _) (by simp only; omega)⟩
   | shrink x =>
     refine ⟨h1, h2, h3, h3', h4, by simp only; omega, fun q => procInv_keep c s _ _ (h6 q) rfl
       (Nat.le_refl _) (Nat.le_refl _) (by simp) (Nat.le_refl _) (by simp only; omega)⟩
@@ -293,7 +302,11 @@ def anchors : List (String × String) :=
    ("functions/admin/upload.ts", "const MAX_IN_FLIGHT_DOCUMENTS = 10;"),
    ("functions/utils.ts", "process.env.MAX_STORAGE_BYTES ?? \"1073741824\","),
    ("functions/admin/upload.ts", "if (storageBytes >= MAX_STORAGE_BYTES) {"),
-   ("functions/s3/ingest-adapter.ts", "doc.countedBytes === undefined ? undefined : MAX_STORAGE_BYTES,"),
+   ("functions/s3/ingest-adapter.ts", "capped ? MAX_STORAGE_BYTES : undefined,"),
+   ("functions/s3/ingest-adapter.ts", "late ? MAX_STORAGE_BYTES : undefined,"),
+   ("functions/s3/ingest-adapter.ts", "const late = !isDocumentInFlight(doc, Date.parse(now) + INVOCATION_MS);"),
+   ("functions/s3/ingest-adapter.ts", "const INVOCATION_MS = 60 * 1000;"),
+   ("functions/s3/ingest-adapter.ts", "await recountStorage(documentId, doc, key, eventId, true);"),
    ("functions/utils.ts", "storageBytes + deltaBytes > capBytes"),
    ("functions/admin/upload.ts", "Math.floor((Date.parse(now) + REPLACEMENT_TTL_MS - Date.now()) / 1000)"),
    ("functions/utils.ts", "process.env.MAX_UPLOAD_BYTES ?? \"52428800\","),

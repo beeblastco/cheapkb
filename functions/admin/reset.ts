@@ -110,6 +110,7 @@ export async function handler(
   }
 }
 
+/** Deletes the user's tags and their TAGSEQ row; returns how many tags it deleted. */
 async function deleteTags(userId: string): Promise<number> {
   let deleted = 0;
   let lastKey: Record<string, unknown> | undefined;
@@ -120,7 +121,7 @@ async function deleteTags(userId: string): Promise<number> {
         KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
         ExpressionAttributeValues: {
           ":pk": `USER#${userId}`,
-          ":prefix": "TAG#",
+          ":prefix": "TAG",
         },
         ProjectionExpression: "pk, sk",
         ExclusiveStartKey: lastKey,
@@ -149,7 +150,7 @@ async function deleteTags(userId: string): Promise<number> {
       }
       if (requests.length > 0) throw new Error("Failed to delete tags");
     }
-    deleted += keys.length;
+    deleted += keys.filter((key) => String(key.sk).startsWith("TAG#")).length;
     lastKey = page.LastEvaluatedKey;
   } while (lastKey);
 

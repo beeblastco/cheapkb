@@ -136,6 +136,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       # Words that let a proof skip the kernel or run untrusted code are banned outright.
       - run: "! grep -RnwE 'sorry|admit|axiom|native_decide|implemented_by|extern|unsafe' Proofs Proofs.lean Vectors.lean"
+      - run: "! grep -RnE '[+]native|ofReduceBool|trustCompiler' Proofs Proofs.lean Vectors.lean"
       # The Audit target fails on any axiom beyond propext, Classical.choice and Quot.sound,
       # and any warning fails the job.
       - run: |

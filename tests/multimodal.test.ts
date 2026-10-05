@@ -894,4 +894,69 @@ describe("multimodal pipeline", () => {
       .args[0].input.TransactItems?.at(-1)?.Update;
     expect(meta?.ExpressionAttributeValues?.[":createdAt"]).toBe(CHUNKED_AT);
   });
+  it("embeds in batches of ten when EMBED_BATCH is set to zero", async () => {
+    process.env.EMBED_BATCH = "0";
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const first = sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0"));
+    const second = sqsEvent("embed-b", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    try {
+      await embed({ Records: [...first.Records, ...second.Records] });
+    } finally {
+      delete process.env.EMBED_BATCH;
+    }
+
+    // An unusable setting falls back to the default, so both chunks share one request.
+    expect(bedrockMock.calls()).toHaveLength(1);
+  });
+
+  it("writes at most 500 vectors per PutVectors whatever VECTOR_BATCH says", async () => {
+    process.env.EMBED_BATCH = "600";
+    process.env.VECTOR_BATCH = "1000";
+    bedrockMock.send.callsFake(async (command) => {
+      const count = JSON.parse(String(command.input.body)).inputs.length;
+      return bedrockEmbeddings(
+        Array.from({ length: count }, () => [0.1, 0.2, 0.3]),
+        count,
+      )(command);
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const records = Array.from(
+      { length: 501 },
+      (_, index) =>
+        sqsEvent(
+          `embed-${index}`,
+          embedMessage("doc-1", `chunk_doc-1_${index}`),
+        ).Records[0],
+    );
+
+    try {
+      await embed({ Records: records });
+    } finally {
+      delete process.env.EMBED_BATCH;
+      delete process.env.VECTOR_BATCH;
+    }
+
+    // S3 Vectors rejects a PutVectors of more than 500 vectors.
+    expect(
+      vectorsMock
+        .commandCalls(PutVectorsCommand)
+        .map((call) => call.args[0].input.vectors?.length),
+    ).toEqual([500, 1]);
+  });
 });

@@ -160,7 +160,7 @@ def anchors : List (String × String) :=
    ("functions/utils.ts", "return Date.UTC(year, monthIndex, Math.min(day, lastDay));"),
    ("functions/utils.ts", "return Math.round(prorated * PRICING.storagePerGbMonth);"),
    ("functions/utils.ts", "Item: { pk: pk, sk: `USAGEEVENT#${operationId}`, ttl: ttl },"),
-   ("functions/utils.ts", "const nowMs = Math.max(Date.now(), previousUpdateMs || 0);"),
-   ("functions/utils.ts", "const nowMs = Math.max(Date.now(), storageUpdatedAt || 0);")]
+   ("functions/utils.ts", "const nowMs = skewTolerantNow(previousUpdateMs);"),
+   ("functions/utils.ts", "const nowMs = skewTolerantNow(storageUpdatedAt);")]
 
 end Proofs.Billing
