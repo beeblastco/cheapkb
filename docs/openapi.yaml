@@ -36,7 +36,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429":
-          description: Rate limit, monthly allowance, storage limit, 1,000-document limit, or 10 documents already processing. The last one carries code PROCESSING_LIMIT, so a client can wait for a slot and retry.
+          description: Rate limit, monthly allowance, storage limit, 1,000-document limit, 10 documents already processing, or other uploads for the account committing at the same moment. The last two carry code PROCESSING_LIMIT, so a client can wait for a slot and retry.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
