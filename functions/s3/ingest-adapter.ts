@@ -119,15 +119,28 @@ export async function handler(event: S3Event): Promise<void> {
 
     try {
       await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
-      // Charge only the change in source size so a re-ingest or replacement
-      // does not double-count bytes already attributed to this document.
+      // Charge only the change in source size so a re-ingest or replacement does not
+      // double-count bytes. The document's count moves in the same transaction, so a
+      // dispatch that fails afterwards cannot leave bytes no document accounts for.
       await updateStorageBytes(
         doc.userId,
         AccountsTableName,
         objectSize - (doc.countedBytes ?? 0),
         `ingest:${eventId}`,
+        {
+          Update: {
+            TableName: TableName,
+            Key: { pk: `DOC#${documentId}`, sk: "META" },
+            UpdateExpression: "SET countedBytes = :counted",
+            ConditionExpression: "#s = :queued",
+            ExpressionAttributeNames: { "#s": "status" },
+            ExpressionAttributeValues: {
+              ":counted": objectSize,
+              ":queued": "QUEUED",
+            },
+          },
+        },
       );
-      await setCountedBytes(documentId, objectSize);
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: PipelineQueueUrl,
@@ -446,26 +459,6 @@ async function rollbackQueueStatus(
   );
 }
 
-/** Stores the source bytes already charged to the user for this document. */
-async function setCountedBytes(
-  documentId: string,
-  countedBytes: number,
-): Promise<void> {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression: "SET countedBytes = :counted",
-      ConditionExpression: "#s = :queued",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":counted": countedBytes,
-        ":queued": "QUEUED",
-      },
-    }),
-  );
-}
-
 /** Returns true when this event wrote through an old token-less POST while a
  * replacement is pending; its bytes are charged and dispatch is skipped. */
 async function skipStaleReplacement(
@@ -488,7 +481,8 @@ async function skipStaleReplacement(
   return true;
 }
 
-/** Marks the document FAILED at the UPLOAD step with the given error. */
+/** Marks the document FAILED at the UPLOAD step with the given error. Returns false when the
+ * document is gone or being deleted, or, with onlyIfUploaded, was claimed meanwhile. */
 async function updateFailure(
   documentId: string,
   error: string,
@@ -502,23 +496,26 @@ async function updateFailure(
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
-        // Another event may have claimed the upload since it was read.
-        ConditionExpression: onlyIfUploaded ? "#s = :uploaded" : undefined,
+        // Another event may have claimed the upload since it was read. An unconditional
+        // update would recreate a row a delete just removed.
+        ConditionExpression: onlyIfUploaded
+          ? "#s = :uploaded"
+          : "attribute_exists(pk) AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":s": "FAILED",
           ":e": error,
           ":f": "UPLOAD",
           ":t": now,
-          ...(onlyIfUploaded ? { ":uploaded": "UPLOADED" } : {}),
+          ...(onlyIfUploaded
+            ? { ":uploaded": "UPLOADED" }
+            : { ":deleting": "DELETING" }),
         },
       }),
     );
     return true;
   } catch (err) {
-    if (onlyIfUploaded && err instanceof ConditionalCheckFailedException) {
-      return false;
-    }
+    if (err instanceof ConditionalCheckFailedException) return false;
     throw err;
   }
 }

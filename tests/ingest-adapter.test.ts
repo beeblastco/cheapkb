@@ -102,6 +102,25 @@ describe("S3 ingest adapter", () => {
     );
   });
 
+  it("does not recreate a document deleted before its failure is recorded", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "UPLOADED", mimeType: "image/png", userId: "user-1" },
+    });
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "gone" }),
+      );
+
+    await handler(s3Event("raw/doc-1/photo.png", 5242881));
+
+    // Without the condition the update is an upsert and leaves an orphan FAILED row.
+    expect(
+      dynamoMock.commandCalls(UpdateCommand)[0].args[0].input
+        .ConditionExpression,
+    ).toBe("attribute_exists(pk) AND #s <> :deleting");
+  });
+
   it("charges only the source size delta on re-ingest", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(GetCommand).callsFake((input) => {
@@ -143,6 +162,46 @@ describe("S3 ingest adapter", () => {
       .map((call) => call.args[0].input.TransactItems?.[0].Update)
       .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
     expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(100);
+  });
+
+  it("records the document's counted bytes in the storage charge's transaction", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: { storageBytes: 0, createdAt: new Date().toISOString() },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: { status: "UPLOADED", mimeType: "text/plain", userId: "user-1" },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 100));
+
+    // A second write could fail after the charge and leave bytes no document counts.
+    const charge = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems ?? [])
+      .find(
+        (items) => items[0]?.Update?.ExpressionAttributeValues?.[":nextBytes"],
+      );
+    expect(charge?.[1]?.Update?.Key).toEqual({ pk: "DOC#doc-1", sk: "META" });
+    expect(charge?.[1]?.Update?.ExpressionAttributeValues?.[":counted"]).toBe(
+      100,
+    );
+    expect(
+      dynamoMock
+        .commandCalls(UpdateCommand)
+        .some(
+          (call) =>
+            call.args[0].input.UpdateExpression ===
+            "SET countedBytes = :counted",
+        ),
+    ).toBe(false);
   });
 
   it("rolls back to uploaded when usage accounting fails", async () => {

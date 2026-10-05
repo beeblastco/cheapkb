@@ -36,11 +36,16 @@ export async function handler(event: S3Event): Promise<void> {
     const document = await getDocument(documentId, dynamo, TableName);
     // S3 can deliver a removal after the same key was uploaded again, so a live
     // document is only cleaned up once its object is gone and no upload is reserved.
+    let countedBytes = document?.countedBytes;
     if (document && document.status !== "DELETING") {
-      if ((await objectExists(key)) || !(await markDeleting(documentId))) {
+      const marked = (await objectExists(key))
+        ? null
+        : await markDeleting(documentId);
+      if (!marked) {
         console.log(`[cleanup-adapter] Skipping stale removal for ${key}`);
         continue;
       }
+      ({ countedBytes } = marked);
     }
 
     // The three deletes are independent, so they run together and every
@@ -91,11 +96,11 @@ export async function handler(event: S3Event): Promise<void> {
       throw new Error(errors.join("; "));
     }
 
-    if (document?.countedBytes) {
+    if (document && countedBytes) {
       await updateStorageBytes(
         document.userId,
         AccountsTableName,
-        -document.countedBytes,
+        -countedBytes,
         `delete:${documentId}`,
       );
     }
@@ -131,12 +136,15 @@ async function deleteDynamoRecords(
   console.log(`[cleanup-adapter] Deleted DynamoDB record for ${documentId}`);
 }
 
-/** Marks the document DELETING so pipeline stages stop writing to it. Returns false
- * while a replacement upload is reserved, since upload cannot reserve a DELETING one. */
-async function markDeleting(documentId: string): Promise<boolean> {
+/** Marks the document DELETING so pipeline stages stop writing to it, and returns the
+ * counted bytes it now refunds, which nothing changes after the mark. Returns null while
+ * a replacement upload is reserved, since upload cannot reserve a DELETING one. */
+async function markDeleting(
+  documentId: string,
+): Promise<{ countedBytes?: number } | null> {
   const now = new Date().toISOString();
   try {
-    await dynamo.send(
+    const result = await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
@@ -148,16 +156,20 @@ async function markDeleting(documentId: string): Promise<boolean> {
           ":s": "DELETING",
           ":t": now,
         },
+        ReturnValues: "ALL_NEW",
       }),
     );
-    return true;
+    return {
+      countedBytes: (result.Attributes as DocumentRow | undefined)
+        ?.countedBytes,
+    };
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
-  // Only a document that is gone may still be cleaned up after a refused mark.
+  // Only a document that is gone may still be cleaned up; whoever removed it refunded it.
   const document = await getDocument(documentId, dynamo, TableName);
 
-  return !document;
+  return document ? null : {};
 }
 
 /** Reports whether the removed object has been uploaded again since the event. */

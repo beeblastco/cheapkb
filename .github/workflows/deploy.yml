@@ -105,10 +105,46 @@ jobs:
           fi
           /tmp/gitleaks/gitleaks git --no-banner --redact --log-opts="$range" .
 
+  proofs:
+    name: Proofs
+    runs-on: ubuntu-latest
+    env:
+      ELAN_VERSION: 4.2.4
+      ELAN_SHA256: 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+    defaults:
+      run:
+        working-directory: proofs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.elan
+            proofs/.lake
+          key: lean-${{ hashFiles('proofs/lean-toolchain') }}-${{ hashFiles('proofs/**/*.lean', 'proofs/lakefile.toml') }}
+          restore-keys: lean-${{ hashFiles('proofs/lean-toolchain') }}-
+      - name: Install elan
+        run: |
+          curl -fsSL -o /tmp/elan.tar.gz "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ELAN_SHA256}  /tmp/elan.tar.gz" | sha256sum --check
+          tar -xzf /tmp/elan.tar.gz -C /tmp elan-init
+          /tmp/elan-init -y --no-modify-path --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      # Any sorry, admit or new axiom, or any warning, fails the build.
+      - run: |
+          set -o pipefail
+          lake build 2>&1 | tee /tmp/lake.log
+      - run: '! grep -E "warning|declaration uses ''sorry''" /tmp/lake.log'
+      - run: "! grep -RnwE 'sorry|admit|axiom' Proofs Proofs.lean Vectors.lean"
+      # The TypeScript is tested against these vectors, so they must match the models.
+      - run: lake exe vectors && git diff --exit-code -- vectors
+
   deploy:
     name: Deploy to Production
     if: github.event_name == 'push'
-    needs: [check, secrets-scan]
+    needs: [check, secrets-scan, proofs]
     runs-on: ubuntu-latest
     environment: production
     # id-token lets the job trade GitHub's OIDC token for short-lived AWS keys.

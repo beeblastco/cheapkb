@@ -65,6 +65,11 @@ describe("reindex migration", () => {
     // The chunk stage overwrites the chunk rows, so only META is written here.
     const [claim] = dynamoMock.commandCalls(UpdateCommand);
     expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    // Embed messages from before this reset must not count toward the new embeddedCount.
+    expect(claim.args[0].input.UpdateExpression).toContain(
+      "embeddedCount = :zero",
+    );
+    expect(claim.args[0].input.UpdateExpression).toContain("reindexedAt = :t");
     const message = JSON.parse(
       String(
         sqsMock.commandCalls(SendMessageCommand)[0].args[0].input.MessageBody,

@@ -739,4 +739,70 @@ describe("multimodal pipeline", () => {
     expect(result.batchItemFailures).toEqual([]);
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
   });
+  it("drops a chunk message from before the document's last reindex", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "user-1", reindexedAt: "2026-01-02T00:00:00.000Z" },
+    });
+
+    const result = await embed(
+      sqsEvent("embed-stale", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    // The reindex reset embeddedCount, so counting this chunk would finish the document early.
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(bedrockMock.calls()).toHaveLength(0);
+  });
+
+  it("counts a chunk only when it is newer than the last reindex", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    await embed(sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0")));
+
+    const meta = dynamoMock
+      .commandCalls(TransactWriteCommand)[0]
+      .args[0].input.TransactItems?.at(-1)?.Update;
+    expect(meta?.ConditionExpression).toContain("reindexedAt < :createdAt");
+    expect(meta?.ExpressionAttributeValues?.[":createdAt"]).toBe(CHUNKED_AT);
+  });
+
+  it("leaves a chunk the reindex will redo when its count is refused", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).callsFake(() => {
+      const error = new Error("cancelled");
+      error.name = "TransactionCanceledException";
+      throw error;
+    });
+    // The first META read missed the reindex; the strong read after the cancel sees it.
+    let metaReads = 0;
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk !== "META") {
+        return { Item: { createdAt: CHUNKED_AT, status: "QUEUED" } };
+      }
+      metaReads += 1;
+      return metaReads === 1
+        ? { Item: { userId: "user-1", status: "EMBEDDING" } }
+        : {
+            Item: {
+              userId: "user-1",
+              status: "QUEUED",
+              reindexedAt: "2026-01-02T00:00:00.000Z",
+            },
+          };
+    });
+
+    const result = await embed(
+      sqsEvent("embed-raced", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+  });
 });

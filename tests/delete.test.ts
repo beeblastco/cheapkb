@@ -15,6 +15,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
@@ -36,6 +37,8 @@ describe("document deletion", () => {
     s3Mock.reset();
     vectorsMock.reset();
     dynamoMock.reset();
+    // The DELETING mark returns the row it wrote (ReturnValues ALL_NEW).
+    dynamoMock.on(UpdateCommand).resolves({ Attributes: {} });
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk?.startsWith("RATE#")) return {};
       return {
@@ -129,6 +132,51 @@ describe("document deletion", () => {
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
     expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
     expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
+  });
+
+  it("refunds the counted bytes the DELETING mark returns", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 100,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#owner") return {};
+      // A recount can move countedBytes between this read and the DELETING mark.
+      return {
+        Item: {
+          userId: "owner",
+          dedupeKey: "dedupe-1",
+          sourceKey: "raw/doc-1/file.pdf",
+          countedBytes: 60,
+        },
+      };
+    });
+    dynamoMock
+      .on(UpdateCommand)
+      .resolves({ Attributes: { countedBytes: 100 } });
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(DeleteCommand).resolves({});
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const [charge] = dynamoMock.commandCalls(TransactWriteCommand);
+    expect(
+      charge.args[0].input.TransactItems?.[0].Update
+        ?.ExpressionAttributeValues?.[":nextBytes"],
+    ).toBe(0);
   });
 
   it("refuses while an edit holds the document's lease", async () => {

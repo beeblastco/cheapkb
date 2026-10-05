@@ -47,7 +47,10 @@ The `/v1` API supports uploads, search, documents, tags, account usage, and read
 npm run check   # oxlint, prettier, tsc, vitest
 API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
 npm run bundle:check
+cd proofs && lake build && lake exe vectors   # Lean proofs and the vectors the tests use
 ```
+
+The upload caps, embedding counter, storage accounting, billing, rate limits and document lifecycle are proved in Lean 4. See [Proofs](proofs/README.md).
 
 ## Deploy
 
@@ -64,6 +67,7 @@ See [Deploy](docs/DEPLOY.md) for configuration and CI deployment.
 - [Billing and usage](docs/BILLING.md)
 - [Deploy](docs/DEPLOY.md)
 - [OpenAPI](docs/openapi.yaml)
+- [Proofs](proofs/README.md)
 
 ## Contributing
 

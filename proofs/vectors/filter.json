@@ -1,0 +1,38 @@
+[{"filters": [],
+  "expected": [["embeddingModel", "$eq", "us.cohere.embed-v4:0"], ["userId", "$eq", "user-7"]]},
+ {"filters": [["userId", "scalar", "attacker"]],
+  "expected": [["embeddingModel", "$eq", "us.cohere.embed-v4:0"], ["userId", "$eq", "user-7"]]},
+ {"filters": [["title", "scalar", "Report"], ["userId", "scalar", "attacker"]],
+  "expected":
+  [["embeddingModel", "$eq", "us.cohere.embed-v4:0"],
+   ["userId", "$eq", "user-7"],
+   ["title", "$eq", "Report"]]},
+ {"filters": [["year", "ops", [["$gte", 2020], ["$lte", 2024]]]],
+  "expected":
+  [["embeddingModel", "$eq", "us.cohere.embed-v4:0"],
+   ["userId", "$eq", "user-7"],
+   ["year", "$gte", 2020],
+   ["year", "$lte", 2024]]},
+ {"filters": [["tags", "ops", [["$in", ["a", "b"]]]], ["modality", "scalar", "text"]],
+  "expected":
+  [["embeddingModel", "$eq", "us.cohere.embed-v4:0"],
+   ["userId", "$eq", "user-7"],
+   ["tags", "$in", ["a", "b"]],
+   ["modality", "$eq", "text"]]},
+ {"filters":
+  [["userId", "ops", [["$in", ["attacker", "victim"]]]], ["documentId", "scalar", "doc-1"]],
+  "expected":
+  [["embeddingModel", "$eq", "us.cohere.embed-v4:0"],
+   ["userId", "$eq", "user-7"],
+   ["documentId", "$eq", "doc-1"]]},
+ {"filters": [["$or", "scalar", "x"]], "expected": {"error": true}},
+ {"filters": [["title", "ops", [["$ne", "x"]]]], "expected": {"error": true}},
+ {"filters": [["year", "ops", [["$gte", "2020"]]]], "expected": {"error": true}},
+ {"filters": [["tags", "ops", [["$in", []]]]], "expected": {"error": true}},
+ {"filters": [["authors", "ops", []]], "expected": {"error": true}},
+ {"filters": [["mimeType", "scalar", true], ["year", "scalar", 2021]],
+  "expected":
+  [["embeddingModel", "$eq", "us.cohere.embed-v4:0"],
+   ["userId", "$eq", "user-7"],
+   ["mimeType", "$eq", true],
+   ["year", "$eq", 2021]]}]

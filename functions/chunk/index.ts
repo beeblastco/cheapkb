@@ -65,7 +65,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       body.sweeps ? 2 : 1,
     );
     try {
-      await chunkDocument(documentId, parsedKey, attempt, body.reindexedAt);
+      await chunkDocument(documentId, parsedKey, body.reindexedAt);
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
         console.log(`[chunk] Document ${documentId} was deleted, dropping`);
@@ -96,18 +96,86 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures: batchItemFailures };
 }
 
+/** Splits page text into overlapping token windows, capped at maxChunks. Windows
+ * span pages, and each token remembers its page so the range stays exact. */
+export function splitIntoChunks(
+  pages: Array<{ pageNumber: number; text: string }>,
+  maxTokens: number,
+  overlapTokens: number,
+  maxChunks: number,
+): Array<{
+  chunk: { text: string; pageStart: number; pageEnd: number };
+  i: number;
+}> {
+  const out: Array<{
+    chunk: { text: string; pageStart: number; pageEnd: number };
+    i: number;
+  }> = [];
+  let buffer: number[] = [];
+  let bufferPages: number[] = [];
+  let fresh = 0;
+
+  /** Emits the buffered tokens as a chunk and keeps the overlap tail. A tail
+   * with no new tokens after it was already emitted, so it is skipped. */
+  const flush = (): void => {
+    if (fresh === 0) return;
+    const text = decode(buffer).trim();
+    if (text) {
+      out.push({
+        chunk: {
+          text: text,
+          pageStart: bufferPages[0],
+          pageEnd: bufferPages[bufferPages.length - 1],
+        },
+        i: out.length,
+      });
+      if (out.length > maxChunks) {
+        throw new ContentError(`Document exceeds the ${maxChunks} chunk limit`);
+      }
+    }
+    const keepFrom = Math.max(0, buffer.length - overlapTokens);
+    buffer = buffer.slice(keepFrom);
+    bufferPages = bufferPages.slice(keepFrom);
+    fresh = 0;
+  };
+
+  for (const page of pages) {
+    if (!page.text.trim()) continue;
+    // The separator belongs to the page before it, so a window that fills on it
+    // does not claim a page it has no text from.
+    const separatorPage = bufferPages[bufferPages.length - 1];
+    const separator =
+      separatorPage === undefined
+        ? []
+        : encode("\n\n", { disallowedSpecial: new Set() });
+    const tokens = encode(page.text, { disallowedSpecial: new Set() });
+    for (const [index, tok] of [...separator, ...tokens].entries()) {
+      buffer.push(tok);
+      bufferPages.push(
+        index < separator.length ? separatorPage! : page.pageNumber,
+      );
+      fresh += 1;
+      if (buffer.length >= maxTokens) flush();
+    }
+  }
+  flush();
+
+  return out;
+}
+
 /** Splits a parsed document into chunk rows and queues one inline embed message
  * per chunk. The parsed file stays the source of truth, so no chunk object is written. */
 async function chunkDocument(
   documentId: string,
   parsedKey: string,
-  attempt: number,
   reindexedAt: string | undefined,
 ): Promise<void> {
   const now = new Date().toISOString();
   await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
-  const doc = await getDocument(documentId, dynamo, TableName, false);
+  const doc = await getDocument(documentId, dynamo, TableName);
   const previousCount = doc?.chunkCount ?? 0;
+  // A re-parse after a reindex carries no reindexedAt, so META's is used when it has one.
+  const resetAt = doc?.reindexedAt ?? reindexedAt;
 
   const resp = await s3.send(
     new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
@@ -125,8 +193,7 @@ async function chunkDocument(
         status: "QUEUED",
         createdAt: now,
       },
-      attempt,
-      reindexedAt,
+      resetAt,
     );
     const message: EmbedMessage = {
       stage: "embed",
@@ -179,8 +246,7 @@ async function chunkDocument(
               status: "QUEUED",
               createdAt: now,
             },
-            attempt,
-            reindexedAt,
+            resetAt,
           );
           return queued
             ? {
@@ -279,12 +345,11 @@ async function markEmbeddedIfDone(
   }
 }
 
-/** Writes a chunk record, returning false when a redelivery finds it already
- * embedded, so it is not billed twice. A first delivery starts every chunk over,
- * and so does a redelivered reindex for chunks embedded before that reindex. */
+/** Writes a chunk record, returning false when it is already embedded and counted, so
+ * it is not billed twice. A chunk embedded before the last reindex is started over. SQS
+ * can deliver a message twice as a first receive, so every delivery checks. */
 async function putChunkRecord(
   item: Record<string, unknown>,
-  attempt: number,
   reindexedAt: string | undefined,
 ): Promise<boolean> {
   try {
@@ -292,18 +357,14 @@ async function putChunkRecord(
       new PutCommand({
         TableName: TableName,
         Item: item,
-        ...(attempt > 1
-          ? {
-              ConditionExpression: reindexedAt
-                ? "attribute_not_exists(pk) OR #s <> :embedded OR createdAt < :reindexedAt"
-                : "attribute_not_exists(pk) OR #s <> :embedded",
-              ExpressionAttributeNames: { "#s": "status" },
-              ExpressionAttributeValues: {
-                ":embedded": "EMBEDDED",
-                ...(reindexedAt ? { ":reindexedAt": reindexedAt } : {}),
-              },
-            }
-          : {}),
+        ConditionExpression: reindexedAt
+          ? "attribute_not_exists(pk) OR #s <> :embedded OR createdAt < :reindexedAt"
+          : "attribute_not_exists(pk) OR #s <> :embedded",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":embedded": "EMBEDDED",
+          ...(reindexedAt ? { ":reindexedAt": reindexedAt } : {}),
+        },
       }),
     );
     return true;
@@ -345,71 +406,4 @@ async function removeSurplusChunks(
   console.log(
     `[chunk] Removed ${chunkIds.length} surplus chunks of ${documentId}`,
   );
-}
-
-/** Splits page text into overlapping token windows, capped at maxChunks. Windows
- * span pages, and each token remembers its page so the range stays exact. */
-function splitIntoChunks(
-  pages: Array<{ pageNumber: number; text: string }>,
-  maxTokens: number,
-  overlapTokens: number,
-  maxChunks: number,
-): Array<{
-  chunk: { text: string; pageStart: number; pageEnd: number };
-  i: number;
-}> {
-  const out: Array<{
-    chunk: { text: string; pageStart: number; pageEnd: number };
-    i: number;
-  }> = [];
-  let buffer: number[] = [];
-  let bufferPages: number[] = [];
-  let fresh = 0;
-
-  /** Emits the buffered tokens as a chunk and keeps the overlap tail. A tail
-   * with no new tokens after it was already emitted, so it is skipped. */
-  const flush = (): void => {
-    if (fresh === 0) return;
-    const text = decode(buffer).trim();
-    if (text) {
-      out.push({
-        chunk: {
-          text: text,
-          pageStart: bufferPages[0],
-          pageEnd: bufferPages[bufferPages.length - 1],
-        },
-        i: out.length,
-      });
-      if (out.length > maxChunks) {
-        throw new ContentError(`Document exceeds the ${maxChunks} chunk limit`);
-      }
-    }
-    const keepFrom = Math.max(0, buffer.length - overlapTokens);
-    buffer = buffer.slice(keepFrom);
-    bufferPages = bufferPages.slice(keepFrom);
-    fresh = 0;
-  };
-
-  for (const page of pages) {
-    if (!page.text.trim()) continue;
-    // The separator belongs to the page before it, so a window that fills on it
-    // does not claim a page it has no text from.
-    const separatorPage = bufferPages[bufferPages.length - 1];
-    const separator =
-      separatorPage === undefined
-        ? []
-        : encode("\n\n", { disallowedSpecial: new Set() });
-    const tokens = encode(page.text, { disallowedSpecial: new Set() });
-    for (const [index, tok] of [...separator, ...tokens].entries()) {
-      buffer.push(tok);
-      bufferPages.push(
-        index < separator.length ? separatorPage! : page.pageNumber,
-      );
-      fresh += 1;
-      if (buffer.length >= maxTokens) flush();
-    }
-  }
-  flush();
-
-  return out;
 }

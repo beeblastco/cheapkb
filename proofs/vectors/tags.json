@@ -1,0 +1,9 @@
+[{"tags": [], "expected": null},
+ {"tags": ["  "], "expected": null},
+ {"tags": ["a"], "expected": ["a"]},
+ {"tags": ["Alpha", "alpha", "ALPHA"], "expected": ["Alpha"]},
+ {"tags": [" x ", "X", "y", "\u0009y\u0009"], "expected": ["x", "y"]},
+ {"tags": ["b", "", "  ", "B ", "c"], "expected": ["b", "c"]},
+ {"tags": ["Report 2024", "report 2024", "Report-2024"],
+  "expected": ["Report 2024", "Report-2024"]},
+ {"tags": ["one", "two", "One", "three", "TWO"], "expected": ["one", "two", "three"]}]

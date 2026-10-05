@@ -36,7 +36,6 @@ vi.mock("@aws-sdk/s3-presigned-post", () => ({
 }));
 
 import { handler } from "../functions/admin/upload";
-import { checkUsageLimit } from "../functions/utils";
 import { jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
@@ -50,11 +49,10 @@ describe("upload validation", () => {
     vi.clearAllMocks();
   });
 
-  it("rejects uploads once the account reaches the storage cap", async () => {
-    vi.mocked(checkUsageLimit).mockResolvedValueOnce({
-      allowed: true,
-      summary: { storageBytes: 1024 * 1024 * 1024 },
-    } as Awaited<ReturnType<typeof checkUsageLimit>>);
+  it("rejects uploads once the consistent account read reaches the storage cap", async () => {
+    dynamoMock
+      .on(GetCommand, { Key: { pk: "ACCOUNT#user-1", sk: "PROFILE" } })
+      .resolves({ Item: { storageBytes: 1024 * 1024 * 1024 } });
 
     const response = await handler(
       jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),

@@ -32,7 +32,7 @@ describe("S3 cleanup adapter", () => {
     vectorsMock.reset();
   });
 
-  it("subtracts source storage once for a direct S3 deletion", async () => {
+  it("subtracts the storage the DELETING mark returns, once, for a direct S3 deletion", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk === "ACCOUNT#owner" && input.Key?.sk === "PROFILE") {
@@ -53,9 +53,10 @@ describe("S3 cleanup adapter", () => {
         };
       }
       if (input.Key?.pk === "ACCOUNT#owner") return {};
+      // A recount can move countedBytes between this read and the DELETING mark.
       return {
         Item: {
-          countedBytes: 100,
+          countedBytes: 60,
           dedupeKey: "dedupe-1",
           pk: "DOC#doc-1",
           sk: "META",
@@ -67,6 +68,9 @@ describe("S3 cleanup adapter", () => {
     dynamoMock.on(QueryCommand).resolves({ Items: [] });
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(DeleteCommand).resolves({});
+    dynamoMock
+      .on(UpdateCommand)
+      .resolves({ Attributes: { countedBytes: 100, status: "DELETING" } });
     s3Mock.on(ListObjectVersionsCommand).resolves({});
     s3Mock
       .on(HeadObjectCommand)

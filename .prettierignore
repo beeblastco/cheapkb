@@ -5,3 +5,6 @@ node_modules
 sst-env.d.ts
 web/dist
 web/node_modules
+proofs/.lake
+proofs/vectors
+proofs/lake-manifest.json

@@ -323,6 +323,70 @@ describe("chunk records", () => {
     ).toEqual(expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }));
   });
 
+  it("keeps embedded chunks when a duplicate delivery reports a first receive", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler(
+      sqsEvent(
+        "chunk-duplicate",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
+
+    // Overwriting a counted EMBEDDED row would make embeddedCount count it twice.
+    expect(
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression,
+    ).toBe("attribute_not_exists(pk) OR #s <> :embedded");
+  });
+
+  it("redoes chunks embedded before the reindex the document records", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        userId: "owner",
+        title: "Title",
+        reindexedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    // A reindex that restarts from parsing sends a chunk message without reindexedAt.
+    await handler(
+      sqsEvent(
+        "chunk-after-reparse",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
+
+    const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input;
+    expect(put.ConditionExpression).toContain("createdAt < :reindexedAt");
+    expect(put.ExpressionAttributeValues?.[":reindexedAt"]).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+  });
+
   it("redoes chunks embedded before the reindex that a redelivery restarts", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { userId: "owner", title: "Title" },

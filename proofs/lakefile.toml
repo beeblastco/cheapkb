@@ -1,0 +1,9 @@
+name = "proofs"
+defaultTargets = ["Proofs", "vectors"]
+
+[[lean_lib]]
+name = "Proofs"
+
+[[lean_exe]]
+name = "vectors"
+root = "Vectors"

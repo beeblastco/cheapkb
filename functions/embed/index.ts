@@ -179,6 +179,58 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   };
 }
 
+/** Groups items into Cohere requests by owner, item count and request size.
+ * A request's size is its empty body plus each input and the comma between inputs. */
+export function packEmbeddingBatches(
+  items: EmbeddingWork[],
+): EmbeddingWork[][] {
+  const emptyBytes = Buffer.byteLength(
+    JSON.stringify(buildEmbeddingRequest([])),
+  );
+  const batches: EmbeddingWork[][] = [];
+  let current: EmbeddingWork[] = [];
+  let currentBytes = emptyBytes;
+
+  for (const item of items) {
+    const itemBytes = Buffer.byteLength(JSON.stringify(embeddingInput(item)));
+    const differentOwner =
+      current.length > 0 && current[0].metadata.userId !== item.metadata.userId;
+    const requestBytes =
+      currentBytes + itemBytes + (current.length > 0 ? 1 : 0);
+    if (
+      current.length > 0 &&
+      (differentOwner ||
+        current.length + 1 > MAX_COHERE_ITEMS ||
+        requestBytes > MAX_COHERE_REQUEST_BYTES)
+    ) {
+      batches.push(current);
+      current = [item];
+      currentBytes = emptyBytes + itemBytes;
+    } else {
+      current.push(item);
+      currentBytes = requestBytes;
+    }
+    if (currentBytes > MAX_COHERE_REQUEST_BYTES) {
+      throw new Error("One Cohere embedding input exceeds the request limit");
+    }
+  }
+
+  if (current.length > 0) batches.push(current);
+
+  return batches;
+}
+
+/** Cuts text to at most maxBytes of UTF-8, backing off a split character. */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength <= maxBytes) return text;
+  let end = maxBytes;
+  // Continuation bytes are 10xxxxxx, so the cut moves back to a character start.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+
+  return bytes.subarray(0, end).toString("utf8");
+}
+
 /** Embeds one batch of chunks, writes their vectors and marks them embedded.
  * Returns the per-message failures for the handler to record. */
 async function batchProcess(
@@ -212,6 +264,10 @@ async function batchProcess(
           return undefined;
         }
         if (!doc.userId) throw new Error("Document owner is missing");
+        if (doc.reindexedAt && chunk.createdAt <= doc.reindexedAt) {
+          console.log(`[embed] ${chunk.chunkId} predates a reindex, dropping`);
+          return undefined;
+        }
         const { modality, text } = chunk;
         if (modality === "text" && !text.trim()) return undefined;
         const tokenCount =
@@ -484,7 +540,8 @@ async function embedItems(
 }
 
 /** Marks a chunk EMBEDDED and bumps the document count in one transaction. A chunk already
- * embedded is left alone; one whose document or chunk row is gone loses its vector. */
+ * embedded or older than the last reindex is left alone; one whose document or row is gone
+ * loses its vector. proofs/EmbedProtocol.lean shows the count then never drifts. */
 async function markChunkEmbedded(
   documentId: string,
   chunkId: string,
@@ -514,9 +571,11 @@ async function markChunkEmbedded(
               Key: { pk: `DOC#${documentId}`, sk: "META" },
               UpdateExpression:
                 "SET #s = :embedding, embeddedCount = if_not_exists(embeddedCount, :zero) + :one",
-              ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+              ConditionExpression:
+                "attribute_exists(pk) AND #s <> :deleting AND (attribute_not_exists(reindexedAt) OR reindexedAt < :createdAt)",
               ExpressionAttributeNames: { "#s": "status" },
               ExpressionAttributeValues: {
+                ":createdAt": createdAt,
                 ":deleting": "DELETING",
                 ":embedding": "EMBEDDING",
                 ":one": 1,
@@ -552,6 +611,8 @@ async function markChunkEmbedded(
     // A newer chunking owns the row and writes its own vector under this key.
     if (existing.Item.createdAt !== createdAt) return;
     if (existing.Item.status === "EMBEDDED") return;
+    // A reindex reset the count after this chunking; its re-chunk embeds the row again.
+    if (doc.reindexedAt && createdAt <= doc.reindexedAt) return;
     throw err;
   }
 }
@@ -587,9 +648,14 @@ async function markChunksEmbedded(
                 TableName: TableName,
                 Key: { pk: `DOC#${documentId}`, sk: "META" },
                 UpdateExpression: "SET #s = :embedding ADD embeddedCount :n",
-                ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+                ConditionExpression:
+                  "attribute_exists(pk) AND #s <> :deleting AND (attribute_not_exists(reindexedAt) OR reindexedAt < :createdAt)",
                 ExpressionAttributeNames: { "#s": "status" },
                 ExpressionAttributeValues: {
+                  // The oldest chunk decides; a group mixing generations retries chunk by chunk.
+                  ":createdAt": group
+                    .map(({ createdAt }) => createdAt)
+                    .reduce((oldest, next) => (next < oldest ? next : oldest)),
                   ":deleting": "DELETING",
                   ":embedding": "EMBEDDING",
                   ":n": group.length,
@@ -694,45 +760,6 @@ function imageFormat(mimeType: string): "gif" | "jpeg" | "png" | "webp" {
   throw new Error(`Unsupported image MIME type: ${mimeType}`);
 }
 
-/** Groups items into Cohere requests by owner, item count and request size.
- * A request's size is its empty body plus each input and the comma between inputs. */
-function packEmbeddingBatches(items: EmbeddingWork[]): EmbeddingWork[][] {
-  const emptyBytes = Buffer.byteLength(
-    JSON.stringify(buildEmbeddingRequest([])),
-  );
-  const batches: EmbeddingWork[][] = [];
-  let current: EmbeddingWork[] = [];
-  let currentBytes = emptyBytes;
-
-  for (const item of items) {
-    const itemBytes = Buffer.byteLength(JSON.stringify(embeddingInput(item)));
-    const differentOwner =
-      current.length > 0 && current[0].metadata.userId !== item.metadata.userId;
-    const requestBytes =
-      currentBytes + itemBytes + (current.length > 0 ? 1 : 0);
-    if (
-      current.length > 0 &&
-      (differentOwner ||
-        current.length + 1 > MAX_COHERE_ITEMS ||
-        requestBytes > MAX_COHERE_REQUEST_BYTES)
-    ) {
-      batches.push(current);
-      current = [item];
-      currentBytes = emptyBytes + itemBytes;
-    } else {
-      current.push(item);
-      currentBytes = requestBytes;
-    }
-    if (currentBytes > MAX_COHERE_REQUEST_BYTES) {
-      throw new Error("One Cohere embedding input exceeds the request limit");
-    }
-  }
-
-  if (current.length > 0) batches.push(current);
-
-  return batches;
-}
-
 /** Reads one embed record, or returns undefined after logging why it is unusable. */
 function parseEmbedRecord(record: SQSRecord): EmbeddingChunk | undefined {
   let body: Partial<EmbedMessage>;
@@ -760,15 +787,4 @@ function parseEmbedRecord(record: SQSRecord): EmbeddingChunk | undefined {
     messageId: record.messageId,
     attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
   };
-}
-
-/** Cuts text to at most maxBytes of UTF-8, backing off a split character. */
-function truncateUtf8(text: string, maxBytes: number): string {
-  const bytes = Buffer.from(text);
-  if (bytes.byteLength <= maxBytes) return text;
-  let end = maxBytes;
-  // Continuation bytes are 10xxxxxx, so the cut moves back to a character start.
-  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
-
-  return bytes.subarray(0, end).toString("utf8");
 }

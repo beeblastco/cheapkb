@@ -86,7 +86,7 @@ export async function handler(
     };
   }
 
-  const { allowed: usageAllowed, summary } = await checkUsageLimit(
+  const { allowed: usageAllowed } = await checkUsageLimit(
     userId,
     AccountsTableName,
   );
@@ -164,7 +164,6 @@ export async function handler(
     const refusal = await commitWithinCaps(
       userId,
       documentId,
-      summary.storageBytes,
       !document,
       (seenSeq, recentUploads): Promise<"busy" | "committed" | "conflict"> =>
         document
@@ -247,8 +246,8 @@ async function checkAccountLimits(
   isNew: boolean,
   recentUploads: Record<string, number>,
 ): Promise<{ error: string; code?: string } | null> {
-  // Bytes are counted when S3 accepts a file, so an account can pass the cap
-  // by the uploads already in flight.
+  // Bytes are counted when S3 accepts a file, so an account can pass the cap by
+  // the uploads already in flight: at most MAX_IN_FLIGHT_DOCUMENTS of them.
   if (storageBytes >= MAX_STORAGE_BYTES) {
     return { error: "Storage limit reached. Delete documents to upload more." };
   }
@@ -298,7 +297,6 @@ async function checkAccountLimits(
 async function commitWithinCaps(
   userId: string,
   documentId: string,
-  storageBytes: number,
   isNew: boolean,
   write: (
     seenSeq: number,
@@ -307,16 +305,18 @@ async function commitWithinCaps(
 ): Promise<APIGatewayProxyStructuredResultV2 | null> {
   // A commit between the count and the write moves uploadSeq, so concurrent uploads cannot both
   // pass the caps. Each commit also lands in recentUploads, which covers GSI2 replication lag.
+  // Storage is read in the same consistent read, which bounds the overshoot (proofs/UploadCaps.lean).
   for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt += 1) {
     const account = await dynamo.send(
       new GetCommand({
         TableName: AccountsTableName,
         Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
-        ProjectionExpression: "uploadSeq, recentUploads",
+        ProjectionExpression: "uploadSeq, recentUploads, storageBytes",
         ConsistentRead: true,
       }),
     );
     const seenSeq: number = account.Item?.uploadSeq ?? 0;
+    const storageBytes: number = account.Item?.storageBytes ?? 0;
     const nowMs = Date.now();
     const recentUploads = Object.fromEntries(
       Object.entries(

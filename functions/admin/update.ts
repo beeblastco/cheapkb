@@ -163,6 +163,22 @@ export async function handler(
   }
 }
 
+/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
+export function normalizeTags(tags: unknown): string[] | null {
+  if (!Array.isArray(tags)) return null;
+  const deduped = new Map<string, string>();
+  for (const tag of tags as string[]) {
+    const trimmed = tag.trim();
+    if (!trimmed) continue;
+    // First occurrence wins, so the casing the user picked first survives a
+    // case-insensitive duplicate.
+    const key = trimmed.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, trimmed);
+  }
+
+  return deduped.size > 0 ? [...deduped.values()] : null;
+}
+
 /** Returns the lease, or null if it was not taken. updatedAt doubles as the
  * revision token and the lease timestamp. */
 async function acquireLease(
@@ -311,22 +327,6 @@ function json(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
-}
-
-/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain. */
-function normalizeTags(tags: unknown): string[] | null {
-  if (!Array.isArray(tags)) return null;
-  const deduped = new Map<string, string>();
-  for (const tag of tags as string[]) {
-    const trimmed = tag.trim();
-    if (!trimmed) continue;
-    // First occurrence wins, so the casing the user picked first survives a
-    // case-insensitive duplicate.
-    const key = trimmed.toLowerCase();
-    if (!deduped.has(key)) deduped.set(key, trimmed);
-  }
-
-  return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
 /** Returns a validation message for a bad edit body, or null when it is valid. */

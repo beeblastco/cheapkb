@@ -105,6 +105,8 @@ export interface DocumentRow {
   filename?: string;
   chunkCount?: number;
   embeddedCount?: number;
+  // Set by reindex: chunks created before it are no longer counted as embedded.
+  reindexedAt?: string;
   countedBytes?: number;
   dispatchEventId?: string;
   dispatchLeaseUntil?: string;

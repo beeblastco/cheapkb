@@ -177,11 +177,13 @@ export async function checkRateLimit(
           TableName: tableName,
           Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
           UpdateExpression: "SET tokens = :t, lastRefill = :lr",
-          ConditionExpression: "lastRefill = :oldLr",
+          // Two writes in one millisecond share lastRefill, so the tokens read are checked too.
+          ConditionExpression: "lastRefill = :oldLr AND tokens = :oldTokens",
           ExpressionAttributeValues: {
             ":t": tokens,
             ":lr": now.toISOString(),
             ":oldLr": item.lastRefill as string,
+            ":oldTokens": item.tokens as number,
           },
         }),
       );
