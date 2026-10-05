@@ -15,13 +15,6 @@ import {
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "owner" },
-  }),
-}));
-
 const usage = vi.hoisted(() => ({ checkUsageLimit: vi.fn() }));
 vi.mock("../functions/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../functions/utils")>()),

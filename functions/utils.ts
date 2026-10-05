@@ -30,9 +30,9 @@ import {
 import type { DocumentType } from "@smithy/types";
 import type {
   APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
 import type {
   Account,
   AccountRow,
@@ -43,12 +43,6 @@ import type {
   UsageCategory,
   UsageSummary,
 } from "./types";
-
-const SHOO_BASE_URL = "https://shoo.dev";
-const SHOO_ISSUER = "https://shoo.dev";
-const jwks = createRemoteJWKSet(
-  new URL("/.well-known/jwks.json", SHOO_BASE_URL),
-);
 
 // GetVectors caps at 100 keys per call; PutVectors and DeleteVectors allow 500.
 // S3 Vectors caps the filterable part of a vector's metadata at 2 KB. Title, tags
@@ -334,41 +328,6 @@ export async function deleteS3Prefix(
   } while (keyMarker);
 
   return count;
-}
-
-/** Reads the bearer token from an API event and returns the caller's user id.
- * Handlers return `response` as-is when it is set, which is a 401. */
-export async function extractUserId(
-  event: APIGatewayProxyEventV2,
-): Promise<{ userId: string; response?: APIGatewayProxyStructuredResultV2 }> {
-  const authHeader =
-    event.headers?.authorization ?? event.headers?.Authorization ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (!token) {
-    return {
-      userId: "",
-      response: {
-        statusCode: 401,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Missing authorization token" }),
-      },
-    };
-  }
-
-  const appOrigin = process.env.APP_ORIGIN ?? "http://localhost:5173";
-  try {
-    const payload = await verifyShooToken(token, appOrigin);
-    return { userId: payload.pairwise_sub as string };
-  } catch {
-    return {
-      userId: "",
-      response: {
-        statusCode: 401,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Invalid authorization token" }),
-      },
-    };
-  }
 }
 
 /** Loads the deploy-owned default plan, or null when it is missing. Read fresh on
@@ -948,30 +907,6 @@ export async function updateStorageBytes(
   throw new Error("Storage usage changed concurrently");
 }
 
-/** Verifies a Shoo ID token for the app origin and returns its payload.
- * Used by extractUserId to authenticate API requests. */
-export async function verifyShooToken(
-  idToken: string,
-  appOrigin: string,
-): Promise<JWTPayload> {
-  // Tokens minted for the local dev server are only accepted outside production.
-  const audiences = [
-    `origin:${new URL(appOrigin).origin}`,
-    ...(process.env.DEPLOYMENT_STAGE === "production"
-      ? []
-      : ["origin:http://localhost:5173"]),
-  ];
-  const { payload } = await jwtVerify(idToken, jwks, {
-    issuer: SHOO_ISSUER,
-    audience: audiences,
-  });
-  if (typeof payload.pairwise_sub !== "string") {
-    throw new Error("Shoo token missing pairwise_sub");
-  }
-
-  return payload;
-}
-
 export function accountId(pk: string): string {
   return pk.replace("ACCOUNT#", "");
 }
@@ -1045,6 +980,26 @@ export function embeddingDimension(): number {
 
 export function embeddingModel(): string {
   return process.env.BEDROCK_EMBEDDING_MODEL ?? COHERE_EMBEDDING_MODEL;
+}
+
+/** Returns the caller's user id, which the API's Lambda authorizer verified.
+ * Handlers return `response` as-is when it is set, which is a 401. */
+export function extractUserId(
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
+): { userId: string; response?: APIGatewayProxyStructuredResultV2 } {
+  const userId = event.requestContext.authorizer?.lambda?.userId;
+  if (!userId) {
+    return {
+      userId: "",
+      response: {
+        statusCode: 401,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Missing authorization token" }),
+      },
+    };
+  }
+
+  return { userId: userId };
 }
 
 /** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,

@@ -4,7 +4,8 @@ info:
   version: 1.0.0
   description: |
     Multimodal RAG document ingestion and text/image vector search API.
-    All requests and responses use JSON. Auth via Bearer token (Shoo JWKS).
+    All requests and responses use JSON. Auth via a Shoo ID token as a Bearer
+    token, verified by a Lambda authorizer that caches its result for 5 minutes.
 servers:
   - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
     description: Production
@@ -30,6 +31,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           description: Document is being processed, is being uploaded, or mapping is invalid
           content:
@@ -64,6 +67,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -92,6 +97,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -115,6 +122,8 @@ paths:
               schema: { $ref: "#/components/schemas/DocumentListResponse" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
   /documents/{id}:
     get:
@@ -133,6 +142,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
@@ -151,6 +162,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -186,6 +199,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -217,6 +232,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -242,6 +259,8 @@ paths:
               schema: { $ref: "#/components/schemas/TagListResponse" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
     post:
       operationId: createTag
       summary: Create a new tag
@@ -256,6 +275,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           description: Tag limit reached or tag was concurrently deleted
           content:
@@ -286,6 +307,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -311,6 +334,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -327,6 +352,8 @@ paths:
               schema: { $ref: "#/components/schemas/AccountResponse" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -348,6 +375,8 @@ paths:
                   deletedTags: { type: integer }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -366,6 +395,8 @@ paths:
               schema: { $ref: "#/components/schemas/UsageSummary" }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
 
 components:
   securitySchemes:
@@ -394,10 +425,15 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: Missing or invalid authorization token
+      description: Missing authorization token, refused by API Gateway
       content:
         application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+          schema: { $ref: "#/components/schemas/GatewayError" }
+    Forbidden:
+      description: Invalid or expired authorization token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/GatewayError" }
     NotFound:
       description: Resource not found or not owned by caller
       content:
@@ -428,6 +464,14 @@ components:
           type: string
           enum: [PROCESSING_LIMIT]
           description: Set when an upload is refused because 10 documents are already processing
+
+    GatewayError:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          enum: [Unauthorized, Forbidden]
 
     UploadRequest:
       type: object

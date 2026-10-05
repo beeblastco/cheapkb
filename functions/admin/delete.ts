@@ -3,7 +3,7 @@ import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { S3VectorsClient } from "@aws-sdk/client-s3vectors";
 import { DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import type { ChunkItem } from "../types";
@@ -31,9 +31,9 @@ const UPDATE_LEASE_TTL_MS = 5 * 60 * 1000;
 
 /** DELETE /documents/{id}: removes an owned document's vectors, S3 data and rows. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
   const documentId = event.pathParameters?.id;

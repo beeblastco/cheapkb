@@ -58,7 +58,8 @@ let signingOut = false;
 
 /**
  * Sends an authenticated JSON request to the API and returns the parsed body.
- * A 401 signs the user out; other failures throw with the server's message and code.
+ * A 401 or the authorizer's 403 signs the user out; other failures throw with the
+ * server's message and code.
  */
 export async function apiCall(
   token: string,
@@ -90,7 +91,7 @@ export async function apiCall(
 
   const data: Record<string, unknown> = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) signOut();
+    if (response.status === 401 || response.status === 403) signOut();
     // The code lets callers branch on a failure without matching its text.
     throw Object.assign(
       new Error(String(data.error || `HTTP ${response.status}`)),
@@ -333,7 +334,7 @@ export function getFileMimeType(file: File): string {
 
 /**
  * An expired token counts as signed out, so the app never sends a burst of
- * requests that each come back 401.
+ * requests that each come back 401 or 403.
  */
 export function getIdentity(): ShooIdentity | null {
   try {
@@ -518,7 +519,7 @@ export function readPendingDocuments(): Document[] {
   }
 }
 
-// Several requests can fail with 401 at once; only the first one reloads.
+// Several requests can fail with 401 or 403 at once; only the first one reloads.
 export function signOut(): void {
   if (signingOut) return;
   signingOut = true;
