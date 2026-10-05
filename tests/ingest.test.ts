@@ -10,12 +10,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" } },
 }));
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "user-a" },
-  }),
-}));
 
 import { handler } from "../functions/admin/ingest";
 import { jsonApiEvent } from "./helpers/events";
@@ -41,7 +35,7 @@ describe("ingest status", () => {
 
   it("reports status without queueing, so only the S3 adapter charges and queues", async () => {
     dynamoMock.on(GetCommand).resolves({
-      Item: { documentId: "doc-1", userId: "user-a", status: "UPLOADED" },
+      Item: { documentId: "doc-1", userId: "owner", status: "UPLOADED" },
     });
 
     const response = await handler(jsonApiEvent({ documentId: "doc-1" }));

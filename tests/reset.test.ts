@@ -18,12 +18,6 @@ vi.hoisted(() => {
   process.env.RATE_LIMITS_TABLE_NAME = "rate-limits";
   process.env.STORAGE_BUCKET_NAME = "storage";
 });
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "owner" },
-  }),
-}));
 
 import { handler } from "../functions/admin/reset";
 import { apiEvent } from "./helpers/events";

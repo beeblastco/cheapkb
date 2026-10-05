@@ -7,7 +7,7 @@ import {
 import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import type { DocumentType } from "@smithy/types";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import type { QueryResult } from "../types";
@@ -76,9 +76,9 @@ interface VectorMetadata {
 
 /** API handler for POST /query; embeds the text or image and searches the caller's vectors. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
   const { allowed: rateAllowed, remaining } = await checkRateLimit(
     userId,

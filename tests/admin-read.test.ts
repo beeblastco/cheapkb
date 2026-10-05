@@ -4,14 +4,7 @@ import {
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "owner" },
-  }),
-}));
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { handler as getDocument } from "../functions/admin/get";
 import { handler as listDocuments } from "../functions/admin/list";

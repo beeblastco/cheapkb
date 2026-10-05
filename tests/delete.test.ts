@@ -23,12 +23,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "owner" },
-  }),
-}));
 
 import { handler } from "../functions/admin/delete";
 import { apiEvent } from "./helpers/events";

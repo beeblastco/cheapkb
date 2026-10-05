@@ -1,6 +1,6 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import type { Document, DocumentRow } from "../types";
@@ -11,9 +11,9 @@ const TableName = process.env.TABLE_NAME!;
 /** GET /documents: lists every document the caller owns, newest first.
  * inFlight uses the upload handler's rule, so the client can wait for a free slot. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
   const allItems: DocumentRow[] = [];

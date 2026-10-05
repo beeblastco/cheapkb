@@ -2,9 +2,15 @@ import type {
   InvokeModelCommand,
   InvokeModelCommandOutput,
 } from "@aws-sdk/client-bedrock-runtime";
-import type { APIGatewayProxyEventV2, S3Event, SQSEvent } from "aws-lambda";
+import type {
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
+  S3Event,
+  SQSEvent,
+} from "aws-lambda";
 
-const API_EVENT: APIGatewayProxyEventV2 = {
+const API_EVENT: APIGatewayProxyEventV2WithLambdaAuthorizer<{
+  userId: string;
+}> = {
   version: "2.0",
   routeKey: "$default",
   rawPath: "/",
@@ -12,6 +18,7 @@ const API_EVENT: APIGatewayProxyEventV2 = {
   headers: { authorization: "Bearer dummy" },
   requestContext: {
     accountId: "123456789012",
+    authorizer: { lambda: { userId: "owner" } },
     apiId: "api-id",
     domainName: "api.example.com",
     domainPrefix: "api",
@@ -32,8 +39,10 @@ const API_EVENT: APIGatewayProxyEventV2 = {
 };
 
 function apiEvent(
-  input: Partial<APIGatewayProxyEventV2> = {},
-): APIGatewayProxyEventV2 {
+  input: Partial<
+    APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>
+  > = {},
+): APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }> {
   return {
     ...API_EVENT,
     ...input,
@@ -71,8 +80,10 @@ function bedrockEmbeddings(
 
 function jsonApiEvent(
   body: unknown,
-  input: Partial<APIGatewayProxyEventV2> = {},
-): APIGatewayProxyEventV2 {
+  input: Partial<
+    APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>
+  > = {},
+): APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }> {
   return apiEvent({ ...input, body: JSON.stringify(body) });
 }
 

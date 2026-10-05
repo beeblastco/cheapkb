@@ -17,12 +17,6 @@ vi.mock("sst", () => ({
     Embed: { url: "embed-queue" },
   },
 }));
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "owner" },
-  }),
-}));
 const limits = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
   checkUsageLimit: vi.fn(),

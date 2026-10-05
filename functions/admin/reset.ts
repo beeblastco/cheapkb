@@ -7,7 +7,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import type { AccountRow, DocumentRow } from "../types";
@@ -30,9 +30,9 @@ const TAG_DELETE_BACKOFF_MS = 100;
 /** DELETE /account/data: deletes every document and tag the caller owns and brings stored
  * bytes to 0. Usage history stays, so a reset never grants a fresh allowance. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
   const { allowed } = await checkRateLimit(

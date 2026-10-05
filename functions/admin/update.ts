@@ -5,7 +5,7 @@ import {
 } from "@aws-sdk/client-s3vectors";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import type { ChunkItem, DocumentRow } from "../types";
@@ -50,9 +50,9 @@ interface Lease {
 
 /** PATCH /documents/{id}: replaces an owned document's tags in META and its vectors. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
   // Each edit rewrites every vector, so edits are rate limited.

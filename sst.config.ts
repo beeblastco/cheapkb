@@ -1085,21 +1085,47 @@ export default $config({
       },
     });
 
-    api.route("POST /upload", uploadFn.arn);
-    api.route("POST /ingest", ingestFn.arn);
-    api.route("POST /query", queryFn.arn);
-    api.route("GET /documents", adminListFn.arn);
-    api.route("GET /documents/{id}", adminGetFn.arn);
-    api.route("POST /documents/{id}/reindex", adminReindexFn.arn);
-    api.route("PATCH /documents/{id}", adminUpdateFn.arn);
-    api.route("DELETE /documents/{id}", adminDeleteFn.arn);
-    api.route("GET /tags", tagsListFn.arn);
-    api.route("POST /tags", tagsCreateFn.arn);
-    api.route("PATCH /tags/{name}", tagsUpdateFn.arn);
-    api.route("DELETE /tags/{name}", tagsDeleteFn.arn);
-    api.route("GET /account/usage", billingFn.arn);
-    api.route("GET /account", billingAccountFn.arn);
-    api.route("DELETE /account/data", accountResetFn.arn);
+    // Verifies the Shoo token once per token per 5 minutes, so the route Lambdas
+    // and requests without a token skip verification entirely.
+    const authorizer = api.addAuthorizer({
+      name: "shoo",
+      lambda: {
+        function: {
+          handler: "./functions/authorizer/index.handler",
+          runtime: "nodejs22.x",
+          timeout: "10 seconds",
+          memory: "128 MB",
+          description: "Verify Shoo ID tokens for the API",
+          environment: {
+            APP_ORIGIN: baseEnv.APP_ORIGIN,
+            DEPLOYMENT_STAGE: STAGE,
+          },
+          transform: {
+            function: (a) => {
+              a.name = name("authorizer");
+            },
+          },
+        },
+        ttl: "300 seconds",
+      },
+    });
+    const auth = { auth: { lambda: authorizer.id } };
+
+    api.route("POST /upload", uploadFn.arn, auth);
+    api.route("POST /ingest", ingestFn.arn, auth);
+    api.route("POST /query", queryFn.arn, auth);
+    api.route("GET /documents", adminListFn.arn, auth);
+    api.route("GET /documents/{id}", adminGetFn.arn, auth);
+    api.route("POST /documents/{id}/reindex", adminReindexFn.arn, auth);
+    api.route("PATCH /documents/{id}", adminUpdateFn.arn, auth);
+    api.route("DELETE /documents/{id}", adminDeleteFn.arn, auth);
+    api.route("GET /tags", tagsListFn.arn, auth);
+    api.route("POST /tags", tagsCreateFn.arn, auth);
+    api.route("PATCH /tags/{name}", tagsUpdateFn.arn, auth);
+    api.route("DELETE /tags/{name}", tagsDeleteFn.arn, auth);
+    api.route("GET /account/usage", billingFn.arn, auth);
+    api.route("GET /account", billingAccountFn.arn, auth);
+    api.route("DELETE /account/data", accountResetFn.arn, auth);
 
     // GitHub Actions deploys through this role with short-lived OIDC tokens,
     // and only from this repository's production environment.

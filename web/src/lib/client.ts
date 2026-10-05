@@ -58,7 +58,8 @@ let signingOut = false;
 
 /**
  * Sends an authenticated JSON request to the API and returns the parsed body.
- * A 401 signs the user out; other failures throw with the server's message and code.
+ * A 401 or the authorizer's 403 signs the user out; other failures throw with the
+ * server's message and code.
  */
 export async function apiCall(
   token: string,
@@ -90,7 +91,7 @@ export async function apiCall(
 
   const data: Record<string, unknown> = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) signOut();
+    if (response.status === 401 || response.status === 403) signOut();
     // The code lets callers branch on a failure without matching its text.
     throw Object.assign(
       new Error(String(data.error || `HTTP ${response.status}`)),

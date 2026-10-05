@@ -23,16 +23,9 @@ vi.mock("sst", () => ({
   },
 }));
 
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "user-1" },
-  }),
-}));
-
 vi.mock("../functions/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../functions/utils")>()),
-  extractUserId: vi.fn().mockResolvedValue({ userId: "user-1" }),
+  extractUserId: vi.fn().mockReturnValue({ userId: "user-1" }),
   checkUsageLimit: vi.fn(async () => ({ allowed: true, summary: {} })),
   recordUsage: vi.fn(async () => {}),
 }));

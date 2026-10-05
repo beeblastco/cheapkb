@@ -8,7 +8,7 @@ import {
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import type { Conditions } from "@aws-sdk/s3-presigned-post/dist-types/types";
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import { createHash, randomUUID } from "node:crypto";
@@ -61,9 +61,9 @@ const REPLACEABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 
 /** POST /upload: creates or reserves a document and returns a presigned S3 POST for its source. */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: APIGatewayProxyEventV2WithLambdaAuthorizer<{ userId: string }>,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const { userId, response: authError } = await extractUserId(event);
+  const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
   const { allowed, remaining } = await checkRateLimit(

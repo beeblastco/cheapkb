@@ -19,15 +19,9 @@ vi.hoisted(() => {
 vi.mock("sst", () => ({
   Resource: { Meta: { name: "table" }, Storage: { name: "storage" } },
 }));
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  jwtVerify: vi.fn().mockResolvedValue({
-    payload: { pairwise_sub: "user-a" },
-  }),
-}));
 vi.mock("../functions/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../functions/utils")>()),
-  extractUserId: vi.fn().mockResolvedValue({ userId: "user-1" }),
+  extractUserId: vi.fn().mockReturnValue({ userId: "user-1" }),
   checkUsageLimit: vi.fn().mockResolvedValue({
     allowed: true,
     summary: { storageBytes: 0 },
