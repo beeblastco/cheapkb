@@ -572,4 +572,87 @@ describe("multimodal pipeline", () => {
       vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
     ).toEqual(["chunk_doc-1_0"]);
   });
+
+  it("marks a document's chunks EMBEDDED in one transaction", async () => {
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const first = sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0"));
+    const second = sqsEvent("embed-b", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    const result = await embed({
+      Records: [...first.Records, ...second.Records],
+    });
+
+    expect(result.batchItemFailures).toEqual([]);
+    const transactions = dynamoMock.commandCalls(TransactWriteCommand);
+    expect(transactions).toHaveLength(1);
+    const items = transactions[0].args[0].input.TransactItems ?? [];
+    expect(items.map((item) => item.Update?.Key?.sk)).toEqual([
+      "CHUNK#chunk_doc-1_0",
+      "CHUNK#chunk_doc-1_1",
+      "META",
+    ]);
+    expect(items[2].Update?.UpdateExpression).toContain("ADD embeddedCount :n");
+    expect(items[2].Update?.ExpressionAttributeValues?.[":n"]).toBe(2);
+  });
+
+  it("falls back to one chunk at a time when the batched transaction is cancelled", async () => {
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    // chunk_doc-1_0 was embedded by an earlier delivery, which cancels the group.
+    dynamoMock.on(TransactWriteCommand).callsFake((input) => {
+      const items = input.TransactItems ?? [];
+      if (
+        items.length > 2 ||
+        items[0]?.Update?.Key?.sk === "CHUNK#chunk_doc-1_0"
+      ) {
+        const error = new Error("cancelled");
+        error.name = "TransactionCanceledException";
+        throw error;
+      }
+      return {};
+    });
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.sk === "META"
+          ? { Item: { userId: "user-1", status: "EMBEDDING" } }
+          : { Item: { status: "EMBEDDED" } },
+      );
+    const first = sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0"));
+    const second = sqsEvent("embed-b", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    const result = await embed({
+      Records: [...first.Records, ...second.Records],
+    });
+
+    expect(result.batchItemFailures).toEqual([]);
+    const transactions = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems?.length);
+    expect(transactions).toEqual([3, 2, 2]);
+    // The already embedded chunk is skipped, and the live document keeps its vectors.
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+  });
 });

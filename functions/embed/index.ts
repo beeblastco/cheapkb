@@ -58,6 +58,8 @@ const EMBED_CLAIM_LEASE_MS = 300_000;
 // S3 Vectors allows 40 KB of metadata per vector, 2 KB of it filterable. The full
 // chunk text (about 3 KB at 700 tokens) is kept so search needs no S3 read.
 const MAX_VECTOR_TEXT_BYTES = 32 * 1024;
+// A transaction holds up to 100 items: the chunk rows plus their META row.
+const MAX_TRANSACT_CHUNKS = 99;
 
 interface ChunkMetadata {
   documentId: string;
@@ -384,9 +386,17 @@ async function batchProcess(
     }
   }
 
+  const chunksByDocument = new Map<string, string[]>();
   for (const vector of writtenVectors) {
-    await markChunkEmbedded(vector.metadata.documentId, vector.key);
-    writtenDocuments.add(vector.metadata.documentId);
+    const { documentId } = vector.metadata;
+    chunksByDocument.set(documentId, [
+      ...(chunksByDocument.get(documentId) ?? []),
+      vector.key,
+    ]);
+    writtenDocuments.add(documentId);
+  }
+  for (const [documentId, chunkIds] of chunksByDocument) {
+    await markChunksEmbedded(documentId, chunkIds);
   }
   await Promise.all(
     Array.from(writtenDocuments, (documentId) => markEmbedded(documentId)),
@@ -536,6 +546,53 @@ async function markChunkEmbedded(
     );
     if (existing.Item?.status === "EMBEDDED") return;
     throw err;
+  }
+}
+
+/** Marks a document's chunks EMBEDDED and adds them to its count, one transaction
+ * per 99 chunks. A cancelled group retries chunk by chunk to keep those semantics. */
+async function markChunksEmbedded(
+  documentId: string,
+  chunkIds: string[],
+): Promise<void> {
+  for (let i = 0; i < chunkIds.length; i += MAX_TRANSACT_CHUNKS) {
+    const group = chunkIds.slice(i, i + MAX_TRANSACT_CHUNKS);
+    try {
+      await dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            ...group.map((chunkId) => ({
+              Update: {
+                TableName: TableName,
+                Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+                UpdateExpression: "SET #s = :embedded",
+                ConditionExpression:
+                  "attribute_exists(pk) AND (attribute_not_exists(#s) OR #s <> :embedded)",
+                ExpressionAttributeNames: { "#s": "status" },
+                ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
+              },
+            })),
+            {
+              Update: {
+                TableName: TableName,
+                Key: { pk: `DOC#${documentId}`, sk: "META" },
+                UpdateExpression: "SET #s = :embedding ADD embeddedCount :n",
+                ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+                ExpressionAttributeNames: { "#s": "status" },
+                ExpressionAttributeValues: {
+                  ":deleting": "DELETING",
+                  ":embedding": "EMBEDDING",
+                  ":n": group.length,
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (err) {
+      if ((err as Error).name !== "TransactionCanceledException") throw err;
+      for (const chunkId of group) await markChunkEmbedded(documentId, chunkId);
+    }
   }
 }
 
