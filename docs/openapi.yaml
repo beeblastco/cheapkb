@@ -137,7 +137,7 @@ paths:
           $ref: "#/components/responses/NotFound"
     patch:
       operationId: updateDocument
-      summary: Update document metadata (tags), propagate to chunks and vectors
+      summary: Update document tags in metadata and vectors
       tags: [documents]
       parameters:
         - { $ref: "#/components/parameters/DocumentId" }
@@ -202,8 +202,8 @@ paths:
   /documents/{id}/reindex:
     post:
       operationId: reindexDocument
-      summary: Restart a failed document from its failed step
-      description: Allowed for completed documents, failed documents, and documents stuck in processing for over an hour. Limited to 10 per hour per user.
+      summary: Restart a document from parsing or chunking
+      description: Allowed for completed documents, failed documents, and documents stuck in processing for over an hour. A document that was parsed restarts from chunking, which chunks its stored text again and re-embeds every chunk. Limited to 10 per hour per user.
       tags: [documents]
       parameters:
         - { $ref: "#/components/parameters/DocumentId" }
@@ -598,6 +598,7 @@ components:
           type: integer
         text:
           type: string
+          description: The chunk's full text, up to 32 KB of UTF-8
         source:
           type: object
           required: [bucket, key]
@@ -747,7 +748,7 @@ components:
           enum: [QUEUED]
         restartFrom:
           type: string
-          enum: [PARSING, CHUNKING, EMBEDDING]
+          enum: [PARSING, CHUNKING]
         message:
           type: string
 

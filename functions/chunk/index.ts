@@ -1,9 +1,9 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
+  DeleteVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type {
@@ -12,8 +12,10 @@ import type {
   SQSEvent,
 } from "aws-lambda";
 import { decode, encode } from "gpt-tokenizer";
+import type { EmbedMessage } from "../types";
 import {
   ContentError,
+  deleteDocumentChunkRecords,
   dynamo,
   getDocument,
   recordStageError,
@@ -22,17 +24,27 @@ import {
 
 const s3 = new S3Client({});
 const sqs = new SQSClient({});
+const vectors = new S3VectorsClient({});
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
+const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
+const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const CHUNK_WRITE_CONCURRENCY = 10;
+// DeleteVectors accepts up to 500 keys per call.
+const VECTOR_DELETE_BATCH = 500;
 
 /** Chunk stage entry, called by the pipeline router with chunk records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchItemFailure[] = [];
 
   for (const record of event.Records) {
-    let body: { documentId?: string; parsedKey?: string; sweeps?: number };
+    let body: {
+      documentId?: string;
+      parsedKey?: string;
+      reindexedAt?: string;
+      sweeps?: number;
+    };
     try {
       body = JSON.parse(record.body);
     } catch {
@@ -53,7 +65,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       body.sweeps ? 2 : 1,
     );
     try {
-      await chunkDocument(documentId, parsedKey, attempt);
+      await chunkDocument(documentId, parsedKey, attempt, body.reindexedAt);
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
         console.log(`[chunk] Document ${documentId} was deleted, dropping`);
@@ -84,22 +96,18 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures: batchItemFailures };
 }
 
-/** Splits a parsed document into chunks, stores them and queues embedding. */
+/** Splits a parsed document into chunk rows and queues one inline embed message
+ * per chunk. The parsed file stays the source of truth, so no chunk object is written. */
 async function chunkDocument(
   documentId: string,
   parsedKey: string,
   attempt: number,
+  reindexedAt: string | undefined,
 ): Promise<void> {
   const now = new Date().toISOString();
   await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
-
   const doc = await getDocument(documentId, dynamo, TableName, false);
-  if (!doc?.userId) throw new Error("Document owner is missing");
-  const title = doc.title ?? null;
-  const tags = doc.tags ?? null;
-  const authors = doc.authors ?? null;
-  const year = doc.year ?? null;
-  const { mimeType, sourceKey, userId } = doc;
+  const previousCount = doc?.chunkCount ?? 0;
 
   const resp = await s3.send(
     new GetObjectCommand({ Bucket: StorageBucketName, Key: parsedKey }),
@@ -107,43 +115,29 @@ async function chunkDocument(
   const parsed = JSON.parse(await resp.Body!.transformToString());
   if (parsed.modality === "image") {
     const chunkId = `image_${documentId}_0`;
-    const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: StorageBucketName,
-        Key: s3ChunkKey,
-        Body: JSON.stringify({
-          documentId: documentId,
-          userId: userId,
-          chunkId: chunkId,
-          modality: "image",
-          sourceKey: parsed.sourceKey ?? sourceKey,
-          mimeType: parsed.mimeType ?? mimeType,
-          title: title,
-          tags: tags,
-          authors: authors,
-          year: year,
-          pageStart: 1,
-          pageEnd: 1,
-        }),
-        ContentType: "application/json",
-      }),
-    );
     const queued = await putChunkRecord(
       {
         pk: `DOC#${documentId}`,
         sk: `CHUNK#${chunkId}`,
         chunkId: chunkId,
-        s3ChunkKey: s3ChunkKey,
         pageStart: 1,
         pageEnd: 1,
         status: "QUEUED",
         createdAt: now,
       },
       attempt,
+      reindexedAt,
     );
-    await finishChunking(documentId, 1, queued ? [s3ChunkKey] : [], now);
-    console.log(`[chunk] OK: ${documentId} - image -> ${s3ChunkKey}`);
+    const message: EmbedMessage = {
+      stage: "embed",
+      documentId: documentId,
+      chunkId: chunkId,
+      modality: "image",
+      pageStart: 1,
+      pageEnd: 1,
+    };
+    await finishChunking(documentId, 1, queued ? [message] : [], now);
+    console.log(`[chunk] OK: ${documentId} - image -> ${chunkId}`);
     return;
   }
   const { pages }: { pages: Array<{ pageNumber: number; text: string }> } =
@@ -154,6 +148,8 @@ async function chunkDocument(
   const maxChunks = parseInt(process.env.MAX_CHUNKS_PER_DOCUMENT ?? "1000", 10);
 
   const chunks = splitIntoChunks(pages, maxTokens, overlapTokens, maxChunks);
+  // A re-chunk that yields fewer chunks must not leave the old tail searchable.
+  await removeSurplusChunks(documentId, chunks.length, previousCount);
   if (chunks.length === 0) {
     await setDocumentStatus(documentId, TableName, "CHUNKED", now, true);
     return;
@@ -161,46 +157,21 @@ async function chunkDocument(
 
   // Chunks are written a few at a time so a 1,000-chunk document fits the
   // Lambda timeout.
-  const chunkKeys: string[] = [];
+  const messages: EmbedMessage[] = [];
   for (let start = 0; start < chunks.length; start += CHUNK_WRITE_CONCURRENCY) {
     const written = await Promise.all(
       chunks
         .slice(start, start + CHUNK_WRITE_CONCURRENCY)
-        .map(async ({ chunk, i }) => {
+        .map(async ({ chunk, i }): Promise<EmbedMessage | null> => {
           const chunkId = `chunk_${documentId}_${i}`;
-          const s3ChunkKey = `chunks/${documentId}/${chunkId}.json`;
           const tokenCount = encode(chunk.text, {
             disallowedSpecial: new Set(),
           }).length;
-          await s3.send(
-            new PutObjectCommand({
-              Bucket: StorageBucketName,
-              Key: s3ChunkKey,
-              Body: JSON.stringify({
-                documentId: documentId,
-                userId: userId,
-                chunkId: chunkId,
-                modality: "text",
-                sourceKey: sourceKey,
-                mimeType: mimeType,
-                text: chunk.text,
-                tokenCount: tokenCount,
-                title: title,
-                tags: tags,
-                authors: authors,
-                year: year,
-                pageStart: chunk.pageStart,
-                pageEnd: chunk.pageEnd,
-              }),
-              ContentType: "application/json",
-            }),
-          );
           const queued = await putChunkRecord(
             {
               pk: `DOC#${documentId}`,
               sk: `CHUNK#${chunkId}`,
               chunkId: chunkId,
-              s3ChunkKey: s3ChunkKey,
               pageStart: chunk.pageStart,
               pageEnd: chunk.pageEnd,
               tokenCount: tokenCount,
@@ -208,17 +179,29 @@ async function chunkDocument(
               createdAt: now,
             },
             attempt,
+            reindexedAt,
           );
-          return queued ? s3ChunkKey : null;
+          return queued
+            ? {
+                stage: "embed",
+                documentId: documentId,
+                chunkId: chunkId,
+                modality: "text",
+                text: chunk.text,
+                tokenCount: tokenCount,
+                pageStart: chunk.pageStart,
+                pageEnd: chunk.pageEnd,
+              }
+            : null;
         }),
     );
-    for (const key of written) if (key) chunkKeys.push(key);
+    for (const message of written) if (message) messages.push(message);
   }
 
-  await finishChunking(documentId, chunks.length, chunkKeys, now);
+  await finishChunking(documentId, chunks.length, messages, now);
 
   console.log(
-    `[chunk] OK: ${documentId} - ${chunks.length} chunks -> ${chunkKeys[0]}`,
+    `[chunk] OK: ${documentId} - ${chunks.length} chunks, ${messages.length} queued`,
   );
 }
 
@@ -226,7 +209,7 @@ async function chunkDocument(
 async function finishChunking(
   documentId: string,
   chunkCount: number,
-  chunkKeys: string[],
+  messages: EmbedMessage[],
   now: string,
 ): Promise<void> {
   await dynamo.send(
@@ -247,21 +230,17 @@ async function finishChunking(
       },
     }),
   );
-  if (chunkKeys.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
+  if (messages.length === 0) await markEmbeddedIfDone(documentId, chunkCount);
 
   const sendSize = 10;
-  for (let i = 0; i < chunkKeys.length; i += sendSize) {
-    const group = chunkKeys.slice(i, i + sendSize);
+  for (let i = 0; i < messages.length; i += sendSize) {
+    const group = messages.slice(i, i + sendSize);
     const response = await sqs.send(
       new SendMessageBatchCommand({
         QueueUrl: PipelineQueueUrl,
-        Entries: group.map((s3ChunkKey, index) => ({
+        Entries: group.map((message, index) => ({
           Id: String(index),
-          MessageBody: JSON.stringify({
-            stage: "embed",
-            documentId: documentId,
-            s3ChunkKey: s3ChunkKey,
-          }),
+          MessageBody: JSON.stringify(message),
         })),
       }),
     );
@@ -299,10 +278,12 @@ async function markEmbeddedIfDone(
 }
 
 /** Writes a chunk record, returning false when a redelivery finds it already
- * embedded, so it is not billed twice. A first delivery starts every chunk over. */
+ * embedded, so it is not billed twice. A first delivery starts every chunk over,
+ * and so does a redelivered reindex for chunks embedded before that reindex. */
 async function putChunkRecord(
   item: Record<string, unknown>,
   attempt: number,
+  reindexedAt: string | undefined,
 ): Promise<boolean> {
   try {
     await dynamo.send(
@@ -311,10 +292,14 @@ async function putChunkRecord(
         Item: item,
         ...(attempt > 1
           ? {
-              ConditionExpression:
-                "attribute_not_exists(pk) OR #s <> :embedded",
+              ConditionExpression: reindexedAt
+                ? "attribute_not_exists(pk) OR #s <> :embedded OR createdAt < :reindexedAt"
+                : "attribute_not_exists(pk) OR #s <> :embedded",
               ExpressionAttributeNames: { "#s": "status" },
-              ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
+              ExpressionAttributeValues: {
+                ":embedded": "EMBEDDED",
+                ...(reindexedAt ? { ":reindexedAt": reindexedAt } : {}),
+              },
             }
           : {}),
       }),
@@ -324,6 +309,40 @@ async function putChunkRecord(
     if (error instanceof ConditionalCheckFailedException) return false;
     throw error;
   }
+}
+
+/** Deletes the vectors and chunk rows past the new chunk count. Chunk ids are
+ * positional, so the surplus is every index from chunkCount to previousCount. */
+async function removeSurplusChunks(
+  documentId: string,
+  chunkCount: number,
+  previousCount: number,
+): Promise<void> {
+  if (previousCount <= chunkCount) return;
+  const chunkIds = Array.from(
+    { length: previousCount - chunkCount },
+    (_, offset) => `chunk_${documentId}_${chunkCount + offset}`,
+  );
+  for (let i = 0; i < chunkIds.length; i += VECTOR_DELETE_BATCH) {
+    await vectors.send(
+      new DeleteVectorsCommand({
+        vectorBucketName: VectorBucketName,
+        indexName: VectorIndexName,
+        keys: chunkIds.slice(i, i + VECTOR_DELETE_BATCH),
+      }),
+    );
+  }
+  await deleteDocumentChunkRecords(
+    chunkIds.map((chunkId) => ({
+      pk: `DOC#${documentId}`,
+      sk: `CHUNK#${chunkId}`,
+    })),
+    dynamo,
+    TableName,
+  );
+  console.log(
+    `[chunk] Removed ${chunkIds.length} surplus chunks of ${documentId}`,
+  );
 }
 
 /** Splits page text into overlapping token windows, capped at maxChunks. Windows

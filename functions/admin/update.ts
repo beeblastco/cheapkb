@@ -1,10 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import {
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
-import {
   DeleteVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
@@ -18,7 +13,6 @@ import {
   checkRateLimit,
   checkUsageLimit,
   chunkId,
-  deleteS3Prefix,
   dynamo,
   extractUserId,
   getDocument,
@@ -29,16 +23,14 @@ import {
   retagDocumentVectors,
 } from "../utils";
 
-const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
 const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
-const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 
-// A running pipeline copies tags into chunks itself and overwrites the lease
+// A running pipeline copies tags into vectors itself and overwrites the lease
 // status, so only settled documents can be retagged.
 const EDITABLE_STATUSES = new Set(["EMBEDDED", "FAILED"]);
 const UPDATING_STATUS = "UPDATING";
@@ -48,9 +40,6 @@ const LEASE_TTL_MS = 5 * 60 * 1000;
 // Matches the ingest adapter's grace for a POST that started just before its form
 // expired, so no edit can race a replacement that may still land.
 const REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
-// Two S3 calls per chunk against a 200-chunk ceiling would not finish inside the
-// timeout if run one at a time.
-const CHUNK_REWRITE_CONCURRENCY = 8;
 // DeleteVectors accepts up to 500 keys per call.
 const VECTOR_DELETE_BATCH = 500;
 
@@ -59,14 +48,14 @@ interface Lease {
   heldSince: string;
 }
 
-/** PATCH /documents/{id}: replaces an owned document's tags in META, chunk JSON and vectors. */
+/** PATCH /documents/{id}: replaces an owned document's tags in META and its vectors. */
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = await extractUserId(event);
   if (authError) return authError;
 
-  // Each edit rewrites every chunk object and vector, so edits are rate limited.
+  // Each edit rewrites every vector, so edits are rate limited.
   const { allowed } = await checkRateLimit(
     userId,
     RateLimitsTableName,
@@ -142,10 +131,9 @@ export async function handler(
 
   let chunkItems: ChunkItem[] = [];
   try {
-    // Tags live in the META row, the chunk JSON a re-embed reads, and the vector
-    // metadata search filters on. All three must agree or a reindex undoes this.
+    // Tags live in the META row a re-embed reads and the vector metadata search
+    // filters on. Both must agree or a reindex undoes this.
     chunkItems = await listDocumentChunkItems(documentId, dynamo, TableName);
-    await updateChunkObjects(chunkItems, tags);
     const updatedVectors = await retagDocumentVectors(
       chunkItems,
       tags,
@@ -285,7 +273,7 @@ async function releaseWith(
 }
 
 /** Deleting or resetting a document does not wait for an edit lease, so a cleanup can
- * run mid-edit; the chunk JSON and vectors this edit rewrote after it are removed here. */
+ * run mid-edit; the vectors this edit rewrote after it are removed here. */
 async function removeWritesAfterDelete(
   documentId: string,
   chunkItems: ChunkItem[],
@@ -303,52 +291,6 @@ async function removeWritesAfterDelete(
       }),
     );
   }
-  await deleteS3Prefix(`chunks/${documentId}/`, s3, StorageBucketName);
-}
-
-/** Rewrites the tags in every chunk JSON, CHUNK_REWRITE_CONCURRENCY objects at a time. */
-async function updateChunkObjects(
-  chunkItems: ChunkItem[],
-  tags: string[] | null,
-): Promise<void> {
-  const pending = chunkItems.filter((item) => item.s3ChunkKey);
-  let cursor = 0;
-
-  /** Takes the next pending chunk until none remain. */
-  async function worker(): Promise<void> {
-    while (cursor < pending.length) {
-      const item = pending[cursor];
-      cursor += 1;
-      const response = await s3.send(
-        new GetObjectCommand({
-          Bucket: StorageBucketName,
-          Key: item.s3ChunkKey,
-        }),
-      );
-      const chunkData = JSON.parse(
-        await response.Body!.transformToString(),
-      ) as Record<string, unknown>;
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: StorageBucketName,
-          Key: item.s3ChunkKey,
-          Body: JSON.stringify({ ...chunkData, tags: tags }),
-          ContentType: "application/json",
-        }),
-      );
-    }
-  }
-
-  // Every worker settles before a failure is thrown, so no chunk write lands
-  // after the caller releases its lease or cleans up.
-  const results = await Promise.allSettled(
-    Array.from(
-      { length: Math.min(CHUNK_REWRITE_CONCURRENCY, pending.length) },
-      worker,
-    ),
-  );
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) throw failed.reason;
 }
 
 /** An UPDATING row whose lease has outlived the function's own timeout belongs to

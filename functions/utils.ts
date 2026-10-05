@@ -604,7 +604,6 @@ export async function listDocumentChunkItems(
       ...((chunkRecords.Items ?? []) as ChunkItem[]).map((item) => ({
         pk: item.pk,
         sk: item.sk,
-        s3ChunkKey: item.s3ChunkKey,
         pageStart: item.pageStart,
         pageEnd: item.pageEnd,
         tokenCount: item.tokenCount,

@@ -1,10 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import {
-  SendMessageBatchCommand,
-  SendMessageCommand,
-  SQSClient,
-} from "@aws-sdk/client-sqs";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type {
   APIGatewayProxyEventV2,
@@ -18,10 +13,8 @@ import {
   getDocument,
 } from "../utils";
 
-const s3 = new S3Client({});
 const sqs = new SQSClient({});
 const TableName = process.env.TABLE_NAME!;
-const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
@@ -136,35 +129,20 @@ export async function handler(
     };
   }
 
-  const reembed =
-    status === "EMBEDDED" ||
-    status === "CHUNKED" ||
-    status === "EMBEDDING" ||
-    (status === "FAILED" && failedStep === "EMBEDDING");
+  // Chunking is deterministic from the parsed file, so a document that reached
+  // chunking restarts there and re-embeds every chunk it produces.
   const rechunk =
     status === "PARSED" ||
     status === "CHUNKING" ||
-    (status === "FAILED" && failedStep === "CHUNKING");
-  let targetStep = "PARSING";
-  let chunkKeys: string[] = [];
-  if (reembed) {
-    chunkKeys = await listChunkKeys(documentId);
-    if (chunkKeys.length === 0) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: "No chunks found to re-embed; restart from CHUNKING",
-        }),
-      };
-    }
-    targetStep = "EMBEDDING";
-  } else if (rechunk) {
-    targetStep = "CHUNKING";
-  }
+    status === "CHUNKED" ||
+    status === "EMBEDDING" ||
+    status === "EMBEDDED" ||
+    (status === "FAILED" &&
+      (failedStep === "CHUNKING" || failedStep === "EMBEDDING"));
+  const targetStep = rechunk ? "CHUNKING" : "PARSING";
 
   // The status and updatedAt match makes a second concurrent reindex lose. A pending
-  // replacement deletes the chunks it would re-embed, so it refuses that too.
+  // replacement deletes the chunks it would re-chunk, so it refuses that too.
   try {
     await dynamo.send(
       new UpdateCommand({
@@ -198,73 +176,36 @@ export async function handler(
     };
   }
 
-  if (reembed) {
-    await resetChunkStatuses(documentId, chunkKeys);
-    for (let i = 0; i < chunkKeys.length; i += 10) {
-      try {
-        const response = await sqs.send(
-          new SendMessageBatchCommand({
-            QueueUrl: PipelineQueueUrl,
-            Entries: chunkKeys.slice(i, i + 10).map((s3ChunkKey, index) => ({
-              Id: String(index),
-              MessageBody: JSON.stringify({
-                stage: "embed",
-                documentId: documentId,
-                s3ChunkKey: s3ChunkKey,
-              }),
-            })),
-          }),
-        );
-        if (response.Failed?.length) {
-          return {
-            statusCode: 500,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              error: "Failed to queue some chunks for re-embedding",
-            }),
-          };
-        }
-      } catch {
-        return {
-          statusCode: 500,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            error: "Failed to queue chunks for re-embedding",
-          }),
-        };
+  // reindexedAt lets a redelivered chunk message redo chunks embedded before now.
+  const message = rechunk
+    ? {
+        stage: "chunk",
+        documentId: documentId,
+        parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
+        reindexedAt: now,
       }
-    }
-  } else {
-    const message = rechunk
-      ? {
-          stage: "chunk",
-          documentId: documentId,
-          parsedKey: `parsed/${documentId}/v1/${doc.mimeType?.startsWith("image/") ? "image.json" : "pages.json"}`,
-        }
-      : {
-          stage: "parse",
-          documentId: documentId,
-          sourceKey: doc.sourceKey,
-          mimeType: doc.mimeType ?? undefined,
-        };
-    try {
-      await sqs.send(
-        new SendMessageCommand({
-          QueueUrl: PipelineQueueUrl,
-          MessageBody: JSON.stringify(message),
-        }),
-      );
-    } catch {
-      return {
-        statusCode: 500,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: `Failed to queue document for ${targetStep}`,
-        }),
+    : {
+        stage: "parse",
+        documentId: documentId,
+        sourceKey: doc.sourceKey,
+        mimeType: doc.mimeType ?? undefined,
       };
-    }
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: PipelineQueueUrl,
+        MessageBody: JSON.stringify(message),
+      }),
+    );
+  } catch {
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: `Failed to queue document for ${targetStep}`,
+      }),
+    };
   }
-
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
@@ -275,57 +216,4 @@ export async function handler(
       message: `Reindex started from ${targetStep}`,
     }),
   };
-}
-
-/** Lists every chunk object key the chunk stage wrote for a document. */
-async function listChunkKeys(documentId: string): Promise<string[]> {
-  const keys: string[] = [];
-  let token: string | undefined;
-  do {
-    const list = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: StorageBucketName,
-        Prefix: `chunks/${documentId}/`,
-        ContinuationToken: token,
-      }),
-    );
-    for (const obj of list.Contents ?? []) {
-      if (obj.Key) keys.push(obj.Key);
-    }
-    token = list.IsTruncated ? list.NextContinuationToken : undefined;
-  } while (token);
-
-  return keys;
-}
-
-/** Marks chunk rows QUEUED, 25 at a time so a 1,000-chunk document resets inside the timeout. */
-async function resetChunkStatuses(
-  documentId: string,
-  chunkKeys: string[],
-): Promise<void> {
-  const chunkIds = chunkKeys
-    .map((chunkKey) =>
-      chunkKey
-        .split("/")
-        .pop()
-        ?.replace(/\.json$/, ""),
-    )
-    .filter((chunkId): chunkId is string => Boolean(chunkId));
-  for (let start = 0; start < chunkIds.length; start += 25) {
-    await Promise.all(
-      chunkIds.slice(start, start + 25).map((chunkId) =>
-        dynamo.send(
-          new UpdateCommand({
-            TableName: TableName,
-            Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
-            // A failed delivery's embed claim would make the embed stage drop
-            // the reindex message, so the claim is cleared with the status.
-            UpdateExpression: "SET #s = :queued REMOVE embedClaimedAt",
-            ExpressionAttributeNames: { "#s": "status" },
-            ExpressionAttributeValues: { ":queued": "QUEUED" },
-          }),
-        ),
-      ),
-    );
-  }
 }

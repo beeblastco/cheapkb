@@ -215,23 +215,23 @@ export async function handler(
       }),
     );
     const matches = searchResponse.vectors ?? [];
-    // The chunk JSON also carries sourceKey, which the 2 KB metadata fit can drop.
+    // Vectors carry their full chunk text. Only legacy vectors, cut to 500
+    // characters, point at a chunk object that still holds the full text.
     const chunks = await Promise.all(
       matches.map(
         async (match): Promise<{ text: string; sourceKey?: string }> => {
           const metadata = (match.metadata ?? {}) as VectorMetadata;
-          const chunkKey = metadata.s3ChunkKey;
-          if (!chunkKey) return { text: "" };
+          if (!metadata.s3ChunkKey) return { text: metadata.text ?? "" };
           try {
             const resp = await s3.send(
               new GetObjectCommand({
                 Bucket: env("STORAGE_BUCKET_NAME"),
-                Key: chunkKey,
+                Key: metadata.s3ChunkKey,
               }),
             );
             const chunkData = JSON.parse(await resp.Body!.transformToString());
             return {
-              text: chunkData.text ?? "",
+              text: chunkData.text ?? metadata.text ?? "",
               sourceKey: chunkData.sourceKey,
             };
           } catch {

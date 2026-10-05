@@ -1,4 +1,4 @@
-import { S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
@@ -186,6 +186,67 @@ describe("query handler usage", () => {
     expect(
       request.inputs[0].content.map((part: { type: string }) => part.type),
     ).toEqual(["text", "image_url"]);
+  });
+
+  it("returns chunk text from vector metadata without reading S3", async () => {
+    vectorsMock.on(QueryVectorsCommand).resolves({
+      vectors: [
+        {
+          key: "chunk_doc-1_0",
+          distance: 0.25,
+          metadata: {
+            documentId: "doc-1",
+            text: "The full chunk text",
+            sourceKey: "raw/doc-1/report.pdf",
+          },
+        },
+      ],
+    });
+
+    const response = await queryHandler(jsonApiEvent({ query: "report" }));
+
+    const [result] = JSON.parse(response.body!).results;
+    expect(result.text).toBe("The full chunk text");
+    expect(result.source.key).toBe("raw/doc-1/report.pdf");
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  it("reads a legacy vector's chunk object, falling back to its metadata text", async () => {
+    vectorsMock.on(QueryVectorsCommand).resolves({
+      vectors: ["chunk_doc-1_0", "chunk_doc-1_1"].map((key) => ({
+        key: key,
+        distance: 0.25,
+        metadata: {
+          documentId: "doc-1",
+          s3ChunkKey: `chunks/doc-1/${key}.json`,
+          text: "Cut at 500",
+        },
+      })),
+    });
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === "chunks/doc-1/chunk_doc-1_1.json") {
+        throw new Error("chunk object gone");
+      }
+      return {
+        Body: {
+          transformToString: async () =>
+            JSON.stringify({
+              text: "Full legacy text",
+              sourceKey: "raw/doc-1/legacy.pdf",
+            }),
+        } as any,
+      };
+    });
+
+    const response = await queryHandler(jsonApiEvent({ query: "legacy" }));
+
+    const { results } = JSON.parse(response.body!);
+    expect(results.map((result: { text: string }) => result.text)).toEqual([
+      "Full legacy text",
+      "Cut at 500",
+    ]);
+    expect(results[0].source.key).toBe("raw/doc-1/legacy.pdf");
+    expect(results[1].source.key).toBe("raw/doc-1/");
   });
 
   it("rejects a mislabeled image before invoking Bedrock", async () => {

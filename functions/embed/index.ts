@@ -15,6 +15,7 @@ import {
 import type { DocumentType } from "@smithy/types";
 import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
 import { encode } from "gpt-tokenizer";
+import type { EmbedMessage } from "../types";
 import {
   dynamo,
   embeddingDimension,
@@ -54,6 +55,9 @@ const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 // Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
 // before SQS redelivers its message (visibility timeout 900 seconds).
 const EMBED_CLAIM_LEASE_MS = 300_000;
+// S3 Vectors allows 40 KB of metadata per vector, 2 KB of it filterable. The full
+// chunk text (about 3 KB at 700 tokens) is kept so search needs no S3 read.
+const MAX_VECTOR_TEXT_BYTES = 32 * 1024;
 
 interface ChunkMetadata {
   documentId: string;
@@ -67,12 +71,23 @@ interface ChunkMetadata {
   year?: number;
   pageStart?: number;
   pageEnd?: number;
-  s3ChunkKey: string;
   sourceKey?: string;
   modality: "image" | "text";
   mimeType?: string;
   text?: string;
   chunkPreview?: string;
+}
+
+interface EmbeddingChunk {
+  attempt: number;
+  chunkId: string;
+  documentId: string;
+  messageId: string;
+  modality: "image" | "text";
+  pageEnd?: number;
+  pageStart?: number;
+  text: string;
+  tokenCount?: number;
 }
 
 interface EmbeddingWork {
@@ -86,16 +101,11 @@ interface EmbeddingWork {
 
 /** Embed stage entry, called by the pipeline router with embed records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
-  const chunks: Array<{
-    documentId: string;
-    s3ChunkKey: string;
-    messageId: string;
-    attempt: number;
-  }> = [];
+  const chunks: EmbeddingChunk[] = [];
   const failedMessageIds = new Set<string>();
 
   for (const record of event.Records) {
-    let body: { documentId?: string; s3ChunkKey?: string };
+    let body: Partial<EmbedMessage>;
     try {
       body = JSON.parse(record.body);
     } catch {
@@ -103,15 +113,20 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       failedMessageIds.add(record.messageId);
       continue;
     }
-    const { documentId, s3ChunkKey } = body;
-    if (!documentId || !s3ChunkKey) {
+    const { chunkId, documentId } = body;
+    if (!documentId || !chunkId) {
       console.error("[embed] Missing required fields:", record.messageId);
       failedMessageIds.add(record.messageId);
       continue;
     }
     chunks.push({
       documentId: documentId,
-      s3ChunkKey: s3ChunkKey,
+      chunkId: chunkId,
+      modality: body.modality === "image" ? "image" : "text",
+      text: typeof body.text === "string" ? body.text : "",
+      tokenCount: body.tokenCount,
+      pageStart: body.pageStart,
+      pageEnd: body.pageEnd,
       messageId: record.messageId,
       attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
     });
@@ -182,16 +197,12 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
 /** Embeds one batch of chunks, writes their vectors and marks them embedded.
  * Returns the per-message failures for the handler to record. */
 async function batchProcess(
-  batch: Array<{
-    documentId: string;
-    s3ChunkKey: string;
-    messageId: string;
-    attempt: number;
-  }>,
+  batch: EmbeddingChunk[],
 ): Promise<
   Map<string, { attempt: number; documentId: string; error: unknown }>
 > {
-  const owners = new Map<string, string>();
+  // Title, tags and source come from META, read once per document in the batch.
+  const documents = new Map<string, ReturnType<typeof getDocument>>();
   const reconcileDocuments = new Set<string>();
   const failures = new Map<
     string,
@@ -201,51 +212,39 @@ async function batchProcess(
   const loaded = await Promise.all(
     batch.map(async (chunk): Promise<EmbeddingWork | undefined> => {
       try {
-        const resp = await s3.send(
-          new GetObjectCommand({
-            Bucket: StorageBucketName,
-            Key: chunk.s3ChunkKey,
-          }),
-        );
-        const chunkData = JSON.parse(await resp.Body!.transformToString());
-        let userId: string | undefined =
-          chunkData.userId ?? owners.get(chunk.documentId);
-        if (!userId) {
-          const doc = await getDocument(
-            chunk.documentId,
-            dynamo,
-            TableName,
-            false,
-          );
-          userId = doc?.userId;
-          if (!userId) throw new Error("Document owner is missing");
-          owners.set(chunk.documentId, userId);
+        let document = documents.get(chunk.documentId);
+        if (!document) {
+          document = getDocument(chunk.documentId, dynamo, TableName, false);
+          documents.set(chunk.documentId, document);
         }
-        const modality = chunkData.modality === "image" ? "image" : "text";
-        const text = typeof chunkData.text === "string" ? chunkData.text : "";
+        const doc = await document;
+        if (!doc || doc.status === "DELETING") {
+          console.log(`[embed] ${chunk.documentId} was deleted, dropping`);
+          return undefined;
+        }
+        if (!doc.userId) throw new Error("Document owner is missing");
+        const { modality, text } = chunk;
         if (modality === "text" && !text.trim()) return undefined;
         const tokenCount =
           modality === "text"
-            ? typeof chunkData.tokenCount === "number" &&
-              chunkData.tokenCount > 0
-              ? chunkData.tokenCount
+            ? typeof chunk.tokenCount === "number" && chunk.tokenCount > 0
+              ? chunk.tokenCount
               : encode(text, { disallowedSpecial: new Set() }).length
             : undefined;
         const metadata: ChunkMetadata = {
           documentId: chunk.documentId,
-          userId: userId,
-          chunkId: chunkData.chunkId,
+          userId: doc.userId,
+          chunkId: chunk.chunkId,
           modality: modality,
           ...(tokenCount ? { tokenCount: tokenCount } : {}),
-          ...(chunkData.title ? { title: chunkData.title } : {}),
-          ...(chunkData.tags ? { tags: chunkData.tags } : {}),
-          ...(chunkData.authors ? { authors: chunkData.authors } : {}),
-          ...(chunkData.year ? { year: chunkData.year } : {}),
-          ...(chunkData.mimeType ? { mimeType: chunkData.mimeType } : {}),
-          ...(chunkData.sourceKey ? { sourceKey: chunkData.sourceKey } : {}),
-          pageStart: chunkData.pageStart,
-          pageEnd: chunkData.pageEnd,
-          s3ChunkKey: chunk.s3ChunkKey,
+          ...(doc.title ? { title: doc.title } : {}),
+          ...(doc.tags ? { tags: doc.tags } : {}),
+          ...(doc.authors ? { authors: doc.authors } : {}),
+          ...(doc.year ? { year: doc.year } : {}),
+          ...(doc.mimeType ? { mimeType: doc.mimeType } : {}),
+          ...(doc.sourceKey ? { sourceKey: doc.sourceKey } : {}),
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
         };
 
         // A duplicate message for an embedded chunk must not be embedded and
@@ -338,7 +337,7 @@ async function batchProcess(
   }> = [];
   for (const item of workItems) {
     const meta = item.metadata;
-    const preview = item.text ?? "";
+    const fullText = item.text ?? "";
     const embedding = embeddingsByChunk.get(meta.chunkId);
     if (!embedding) continue;
     vectorBatch.push({
@@ -351,8 +350,8 @@ async function batchProcess(
           ...meta,
           embeddingModel: embeddingModel(),
         }),
-        text: preview.substring(0, 500),
-        chunkPreview: preview.substring(0, 200),
+        text: truncateUtf8(fullText, MAX_VECTOR_TEXT_BYTES),
+        chunkPreview: fullText.substring(0, 200),
       },
     });
   }
@@ -668,4 +667,15 @@ function packEmbeddingBatches(items: EmbeddingWork[]): EmbeddingWork[][] {
   if (current.length > 0) batches.push(current);
 
   return batches;
+}
+
+/** Cuts text to at most maxBytes of UTF-8, backing off a split character. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength <= maxBytes) return text;
+  let end = maxBytes;
+  // Continuation bytes are 10xxxxxx, so the cut moves back to a character start.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+
+  return bytes.subarray(0, end).toString("utf8");
 }

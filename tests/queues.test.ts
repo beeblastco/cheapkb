@@ -61,16 +61,20 @@ describe("SQS partial failures", () => {
   });
 
   it("returns failed embedding records to SQS and records the attempt", async () => {
-    s3Mock.on(GetObjectCommand).rejects(new Error("temporary S3 failure"));
-    dynamoMock.on(GetCommand).resolves({ Item: { retryCount: 0 } });
+    dynamoMock.on(GetCommand).rejects(new Error("temporary DynamoDB failure"));
     dynamoMock.on(UpdateCommand).resolves({});
 
     const result = await embed(
       sqsEvent(
         "embed-1",
         JSON.stringify({
+          stage: "embed",
           documentId: "doc-1",
-          s3ChunkKey: "chunks/doc-1/chunk.json",
+          chunkId: "chunk_doc-1_0",
+          modality: "text",
+          text: "hello",
+          pageStart: 1,
+          pageEnd: 1,
         }),
         2,
       ),
@@ -79,7 +83,7 @@ describe("SQS partial failures", () => {
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: "embed-1" }]);
     expect(dynamoMock.commandCalls(UpdateCommand)[0].args[0].input).toEqual(
       expect.objectContaining({
-        // The raw S3 error stays in the logs, not on the document.
+        // The raw SDK error stays in the logs, not on the document.
         ExpressionAttributeValues: expect.objectContaining({
           ":r": 2,
           ":e": "Embedding failed. Reindex to try again.",
