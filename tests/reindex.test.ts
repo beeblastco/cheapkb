@@ -84,6 +84,33 @@ describe("reindex migration", () => {
     });
   });
 
+  it("marks the document FAILED when the reindex cannot be queued", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "owner",
+          status: "EMBEDDED",
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).rejects(new Error("queue down"));
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(500);
+    const rollback = dynamoMock.commandCalls(UpdateCommand).at(-1)!.args[0]
+      .input;
+    expect(rollback.ExpressionAttributeValues).toEqual(
+      expect.objectContaining({ ":failed": "FAILED", ":step": "CHUNKING" }),
+    );
+  });
+
   it("refuses to claim a document with a pending replacement upload", async () => {
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk?.startsWith("RATE#")) return {};

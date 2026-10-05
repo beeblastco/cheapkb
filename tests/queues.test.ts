@@ -71,6 +71,7 @@ describe("SQS partial failures", () => {
           stage: "embed",
           documentId: "doc-1",
           chunkId: "chunk_doc-1_0",
+          createdAt: "2026-01-01T00:00:00.000Z",
           modality: "text",
           text: "hello",
           pageStart: 1,

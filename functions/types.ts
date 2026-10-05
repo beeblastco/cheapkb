@@ -116,6 +116,8 @@ export interface EmbedMessage {
   stage: "embed";
   documentId: string;
   chunkId: string;
+  // The chunk row's createdAt; a message from an earlier chunking no longer matches it.
+  createdAt: string;
   modality: "image" | "text";
   text?: string;
   tokenCount?: number;

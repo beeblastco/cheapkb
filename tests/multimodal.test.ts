@@ -32,6 +32,8 @@ const s3Mock = mockClient(S3Client);
 const sqsMock = mockClient(SQSClient);
 const vectorsMock = mockClient(S3VectorsClient);
 
+const CHUNKED_AT = "2026-01-01T00:00:00.000Z";
+
 function embedMessage(
   documentId: string,
   chunkId: string,
@@ -41,6 +43,7 @@ function embedMessage(
     stage: "embed",
     documentId: documentId,
     chunkId: chunkId,
+    createdAt: CHUNKED_AT,
     pageStart: 1,
     pageEnd: 1,
     ...fields,
@@ -366,7 +369,7 @@ describe("multimodal pipeline", () => {
         throw new ConditionalCheckFailedException({
           $metadata: {},
           message: "embedded",
-          Item: { status: { S: "EMBEDDED" } },
+          Item: { createdAt: { S: CHUNKED_AT }, status: { S: "EMBEDDED" } },
         });
       }
       return {};
@@ -453,6 +456,8 @@ describe("multimodal pipeline", () => {
         title: long("t", 200),
         year: 2024,
         text: "hello",
+        // The file link is kept before the long fields are trimmed.
+        sourceKey: `raw/doc-1/${long("f", 255)}`,
       }),
     );
     // Tags are kept in order until the budget runs out.
@@ -460,10 +465,23 @@ describe("multimodal pipeline", () => {
   });
 
   it.each([
-    ["already embedded", { status: { S: "EMBEDDED" } }, true],
+    [
+      "already embedded",
+      { createdAt: { S: CHUNKED_AT }, status: { S: "EMBEDDED" } },
+      true,
+    ],
     [
       "claimed by another delivery",
-      { status: { S: "QUEUED" }, embedClaimedAt: { N: String(Date.now()) } },
+      {
+        createdAt: { S: CHUNKED_AT },
+        status: { S: "QUEUED" },
+        embedClaimedAt: { N: String(Date.now()) },
+      },
+      false,
+    ],
+    [
+      "re-chunked since the message was sent",
+      { createdAt: { S: "2026-02-01T00:00:00.000Z" }, status: { S: "QUEUED" } },
       false,
     ],
     ["gone", undefined, false],
@@ -571,6 +589,43 @@ describe("multimodal pipeline", () => {
     expect(
       vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
     ).toEqual(["chunk_doc-1_0"]);
+  });
+
+  it("removes a vector whose chunk row a shorter re-chunk deleted", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).callsFake((input) => {
+      if (input.TransactItems?.[0]?.Update?.Key?.sk?.startsWith("CHUNK#")) {
+        const error = new Error("cancelled");
+        error.name = "TransactionCanceledException";
+        throw error;
+      }
+      return {};
+    });
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.sk === "META"
+          ? { Item: { userId: "user-1", status: "EMBEDDING" } }
+          : {},
+      );
+
+    const result = await embed(
+      sqsEvent(
+        "embed-surplus",
+        embedMessage("doc-1", "chunk_doc-1_5", {
+          modality: "text",
+          text: "Surplus text",
+          tokenCount: 2,
+        }),
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(
+      vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
+    ).toEqual(["chunk_doc-1_5"]);
   });
 
   it("marks a document's chunks EMBEDDED in one transaction", async () => {

@@ -198,6 +198,28 @@ export async function handler(
       }),
     );
   } catch {
+    // Marking it FAILED lets the user reindex again now instead of after the in-flight window.
+    try {
+      await dynamo.send(
+        new UpdateCommand({
+          TableName: TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          UpdateExpression:
+            "SET #s = :failed, failedStep = :step, lastError = :e",
+          ConditionExpression: "#s = :queued AND updatedAt = :t",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: {
+            ":e": "Could not start the reindex. Try again.",
+            ":failed": "FAILED",
+            ":queued": "QUEUED",
+            ":step": targetStep,
+            ":t": now,
+          },
+        }),
+      );
+    } catch {
+      // The queue error is the one to report; the document then waits out the window.
+    }
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
