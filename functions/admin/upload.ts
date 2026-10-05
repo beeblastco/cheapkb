@@ -16,6 +16,7 @@ import type { DocumentRow } from "../types";
 import {
   checkRateLimit,
   checkUsageLimit,
+  docId,
   dynamo,
   extractUserId,
   getDocument,
@@ -44,6 +45,9 @@ const MAX_DOCUMENTS = 1000;
 const MAX_IN_FLIGHT_DOCUMENTS = 10;
 // Uploads that lose the account's uploadSeq race recount and retry this many times.
 const MAX_COMMIT_ATTEMPTS = 3;
+// GSI2 can trail a commit, so the account row also lists commits this recent.
+const RECENT_UPLOAD_WINDOW_MS = 30_000;
+const COMMIT_RETRY_BACKOFF_MS = 50;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -159,9 +163,10 @@ export async function handler(
 
     const refusal = await commitWithinCaps(
       userId,
+      documentId,
       summary.storageBytes,
       !document,
-      (seenSeq) =>
+      (seenSeq, recentUploads): Promise<"busy" | "committed" | "conflict"> =>
         document
           ? reserveReplacement(
               document,
@@ -170,6 +175,7 @@ export async function handler(
               body,
               now,
               seenSeq,
+              recentUploads,
             )
           : createDocument(
               documentId,
@@ -181,6 +187,7 @@ export async function handler(
               body,
               now,
               seenSeq,
+              recentUploads,
             ),
     );
     if (refusal) return refusal;
@@ -238,6 +245,7 @@ async function checkAccountLimits(
   userId: string,
   storageBytes: number,
   isNew: boolean,
+  recentUploads: Record<string, number>,
 ): Promise<{ error: string; code?: string } | null> {
   // Bytes are counted when S3 accepts a file, so an account can pass the cap
   // by the uploads already in flight.
@@ -245,8 +253,9 @@ async function checkAccountLimits(
     return { error: "Storage limit reached. Delete documents to upload more." };
   }
   const nowMs = Date.now();
-  let total = 0;
-  let inFlight = 0;
+  // Recent commits are in flight by definition; the sets merge them with what GSI2 already shows.
+  const documentIds = new Set(Object.keys(recentUploads));
+  const inFlightIds = new Set(Object.keys(recentUploads));
   let lastKey: Record<string, unknown> | undefined;
   do {
     const result = await dynamo.send(
@@ -254,26 +263,27 @@ async function checkAccountLimits(
         TableName: TableName,
         IndexName: "GSI2",
         KeyConditionExpression: "gsi2pk = :pk",
-        ProjectionExpression: "#s, updatedAt, replacementExpiresAt",
+        ProjectionExpression: "pk, #s, updatedAt, replacementExpiresAt",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: { ":pk": `USER#${userId}` },
         ExclusiveStartKey: lastKey,
       }),
     );
     for (const item of result.Items ?? []) {
-      total += 1;
-      if (isDocumentInFlight(item, nowMs)) inFlight += 1;
+      const documentId = docId(String(item.pk));
+      documentIds.add(documentId);
+      if (isDocumentInFlight(item, nowMs)) inFlightIds.add(documentId);
     }
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
 
-  if (isNew && total >= MAX_DOCUMENTS) {
+  if (isNew && documentIds.size >= MAX_DOCUMENTS) {
     return {
       error: "Document limit reached. Delete documents to upload more.",
     };
   }
-  if (inFlight >= MAX_IN_FLIGHT_DOCUMENTS) {
-    // web/src/lib/client.ts waits and retries on this code.
+  if (inFlightIds.size >= MAX_IN_FLIGHT_DOCUMENTS) {
+    // DocumentsCard's bulk sync waits and retries on this code.
     return {
       error: "Too many documents processing. Try again when they finish.",
       code: "PROCESSING_LIMIT",
@@ -287,23 +297,38 @@ async function checkAccountLimits(
  * still holds the value read before the count. Returns the refusal response, or null on commit. */
 async function commitWithinCaps(
   userId: string,
+  documentId: string,
   storageBytes: number,
   isNew: boolean,
-  write: (seenSeq: number) => Promise<"busy" | "committed" | "conflict">,
+  write: (
+    seenSeq: number,
+    recentUploads: Record<string, number>,
+  ) => Promise<"busy" | "committed" | "conflict">,
 ): Promise<APIGatewayProxyStructuredResultV2 | null> {
-  // A commit between the count and the write moves uploadSeq, so concurrent uploads cannot
-  // both pass the caps; GSI2 replication lag can still hide a commit made just before the count.
+  // A commit between the count and the write moves uploadSeq, so concurrent uploads cannot both
+  // pass the caps. Each commit also lands in recentUploads, which covers GSI2 replication lag.
   for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt += 1) {
     const account = await dynamo.send(
       new GetCommand({
         TableName: AccountsTableName,
         Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
-        ProjectionExpression: "uploadSeq",
+        ProjectionExpression: "uploadSeq, recentUploads",
         ConsistentRead: true,
       }),
     );
     const seenSeq: number = account.Item?.uploadSeq ?? 0;
-    const limitError = await checkAccountLimits(userId, storageBytes, isNew);
+    const nowMs = Date.now();
+    const recentUploads = Object.fromEntries(
+      Object.entries(
+        (account.Item?.recentUploads ?? {}) as Record<string, number>,
+      ).filter(([, at]) => nowMs - at < RECENT_UPLOAD_WINDOW_MS),
+    );
+    const limitError = await checkAccountLimits(
+      userId,
+      storageBytes,
+      isNew,
+      recentUploads,
+    );
     if (limitError) {
       return {
         statusCode: 429,
@@ -311,13 +336,22 @@ async function commitWithinCaps(
         body: JSON.stringify(limitError),
       };
     }
-    const outcome = await write(seenSeq);
+    const outcome = await write(seenSeq, {
+      ...recentUploads,
+      [documentId]: nowMs,
+    });
     if (outcome === "committed") return null;
     if (outcome === "conflict") {
       return conflictResponse(
         isNew ? "Document is being uploaded" : "Document is being processed",
       );
     }
+    await new Promise((resolve) => {
+      setTimeout(
+        resolve,
+        (attempt + 1 + Math.random()) * COMMIT_RETRY_BACKOFF_MS,
+      );
+    });
   }
 
   // DocumentsCard's bulk sync waits and retries on this code.
@@ -343,6 +377,7 @@ async function createDocument(
   body: Record<string, unknown>,
   now: string,
   seenSeq: number,
+  recentUploads: Record<string, number>,
 ): Promise<"busy" | "committed" | "conflict"> {
   try {
     await dynamo.send(
@@ -388,11 +423,13 @@ async function createDocument(
             Update: {
               TableName: AccountsTableName,
               Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
-              UpdateExpression: "SET uploadSeq = :next",
+              UpdateExpression:
+                "SET uploadSeq = :next, recentUploads = :recentUploads",
               ConditionExpression:
                 "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
               ExpressionAttributeValues: {
                 ":next": seenSeq + 1,
+                ":recentUploads": recentUploads,
                 ":seen": seenSeq,
               },
             },
@@ -403,13 +440,14 @@ async function createDocument(
     return "committed";
   } catch (error) {
     if (!(error instanceof TransactionCanceledException)) throw error;
-    // The account row is the last item; when only it failed, another upload won the race.
+    // The account row is last. Only a failed condition on a document item is a real conflict;
+    // a lost uploadSeq race, a transaction conflict or a throttle is retried.
     const reasons = error.CancellationReasons ?? [];
-    const othersPassed = reasons
+    const documentConflict = reasons
       .slice(0, -1)
-      .every((reason) => reason.Code === "None");
+      .some((reason) => reason.Code === "ConditionalCheckFailed");
 
-    return reasons.length > 0 && othersPassed ? "busy" : "conflict";
+    return reasons.length > 0 && !documentConflict ? "busy" : "conflict";
   }
 }
 
@@ -422,6 +460,7 @@ async function reserveReplacement(
   body: Record<string, unknown>,
   now: string,
   seenSeq: number,
+  recentUploads: Record<string, number>,
 ): Promise<"busy" | "committed" | "conflict"> {
   const replacementExpiresAt = new Date(
     Date.now() + REPLACEMENT_TTL_MS,
@@ -459,11 +498,13 @@ async function reserveReplacement(
             Update: {
               TableName: AccountsTableName,
               Key: { pk: `ACCOUNT#${document.userId}`, sk: "PROFILE" },
-              UpdateExpression: "SET uploadSeq = :next",
+              UpdateExpression:
+                "SET uploadSeq = :next, recentUploads = :recentUploads",
               ConditionExpression:
                 "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
               ExpressionAttributeValues: {
                 ":next": seenSeq + 1,
+                ":recentUploads": recentUploads,
                 ":seen": seenSeq,
               },
             },
@@ -474,13 +515,14 @@ async function reserveReplacement(
     return "committed";
   } catch (error) {
     if (!(error instanceof TransactionCanceledException)) throw error;
-    // The account row is the last item; when only it failed, another upload won the race.
+    // The account row is last. Only a failed condition on a document item is a real conflict;
+    // a lost uploadSeq race, a transaction conflict or a throttle is retried.
     const reasons = error.CancellationReasons ?? [];
-    const othersPassed = reasons
+    const documentConflict = reasons
       .slice(0, -1)
-      .every((reason) => reason.Code === "None");
+      .some((reason) => reason.Code === "ConditionalCheckFailed");
 
-    return reasons.length > 0 && othersPassed ? "busy" : "conflict";
+    return reasons.length > 0 && !documentConflict ? "busy" : "conflict";
   }
 }
 

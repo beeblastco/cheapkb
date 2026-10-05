@@ -166,7 +166,7 @@ describe("upload validation", () => {
     expect(account.Update!.ConditionExpression).toBe(
       "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
     );
-    expect(account.Update!.ExpressionAttributeValues).toEqual({
+    expect(account.Update!.ExpressionAttributeValues).toMatchObject({
       ":next": 5,
       ":seen": 4,
     });
@@ -257,7 +257,8 @@ describe("upload validation", () => {
   it("rejects a new document while ten are still processing", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 10 }, () => ({
+      Items: Array.from({ length: 10 }, (_, i) => ({
+        pk: `DOC#doc-embedding-${i}`,
         status: "EMBEDDING",
         updatedAt: now,
       })),
@@ -276,11 +277,13 @@ describe("upload validation", () => {
     const now = new Date().toISOString();
     dynamoMock.on(QueryCommand).resolves({
       Items: [
-        ...Array.from({ length: 10 }, () => ({
+        ...Array.from({ length: 10 }, (_, i) => ({
+          pk: `DOC#doc-uploaded-${i}`,
           status: "UPLOADED",
           updatedAt: stale,
         })),
-        ...Array.from({ length: 10 }, () => ({
+        ...Array.from({ length: 10 }, (_, i) => ({
+          pk: `DOC#doc-updating-${i}`,
           status: "UPDATING",
           updatedAt: now,
         })),
@@ -297,7 +300,8 @@ describe("upload validation", () => {
   it("counts a pending replacement as processing", async () => {
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 10 }, () => ({
+      Items: Array.from({ length: 10 }, (_, i) => ({
+        pk: `DOC#doc-embedded-${i}`,
         status: "EMBEDDED",
         replacementExpiresAt: expires,
       })),
@@ -363,7 +367,10 @@ describe("upload validation", () => {
 
   it("rejects a new document at the per-account document cap", async () => {
     dynamoMock.on(QueryCommand).resolves({
-      Items: Array.from({ length: 1000 }, () => ({ status: "EMBEDDED" })),
+      Items: Array.from({ length: 1000 }, (_, i) => ({
+        pk: `DOC#doc-${i}`,
+        status: "EMBEDDED",
+      })),
     });
 
     const response = await handler(
@@ -393,7 +400,7 @@ describe("upload validation", () => {
     expect(account.ConditionExpression).toBe(
       "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
     );
-    expect(account.ExpressionAttributeValues).toEqual({
+    expect(account.ExpressionAttributeValues).toMatchObject({
       ":next": 8,
       ":seen": 7,
     });
@@ -411,10 +418,59 @@ describe("upload validation", () => {
     expect(account.ConditionExpression).toContain(
       "attribute_not_exists(uploadSeq)",
     );
-    expect(account.ExpressionAttributeValues).toEqual({
+    expect(account.ExpressionAttributeValues).toMatchObject({
       ":next": 1,
       ":seen": 0,
     });
+  });
+
+  it("counts recent commits that GSI2 does not show yet", async () => {
+    const nowMs = Date.now();
+    const recentUploads = Object.fromEntries(
+      Array.from({ length: 10 }, (_, i) => [`doc-recent-${i}`, nowMs - 1000]),
+    );
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? { Item: { uploadSeq: 3, recentUploads: recentUploads } }
+          : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(response.body).code).toBe("PROCESSING_LIMIT");
+  });
+
+  it("records the commit and drops recent commits past the window", async () => {
+    const nowMs = Date.now();
+    dynamoMock.on(GetCommand).callsFake((input) =>
+      input.Key?.pk === "ACCOUNT#user-1"
+        ? {
+            Item: {
+              uploadSeq: 3,
+              recentUploads: {
+                "doc-old": nowMs - 60_000,
+                "doc-new": nowMs - 1000,
+              },
+            },
+          }
+        : {},
+    );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const { documentId } = JSON.parse(response.body);
+    const recent =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![2].Update!.ExpressionAttributeValues![":recentUploads"];
+    expect(Object.keys(recent).sort()).toEqual(["doc-new", documentId].sort());
   });
 
   it("recounts and retries when another upload moves the uploadSeq first", async () => {
@@ -430,6 +486,20 @@ describe("upload validation", () => {
     expect(response.statusCode).toBe(200);
     expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
     expect(dynamoMock.commandCalls(QueryCommand)).toHaveLength(2);
+  });
+
+  it("retries a throttled document write instead of returning 409", async () => {
+    dynamoMock
+      .on(TransactWriteCommand)
+      .rejectsOnce(cancelled(["ThrottlingError", "None", "None"]))
+      .resolves({});
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(2);
   });
 
   it("asks the client to retry after repeated uploadSeq conflicts", async () => {
