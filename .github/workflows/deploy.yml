@@ -53,6 +53,9 @@ jobs:
         run: |
           npm audit --json > audit-root.json || true
           npm --prefix web audit --json > audit-web.json || true
+          for file in audit-root.json audit-web.json; do
+            jq -e 'has("vulnerabilities")' "$file" > /dev/null || { echo "npm audit failed: $(cat "$file")"; exit 1; }
+          done
           jq -s -r '[.[].vulnerabilities[]?.via[] | objects | .url | split("/") | last] | unique | .[]' audit-*.json > reported.txt
           jq -s -r '[.[].vulnerabilities[]?.via[] | objects | select(.severity == "high" or .severity == "critical") | .url | split("/") | last] | unique | .[]' audit-*.json > high.txt
           : > blocking.txt
