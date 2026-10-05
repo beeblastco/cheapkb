@@ -247,30 +247,22 @@ async function batchProcess(
           pageEnd: chunk.pageEnd,
         };
 
-        // A duplicate message for an embedded chunk must not be embedded and
-        // billed again, whichever delivery it is.
-        const existing = await dynamo.send(
-          new GetCommand({
-            TableName: TableName,
-            Key: {
-              pk: `DOC#${chunk.documentId}`,
-              sk: `CHUNK#${metadata.chunkId}`,
-            },
-            ConsistentRead: true,
-          }),
-        );
-        if (existing.Item?.status === "EMBEDDED") {
+        // Only the delivery that claims the chunk calls Bedrock, so a duplicate
+        // message is never embedded and billed twice.
+        const claim = await claimChunk(chunk.documentId, metadata.chunkId);
+        if (claim === "embedded") {
           reconcileDocuments.add(chunk.documentId);
           return undefined;
         }
-        // Two deliveries can both pass the read above, so only the one that
-        // claims the chunk calls Bedrock; the other is dropped.
-        if (
-          existing.Item &&
-          !(await claimChunk(chunk.documentId, metadata.chunkId))
-        ) {
+        if (claim === "held") {
           console.log(
             `[embed] ${metadata.chunkId} is claimed by another delivery, dropping`,
+          );
+          return undefined;
+        }
+        if (claim === "missing") {
+          console.log(
+            `[embed] ${metadata.chunkId} has no chunk row, its document was deleted or re-chunked, dropping`,
           );
           return undefined;
         }
@@ -404,12 +396,12 @@ async function batchProcess(
   return failures;
 }
 
-/** Claims a chunk for this delivery, or returns false when another delivery holds a
- * live claim or the chunk is already embedded. */
+/** Claims a chunk for this delivery. A failed claim returns the row it saw, which
+ * tells an embedded chunk from a live claim or a row that no longer exists. */
 async function claimChunk(
   documentId: string,
   chunkId: string,
-): Promise<boolean> {
+): Promise<"claimed" | "embedded" | "held" | "missing"> {
   const now = Date.now();
   try {
     await dynamo.send(
@@ -425,12 +417,15 @@ async function claimChunk(
           ":expired": now - EMBED_CLAIM_LEASE_MS,
           ":now": now,
         },
+        ReturnValuesOnConditionCheckFailure: "ALL_OLD",
       }),
     );
-    return true;
+    return "claimed";
   } catch (error) {
-    if (error instanceof ConditionalCheckFailedException) return false;
-    throw error;
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    if (!error.Item) return "missing";
+
+    return error.Item.status?.S === "EMBEDDED" ? "embedded" : "held";
   }
 }
 

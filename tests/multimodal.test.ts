@@ -361,12 +361,18 @@ describe("multimodal pipeline", () => {
       chunkStatus = "EMBEDDED";
       return {};
     });
-    dynamoMock.on(UpdateCommand).resolves({});
-    let metadataReads = 0;
-    dynamoMock.on(GetCommand).callsFake((input) => {
-      if (input.Key?.sk === "CHUNK#chunk-1") {
-        return { Item: { status: chunkStatus } };
+    dynamoMock.on(UpdateCommand).callsFake((input) => {
+      if (input.Key?.sk === "CHUNK#chunk-1" && chunkStatus === "EMBEDDED") {
+        throw new ConditionalCheckFailedException({
+          $metadata: {},
+          message: "embedded",
+          Item: { status: { S: "EMBEDDED" } },
+        });
       }
+      return {};
+    });
+    let metadataReads = 0;
+    dynamoMock.on(GetCommand).callsFake(() => {
       metadataReads += 1;
       // The read that settles the document fails after the chunk was embedded.
       if (metadataReads === 2) throw new Error("metadata unavailable");
@@ -453,27 +459,53 @@ describe("multimodal pipeline", () => {
     expect((metadata.tags as string[])[0]).toBe(`0${long("g", 99)}`);
   });
 
-  it("drops a duplicate delivery while another one holds the chunk claim", async () => {
-    dynamoMock
-      .on(GetCommand)
-      .callsFake((input) =>
-        input.Key?.sk === "META"
-          ? { Item: { userId: "user-1" } }
-          : { Item: { status: "QUEUED" } },
-      );
-    dynamoMock
-      .on(UpdateCommand)
-      .rejects(
-        new ConditionalCheckFailedException({ $metadata: {}, message: "held" }),
+  it.each([
+    ["already embedded", { status: { S: "EMBEDDED" } }, true],
+    [
+      "claimed by another delivery",
+      { status: { S: "QUEUED" }, embedClaimedAt: { N: String(Date.now()) } },
+      false,
+    ],
+    ["gone", undefined, false],
+  ])(
+    "drops a chunk whose claim finds it %s without calling Bedrock",
+    async (_, item, reconciles) => {
+      dynamoMock.on(GetCommand).resolves({
+        Item: { userId: "user-1", chunkCount: 1, embeddedCount: 1 },
+      });
+      dynamoMock.on(UpdateCommand).callsFake((input) => {
+        if (input.Key?.sk === "META") return {};
+        throw new ConditionalCheckFailedException({
+          $metadata: {},
+          message: "The conditional request failed",
+          Item: item,
+        });
+      });
+
+      const result = await embed(
+        sqsEvent("embed-dup", embedMessage("doc-1", "chunk-1")),
       );
 
-    const result = await embed(
-      sqsEvent("embed-dup", embedMessage("doc-1", "chunk-1"), 1),
-    );
-
-    expect(result.batchItemFailures).toEqual([]);
-    expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);
-  });
+      expect(result.batchItemFailures).toEqual([]);
+      expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);
+      const updates = dynamoMock
+        .commandCalls(UpdateCommand)
+        .map((call) => call.args[0].input);
+      // The failed claim returns the row, so the chunk is never read first.
+      expect(updates[0].ReturnValuesOnConditionCheckFailure).toBe("ALL_OLD");
+      expect(
+        dynamoMock
+          .commandCalls(GetCommand)
+          .filter((call) => call.args[0].input.Key?.sk !== "META"),
+      ).toHaveLength(0);
+      // Only an embedded chunk settles its document, as a retry after a crash would.
+      expect(
+        updates.some(
+          (input) => input.ExpressionAttributeValues?.[":s"] === "EMBEDDED",
+        ),
+      ).toBe(reconciles);
+    },
+  );
 
   it("keeps embedded chunks when recording another chunk's error fails", async () => {
     bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
@@ -481,16 +513,14 @@ describe("multimodal pipeline", () => {
     dynamoMock.on(TransactWriteCommand).resolves({});
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk === "DOC#doc-2") throw new Error("dynamo unavailable");
-      return input.Key?.sk?.startsWith("CHUNK#")
-        ? { Item: { status: "QUEUED" } }
-        : {
-            Item: {
-              userId: "user-1",
-              chunkCount: 1,
-              embeddedCount: 1,
-              retryCount: 0,
-            },
-          };
+      return {
+        Item: {
+          userId: "user-1",
+          chunkCount: 1,
+          embeddedCount: 1,
+          retryCount: 0,
+        },
+      };
     });
     dynamoMock.on(UpdateCommand).callsFake((input) => {
       if (input.Key?.pk === "DOC#doc-2") throw new Error("dynamo unavailable");
