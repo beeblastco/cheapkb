@@ -1,8 +1,9 @@
 import type { APIGatewayRequestAuthorizerEventV2 } from "aws-lambda";
-import { jwtVerify } from "jose";
+import { errors, jwtVerify } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("jose", () => ({
+vi.mock("jose", async (importOriginal) => ({
+  errors: (await importOriginal<typeof import("jose")>()).errors,
   createRemoteJWKSet: vi.fn(),
   jwtVerify: vi.fn().mockResolvedValue({
     payload: { pairwise_sub: "owner" },
@@ -52,11 +53,19 @@ describe("API authorizer", () => {
   });
 
   it("denies a token that fails verification", async () => {
-    vi.mocked(jwtVerify).mockRejectedValueOnce(new Error("expired"));
+    vi.mocked(jwtVerify).mockRejectedValueOnce(
+      new errors.JWTExpired("expired", {}),
+    );
 
     const result = await handler(authorizerEvent("Bearer expired"));
 
     expect(result.isAuthorized).toBe(false);
+  });
+
+  it("fails without caching a deny when shoo.dev is unreachable", async () => {
+    vi.mocked(jwtVerify).mockRejectedValueOnce(new errors.JWKSTimeout());
+
+    await expect(handler(authorizerEvent("Bearer token"))).rejects.toThrow();
   });
 
   it("denies a token without a pairwise user id", async () => {

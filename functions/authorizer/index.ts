@@ -2,7 +2,7 @@ import type {
   APIGatewayRequestAuthorizerEventV2,
   APIGatewaySimpleAuthorizerWithContextResult,
 } from "aws-lambda";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 
 const SHOO_BASE_URL = "https://shoo.dev";
 const SHOO_ISSUER = "https://shoo.dev";
@@ -20,9 +20,10 @@ export async function handler(
   const appOrigin = process.env.APP_ORIGIN ?? "http://localhost:5173";
   try {
     const userId = await verifyShooToken(token, appOrigin);
-
     return { isAuthorized: true, context: { userId: userId } };
-  } catch {
+  } catch (error) {
+    // A deny is cached for 5 minutes, so an unreachable shoo.dev fails with a 500 instead.
+    if (isJwksOutage(error)) throw error;
     return { isAuthorized: false, context: { userId: "" } };
   }
 }
@@ -49,4 +50,12 @@ export async function verifyShooToken(
   }
 
   return payload.pairwise_sub;
+}
+
+function isJwksOutage(error: unknown): boolean {
+  if (error instanceof errors.JWKSTimeout) return true;
+  if (error instanceof errors.JOSEError)
+    return error.code === "ERR_JOSE_GENERIC";
+
+  return error instanceof TypeError;
 }
