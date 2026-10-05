@@ -36,7 +36,6 @@ vi.mock("@aws-sdk/s3-presigned-post", () => ({
 }));
 
 import { handler } from "../functions/admin/upload";
-import { checkUsageLimit } from "../functions/utils";
 import { jsonApiEvent } from "./helpers/events";
 
 const dynamoMock = mockClient(DynamoDBDocumentClient);
@@ -50,11 +49,10 @@ describe("upload validation", () => {
     vi.clearAllMocks();
   });
 
-  it("rejects uploads once the account reaches the storage cap", async () => {
-    vi.mocked(checkUsageLimit).mockResolvedValueOnce({
-      allowed: true,
-      summary: { storageBytes: 1024 * 1024 * 1024 },
-    } as Awaited<ReturnType<typeof checkUsageLimit>>);
+  it("rejects uploads once the consistent account read reaches the storage cap", async () => {
+    dynamoMock
+      .on(GetCommand, { Key: { pk: "ACCOUNT#user-1", sk: "PROFILE" } })
+      .resolves({ Item: { storageBytes: 1024 * 1024 * 1024 } });
 
     const response = await handler(
       jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
@@ -145,7 +143,11 @@ describe("upload validation", () => {
       .resolvesOnce({ Item: { uploadSeq: 4 } });
 
     const response = await handler(
-      jsonApiEvent({ filename: "file.pdf", mimeType: "application/pdf" }),
+      jsonApiEvent({
+        filename: "file.pdf",
+        mimeType: "application/pdf",
+        tags: ["Beta ", "beta", "  "],
+      }),
     );
     const body = JSON.parse(response.body!);
 
@@ -157,6 +159,8 @@ describe("upload validation", () => {
       dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
         .TransactItems!;
     expect(meta.Update!.ConditionExpression).toContain("#s = :expected");
+    // The pending tags replace the document's on success, so they are normalized too.
+    expect(meta.Update!.ExpressionAttributeValues?.[":tags"]).toEqual(["Beta"]);
     expect(account.Update!.ConditionExpression).toBe(
       "attribute_not_exists(uploadSeq) OR uploadSeq = :seen",
     );
@@ -398,6 +402,26 @@ describe("upload validation", () => {
       ":next": 8,
       ":seen": 7,
     });
+  });
+
+  it("stores normalized tags and signs a form that expires with its in-flight window", async () => {
+    await handler(
+      jsonApiEvent({
+        filename: "paper.pdf",
+        mimeType: "application/pdf",
+        tags: [" Alpha ", "alpha", "", "Beta"],
+      }),
+    );
+
+    const meta =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems![1].Put!.Item!;
+    // Edits store tags through the same normalization, so both keep one set.
+    expect(meta.tags).toEqual(["Alpha", "Beta"]);
+    const expires = vi.mocked(createPresignedPost).mock.calls[0][1].Expires!;
+    // The caps stop counting an UPLOADED document 15 minutes after its updatedAt.
+    expect(expires).toBeLessThan(900);
+    expect(expires).toBeGreaterThan(890);
   });
 
   it("starts the uploadSeq for an account that has none", async () => {

@@ -24,8 +24,10 @@ import {
   isShortStringArray,
   MAX_IMAGE_UPLOAD_BYTES,
   MAX_METADATA_BYTES,
+  MAX_STORAGE_BYTES,
   MAX_UPLOAD_BYTES,
   metadataBytes,
+  normalizeTags,
   recordUsage,
   REPLACEMENT_TTL_MS,
 } from "../utils";
@@ -35,10 +37,6 @@ const TableName = process.env.TABLE_NAME!;
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
 const RateLimitsTableName = process.env.RATE_LIMITS_TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
-const MAX_STORAGE_BYTES = parseInt(
-  process.env.MAX_STORAGE_BYTES ?? "1073741824",
-  10,
-);
 // Bounds GET /documents, which reads every document, and one account's share of
 // the pipeline queue.
 const MAX_DOCUMENTS = 1000;
@@ -86,7 +84,7 @@ export async function handler(
     };
   }
 
-  const { allowed: usageAllowed, summary } = await checkUsageLimit(
+  const { allowed: usageAllowed } = await checkUsageLimit(
     userId,
     AccountsTableName,
   );
@@ -164,7 +162,6 @@ export async function handler(
     const refusal = await commitWithinCaps(
       userId,
       documentId,
-      summary.storageBytes,
       !document,
       (seenSeq, recentUploads): Promise<"busy" | "committed" | "conflict"> =>
         document
@@ -202,12 +199,18 @@ export async function handler(
       conditions.push(["eq", "$x-amz-meta-upload-token", replacementToken]);
     }
 
+    // The form expires within REPLACEMENT_TTL_MS of the committed updatedAt (or
+    // replacementExpiresAt), so it never outlives the window the caps count it in.
     const upload = await createPresignedPost(s3, {
       Bucket: StorageBucketName,
       Key: sourceKey,
       Fields: fields,
       Conditions: conditions,
-      Expires: 900,
+      Expires: Math.max(
+        1,
+        Math.floor((Date.parse(now) + REPLACEMENT_TTL_MS - Date.now()) / 1000) -
+          1,
+      ),
     });
 
     await recordUsage(userId, AccountsTableName, "upload", 1);
@@ -247,8 +250,8 @@ async function checkAccountLimits(
   isNew: boolean,
   recentUploads: Record<string, number>,
 ): Promise<{ error: string; code?: string } | null> {
-  // Bytes are counted when S3 accepts a file, so an account can pass the cap
-  // by the uploads already in flight.
+  // Bytes are counted when S3 accepts a file, so an account can pass the cap by
+  // the uploads already in flight: at most MAX_IN_FLIGHT_DOCUMENTS of them.
   if (storageBytes >= MAX_STORAGE_BYTES) {
     return { error: "Storage limit reached. Delete documents to upload more." };
   }
@@ -298,7 +301,6 @@ async function checkAccountLimits(
 async function commitWithinCaps(
   userId: string,
   documentId: string,
-  storageBytes: number,
   isNew: boolean,
   write: (
     seenSeq: number,
@@ -307,16 +309,18 @@ async function commitWithinCaps(
 ): Promise<APIGatewayProxyStructuredResultV2 | null> {
   // A commit between the count and the write moves uploadSeq, so concurrent uploads cannot both
   // pass the caps. Each commit also lands in recentUploads, which covers GSI2 replication lag.
+  // Storage is read in the same consistent read, which bounds the overshoot (proofs/UploadCaps.lean).
   for (let attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt += 1) {
     const account = await dynamo.send(
       new GetCommand({
         TableName: AccountsTableName,
         Key: { pk: `ACCOUNT#${userId}`, sk: "PROFILE" },
-        ProjectionExpression: "uploadSeq, recentUploads",
+        ProjectionExpression: "uploadSeq, recentUploads, storageBytes",
         ConsistentRead: true,
       }),
     );
     const seenSeq: number = account.Item?.uploadSeq ?? 0;
+    const storageBytes: number = account.Item?.storageBytes ?? 0;
     const nowMs = Date.now();
     const recentUploads = Object.fromEntries(
       Object.entries(
@@ -410,7 +414,7 @@ async function createDocument(
                 sourceKey: sourceKey,
                 mimeType: mimeType,
                 status: "UPLOADED",
-                tags: body.tags ?? null,
+                tags: normalizeTags(body.tags),
                 authors: body.authors ?? null,
                 year: body.year ?? null,
                 createdAt: now,
@@ -465,7 +469,7 @@ async function reserveReplacement(
   recentUploads: Record<string, number>,
 ): Promise<"busy" | "committed" | "conflict"> {
   const replacementExpiresAt = new Date(
-    Date.now() + REPLACEMENT_TTL_MS,
+    Date.parse(now) + REPLACEMENT_TTL_MS,
   ).toISOString();
 
   try {
@@ -487,7 +491,7 @@ async function reserveReplacement(
                 ":previous": document.status,
                 ":filename": filename,
                 ":title": body.title ?? filename,
-                ":tags": body.tags ?? null,
+                ":tags": normalizeTags(body.tags),
                 ":authors": body.authors ?? null,
                 ":year": body.year ?? null,
                 ":now": now,

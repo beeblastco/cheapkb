@@ -786,7 +786,13 @@ export default $config({
       environment: baseEnv,
       permissions: [
         {
-          actions: ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem"],
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:Query",
+            "dynamodb:TransactWriteItems",
+            "dynamodb:UpdateItem",
+          ],
           resources: [tagsTable.arn],
         },
       ],

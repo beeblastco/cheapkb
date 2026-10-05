@@ -142,14 +142,15 @@ export async function handler(
   const targetStep = rechunk ? "CHUNKING" : "PARSING";
 
   // The status and updatedAt match makes a second concurrent reindex lose. A pending
-  // replacement deletes the chunks it would re-chunk, so it refuses that too.
+  // replacement deletes the chunks it would re-chunk, so it refuses that too. reindexedAt
+  // keeps embed messages from before the reset out of the new embeddedCount.
   try {
     await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t",
+          "SET #s = :s, lastError = :null, retryCount = :zero, embeddedCount = :zero, failedStep = :null, updatedAt = :t, reindexedAt = :t",
         ConditionExpression: doc.updatedAt
           ? "#s = :current AND updatedAt = :updatedAt AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)"
           : "#s = :current AND attribute_not_exists(updatedAt) AND (attribute_not_exists(replacementToken) OR attribute_not_exists(replacementExpiresAt) OR replacementExpiresAt < :replacementCutoff)",

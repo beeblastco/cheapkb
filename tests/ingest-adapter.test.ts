@@ -102,6 +102,58 @@ describe("S3 ingest adapter", () => {
     );
   });
 
+  it("does not recreate a document deleted before its failure is recorded", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { status: "UPLOADED", mimeType: "image/png", userId: "user-1" },
+    });
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "gone" }),
+      );
+
+    await handler(s3Event("raw/doc-1/photo.png", 5242881));
+
+    // Without the condition the update is an upsert and leaves an orphan FAILED row.
+    expect(
+      dynamoMock.commandCalls(UpdateCommand)[0].args[0].input
+        .ConditionExpression,
+    ).toBe("attribute_exists(pk) AND #s <> :deleting");
+  });
+
+  it("keeps the queued check when a re-ingest does not change the size", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: { storageBytes: 100, createdAt: new Date().toISOString() },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "UPLOADED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 100,
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 100));
+
+    // Without it, a delete that lands meanwhile would still get a parse message.
+    const charge = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems ?? [])
+      .find(
+        (items) => items[1]?.Update?.ConditionExpression === "#s = :queued",
+      );
+    expect(charge).toBeDefined();
+  });
+
   it("charges only the source size delta on re-ingest", async () => {
     const now = new Date().toISOString();
     dynamoMock.on(GetCommand).callsFake((input) => {
@@ -143,6 +195,46 @@ describe("S3 ingest adapter", () => {
       .map((call) => call.args[0].input.TransactItems?.[0].Update)
       .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
     expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(100);
+  });
+
+  it("records the document's counted bytes in the storage charge's transaction", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: { storageBytes: 0, createdAt: new Date().toISOString() },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: { status: "UPLOADED", mimeType: "text/plain", userId: "user-1" },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 100));
+
+    // A second write could fail after the charge and leave bytes no document counts.
+    const charge = dynamoMock
+      .commandCalls(TransactWriteCommand)
+      .map((call) => call.args[0].input.TransactItems ?? [])
+      .find(
+        (items) => items[0]?.Update?.ExpressionAttributeValues?.[":nextBytes"],
+      );
+    expect(charge?.[1]?.Update?.Key).toEqual({ pk: "DOC#doc-1", sk: "META" });
+    expect(charge?.[1]?.Update?.ExpressionAttributeValues?.[":counted"]).toBe(
+      100,
+    );
+    expect(
+      dynamoMock
+        .commandCalls(UpdateCommand)
+        .some(
+          (call) =>
+            call.args[0].input.UpdateExpression ===
+            "SET countedBytes = :counted",
+        ),
+    ).toBe(false);
   });
 
   it("rolls back to uploaded when usage accounting fails", async () => {
@@ -310,6 +402,44 @@ describe("S3 ingest adapter", () => {
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 
+  it("removes an overwrite that would take the account past its storage cap", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 500,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 1,
+        },
+      };
+    });
+    // A settled document's form is re-posted with a larger file.
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 1000, VersionId: "v-overwrite" });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(
+      s3Mock.commandCalls(DeleteObjectCommand)[0].args[0].input.VersionId,
+    ).toBe("v-overwrite");
+  });
+
   it("does not recount a source whose size is already counted", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: {
@@ -407,6 +537,15 @@ describe("S3 ingest adapter", () => {
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(1);
     expect(dynamoMock.commandCalls(BatchWriteCommand)).toHaveLength(1);
     expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+    // An older chunk run can still write rows after the delete; reindexedAt makes them stale.
+    const promote = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find((call) =>
+        call.args[0].input.UpdateExpression?.includes("filename = :filename"),
+      );
+    expect(promote?.args[0].input.UpdateExpression).toContain(
+      "reindexedAt = :now",
+    );
   });
 
   it("rolls back a replacement that lands after its window instead of wiping data", async () => {
@@ -686,5 +825,333 @@ describe("S3 ingest adapter", () => {
       .map((call) => call.args[0].input.TransactItems?.[0].Update)
       .find((update) => update?.ExpressionAttributeValues?.[":nextBytes"]);
     expect(storageUpdate?.ExpressionAttributeValues?.[":nextBytes"]).toBe(50);
+  });
+  it("refuses a first file that lands after its upload stops counting and would pass the cap", async () => {
+    const now = Date.now();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 10,
+            storageCostCycleStart: new Date(now).toISOString(),
+            storageCostNano: 0,
+            storageCostUpdatedAt: new Date(now).toISOString(),
+            createdAt: new Date(now).toISOString(),
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      // The form was issued 20 minutes ago, so the caps no longer count this upload.
+      return {
+        Item: {
+          status: "UPLOADED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          updatedAt: new Date(now - 20 * 60 * 1000).toISOString(),
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+    const failure = dynamoMock
+      .commandCalls(UpdateCommand)
+      .find(
+        (call) =>
+          call.args[0].input.ExpressionAttributeValues?.[":s"] === "FAILED",
+      );
+    // Nothing was charged, so the count is left alone.
+    expect(failure?.args[0].input.UpdateExpression).not.toContain(
+      "countedBytes",
+    );
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+  });
+
+  it("charges a first file inside its upload window without the storage cap", async () => {
+    const now = Date.now();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 10,
+            storageCostCycleStart: new Date(now).toISOString(),
+            storageCostNano: 0,
+            storageCostUpdatedAt: new Date(now).toISOString(),
+            createdAt: new Date(now).toISOString(),
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "UPLOADED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          updatedAt: new Date(now - 60 * 1000).toISOString(),
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    // The caps already counted this upload in flight, which bounds the overshoot.
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
+  it("recounts the version under a refused overwrite", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 500,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 1,
+        },
+      };
+    });
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    // Another event already refused V4 and removed it, so V3 is current again.
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolvesOnce({ ContentLength: 1000, VersionId: "v4" })
+      .resolves({ ContentLength: 300, VersionId: "v3" });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    expect(
+      s3Mock
+        .commandCalls(DeleteObjectCommand)
+        .map((call) => call.args[0].input.VersionId),
+    ).toEqual(["v4"]);
+    const charge =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems;
+    expect(charge?.[1].Update?.ExpressionAttributeValues?.[":counted"]).toBe(
+      300,
+    );
+  });
+
+  it("keeps a failed upload's file when the allowance refuses it inside its window", async () => {
+    const now = new Date().toISOString();
+    usage.checkUsageLimit.mockResolvedValue({ allowed: false });
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 10,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      // A replacement finalized just before a crash is UPLOADED with its old count.
+      return {
+        Item: {
+          status: "UPLOADED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 20,
+          updatedAt: now,
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 5000, VersionId: "new" });
+
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+
+    // Only a late file is held to the cap, so the user's new file is not removed.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
+  });
+  it("charges a replacement landing in its late grace as in flight, near the cap", async () => {
+    const now = Date.now();
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 10,
+            storageCostCycleStart: new Date(now).toISOString(),
+            storageCostNano: 0,
+            storageCostUpdatedAt: new Date(now).toISOString(),
+            createdAt: new Date(now).toISOString(),
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      // The form expired five minutes ago; the caps count it through the 15-minute grace.
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: 20,
+          replacementToken: "token-1",
+          replacementExpiresAt: new Date(now - 5 * 60 * 1000).toISOString(),
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(QueryCommand).resolves({ Items: [] });
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ Metadata: { "upload-token": "token-1" } });
+    s3Mock.on(ListObjectVersionsCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+
+    // No cap applies, so the replacement is never half-done: charged and queued.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(1);
+    const charge =
+      dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+        .TransactItems;
+    expect(charge?.[1].Update?.ExpressionAttributeValues?.[":counted"]).toBe(
+      5000,
+    );
+  });
+
+  it("refuses a late file of a finalized replacement without touching its count, and a redelivery changes nothing", async () => {
+    const now = Date.now();
+    const doc: Record<string, unknown> = {
+      status: "UPLOADED",
+      mimeType: "text/plain",
+      userId: "user-1",
+      countedBytes: 20,
+      updatedAt: new Date(now - 20 * 60 * 1000).toISOString(),
+    };
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 10,
+            storageCostCycleStart: new Date(now).toISOString(),
+            storageCostNano: 0,
+            storageCostUpdatedAt: new Date(now).toISOString(),
+            createdAt: new Date(now).toISOString(),
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      return { Item: doc };
+    });
+    dynamoMock.on(UpdateCommand).callsFake((input) => {
+      if (input.ExpressionAttributeValues?.[":s"] === "FAILED") {
+        doc.status = "FAILED";
+      }
+      return {};
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    // Once the new version is removed, S3 serves the original 20-byte file again.
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 20, VersionId: "v1" });
+
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(doc.countedBytes).toBe(20);
+    // Only the refused version goes; the redelivery finds the original counted and keeps it.
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+  });
+
+  it("keeps a version another event charged while this one was refused", async () => {
+    const now = new Date().toISOString();
+    let documentReads = 0;
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk === "PROFILE") {
+        return {
+          Item: {
+            storageBytes: 1073741824 - 500,
+            storageCostCycleStart: now,
+            storageCostNano: 0,
+            storageCostUpdatedAt: now,
+            createdAt: now,
+          },
+        };
+      }
+      if (input.Key?.pk === "ACCOUNT#user-1") return {};
+      documentReads += 1;
+      // The last read sees the count another event moved to this version.
+      return {
+        Item: {
+          status: "EMBEDDED",
+          mimeType: "text/plain",
+          userId: "user-1",
+          countedBytes: documentReads >= 3 ? 1000 : 1,
+        },
+      };
+    });
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 1000, VersionId: "v4" });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 1000));
+
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+  });
+
+  it("rolls back a redelivered replacement past its grace without charging it", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        status: "EMBEDDED",
+        mimeType: "text/plain",
+        userId: "user-1",
+        countedBytes: 20,
+        replacementToken: "token-1",
+        replacementPreviousStatus: "EMBEDDED",
+        replacementExpiresAt: new Date(
+          Date.now() - 15 * 60 * 1000,
+        ).toISOString(),
+      },
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(HeadObjectCommand).resolves({
+      Metadata: { "upload-token": "token-1" },
+    });
+    s3Mock.on(ListObjectVersionsCommand).resolves({
+      Versions: [{ Key: "raw/doc-1/sample.txt", VersionId: "v2" }],
+    });
+    s3Mock.on(DeleteObjectCommand).resolves({});
+
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+    await handler(s3Event("raw/doc-1/sample.txt", 5000));
+
+    // Within a minute of the grace the caps may stop counting it, so it reverts.
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
   });
 });

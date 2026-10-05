@@ -739,4 +739,224 @@ describe("multimodal pipeline", () => {
     expect(result.batchItemFailures).toEqual([]);
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
   });
+  it("drops a chunk message from before the document's last reindex", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "user-1", reindexedAt: "2026-01-02T00:00:00.000Z" },
+    });
+
+    const result = await embed(
+      sqsEvent("embed-stale", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    // The reindex reset embeddedCount, so counting this chunk would finish the document early.
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(bedrockMock.calls()).toHaveLength(0);
+  });
+
+  it("counts a chunk only when it is newer than the last reindex", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    await embed(sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0")));
+
+    const meta = dynamoMock
+      .commandCalls(TransactWriteCommand)[0]
+      .args[0].input.TransactItems?.at(-1)?.Update;
+    expect(meta?.ConditionExpression).toContain("reindexedAt < :createdAt");
+    expect(meta?.ExpressionAttributeValues?.[":createdAt"]).toBe(CHUNKED_AT);
+  });
+
+  it("leaves a chunk the reindex will redo when its count is refused", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).callsFake(() => {
+      const error = new Error("cancelled");
+      error.name = "TransactionCanceledException";
+      throw error;
+    });
+    // The first META read missed the reindex; the strong read after the cancel sees it.
+    let metaReads = 0;
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.sk !== "META") {
+        return { Item: { createdAt: CHUNKED_AT, status: "QUEUED" } };
+      }
+      metaReads += 1;
+      return metaReads === 1
+        ? { Item: { userId: "user-1", status: "EMBEDDING" } }
+        : {
+            Item: {
+              userId: "user-1",
+              status: "QUEUED",
+              reindexedAt: "2026-01-02T00:00:00.000Z",
+            },
+          };
+    });
+
+    const result = await embed(
+      sqsEvent("embed-raced", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+  });
+  it("never cuts the chunk preview inside a surrogate pair", async () => {
+    // 199 ASCII characters put the 200-unit cut between an emoji's two halves.
+    const text = `${"a".repeat(199)}😀 tail`;
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    await embed(
+      sqsEvent(
+        "embed-emoji",
+        embedMessage("doc-1", "chunk_doc-1_0", {
+          modality: "text",
+          text: text,
+        }),
+      ),
+    );
+
+    const metadata = vectorsMock.commandCalls(PutVectorsCommand)[0].args[0]
+      .input.vectors?.[0].metadata as Record<string, string>;
+    expect(metadata.chunkPreview).toBe("a".repeat(199));
+  });
+
+  it("writes vectors when VECTOR_BATCH is set to zero", async () => {
+    process.env.VECTOR_BATCH = "0";
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 1));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+
+    try {
+      await embed(
+        sqsEvent("embed-zero", embedMessage("doc-1", "chunk_doc-1_0")),
+      );
+    } finally {
+      delete process.env.VECTOR_BATCH;
+    }
+
+    // A batch size of zero used to loop forever.
+    expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(1);
+  });
+
+  it("drops a chunk created in the same millisecond as the reindex", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "user-1", reindexedAt: CHUNKED_AT },
+    });
+
+    const result = await embed(
+      sqsEvent("embed-tie", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    // The chunk stage stamps rows strictly after reindexedAt, so a tie is an old row.
+    expect(bedrockMock.calls()).toHaveLength(0);
+  });
+
+  it("conditions a mixed-generation group on its oldest chunk", async () => {
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const newer = sqsEvent(
+      "embed-new",
+      JSON.stringify({
+        ...JSON.parse(embedMessage("doc-1", "chunk_doc-1_0")),
+        createdAt: "2026-03-01T00:00:00.000Z",
+      }),
+    );
+    const older = sqsEvent("embed-old", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    await embed({ Records: [...newer.Records, ...older.Records] });
+
+    // Any chunk not newer than reindexedAt must cancel the group, so the oldest decides.
+    const meta = dynamoMock
+      .commandCalls(TransactWriteCommand)[0]
+      .args[0].input.TransactItems?.at(-1)?.Update;
+    expect(meta?.ExpressionAttributeValues?.[":createdAt"]).toBe(CHUNKED_AT);
+  });
+  it("embeds in batches of ten when EMBED_BATCH is set to zero", async () => {
+    process.env.EMBED_BATCH = "0";
+    bedrockMock.send.callsFake(
+      bedrockEmbeddings(
+        [
+          [0.1, 0.2, 0.3],
+          [0.4, 0.5, 0.6],
+        ],
+        2,
+      ),
+    );
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const first = sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0"));
+    const second = sqsEvent("embed-b", embedMessage("doc-1", "chunk_doc-1_1"));
+
+    try {
+      await embed({ Records: [...first.Records, ...second.Records] });
+    } finally {
+      delete process.env.EMBED_BATCH;
+    }
+
+    // An unusable setting falls back to the default, so both chunks share one request.
+    expect(bedrockMock.calls()).toHaveLength(1);
+  });
+
+  it("writes at most 500 vectors per PutVectors whatever VECTOR_BATCH says", async () => {
+    process.env.EMBED_BATCH = "600";
+    process.env.VECTOR_BATCH = "1000";
+    bedrockMock.send.callsFake(async (command) => {
+      const count = JSON.parse(String(command.input.body)).inputs.length;
+      return bedrockEmbeddings(
+        Array.from({ length: count }, () => [0.1, 0.2, 0.3]),
+        count,
+      )(command);
+    });
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(GetCommand).resolves({ Item: { userId: "user-1" } });
+    const records = Array.from(
+      { length: 501 },
+      (_, index) =>
+        sqsEvent(
+          `embed-${index}`,
+          embedMessage("doc-1", `chunk_doc-1_${index}`),
+        ).Records[0],
+    );
+
+    try {
+      await embed({ Records: records });
+    } finally {
+      delete process.env.EMBED_BATCH;
+      delete process.env.VECTOR_BATCH;
+    }
+
+    // S3 Vectors rejects a PutVectors of more than 500 vectors.
+    expect(
+      vectorsMock
+        .commandCalls(PutVectorsCommand)
+        .map((call) => call.args[0].input.vectors?.length),
+    ).toEqual([500, 1]);
+  });
 });

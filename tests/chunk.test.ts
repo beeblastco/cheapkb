@@ -316,11 +316,109 @@ describe("chunk records", () => {
       .commandCalls(UpdateCommand)
       .find((call) => call.args[0].input.ExpressionAttributeValues?.[":c"]);
     expect(finish?.args[0].input.ExpressionAttributeValues?.[":c"]).toBe(1);
-    // No embed step will run, so the document is finished here.
+    // No embed step will run, so the document is finished here, once every chunk counted.
+    const done = dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input;
+    expect(done?.ExpressionAttributeValues).toEqual(
+      expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }),
+    );
+    expect(done?.ConditionExpression).toContain("embeddedCount >= :count");
+  });
+
+  it("keeps embedded chunks when a duplicate delivery reports a first receive", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler(
+      sqsEvent(
+        "chunk-duplicate",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
+
+    // Overwriting a counted EMBEDDED row would make embeddedCount count it twice.
     expect(
-      dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
-        .ExpressionAttributeValues,
-    ).toEqual(expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }));
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.ConditionExpression,
+    ).toBe("attribute_not_exists(pk) OR #s <> :embedded");
+  });
+
+  it("redoes chunks embedded before the reindex the document records", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: {
+        userId: "owner",
+        title: "Title",
+        reindexedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    // A reindex that restarts from parsing sends a chunk message without reindexedAt.
+    await handler(
+      sqsEvent(
+        "chunk-after-reparse",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
+
+    const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input;
+    expect(put.ConditionExpression).toContain("createdAt < :reindexedAt");
+    expect(put.ExpressionAttributeValues?.[":reindexedAt"]).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+  });
+
+  it("stamps chunks after the reindex even when this Lambda's clock trails it", async () => {
+    const reindexedAt = new Date(Date.now() + 60_000).toISOString();
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title", reindexedAt: reindexedAt },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler(
+      sqsEvent(
+        "chunk-skewed",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+          reindexedAt: reindexedAt,
+        }),
+      ),
+    );
+
+    // The embed stage drops chunks not created after the reindex, so this must be later.
+    const stamp = new Date(Date.parse(reindexedAt) + 1).toISOString();
+    expect(
+      dynamoMock.commandCalls(PutCommand)[0].args[0].input.Item?.createdAt,
+    ).toBe(stamp);
+    expect(sentMessages()[0].createdAt).toBe(stamp);
   });
 
   it("redoes chunks embedded before the reindex that a redelivery restarts", async () => {

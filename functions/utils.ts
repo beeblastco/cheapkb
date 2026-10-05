@@ -55,6 +55,10 @@ export const MAX_UPLOAD_BYTES = parseInt(
   process.env.MAX_UPLOAD_BYTES ?? "52428800",
   10,
 );
+export const MAX_STORAGE_BYTES = parseInt(
+  process.env.MAX_STORAGE_BYTES ?? "1073741824",
+  10,
+);
 export const MAX_IMAGE_UPLOAD_BYTES = Math.min(
   parseInt(process.env.MAX_IMAGE_UPLOAD_BYTES ?? "5242880", 10),
   5 * 1024 * 1024,
@@ -71,6 +75,11 @@ const COHERE_EMBEDDING_MODEL = "us.cohere.embed-v4:0";
 // form's TTL and the settled statuses are shared so upload, list and sweeper agree.
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000;
 export const REPLACEMENT_TTL_MS = 15 * 60 * 1000;
+// A replacement POST that starts just before its form expires can land this much later.
+export const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
+// A clock this far behind the last write is moved up to it; a write further ahead is
+// treated as a bad clock and ignored, so the row heals.
+const MAX_CLOCK_SKEW_MS = 60 * 1000;
 export const SETTLED_STATUSES = new Set([
   "DELETING",
   "EMBEDDED",
@@ -125,7 +134,6 @@ export async function checkRateLimit(
   refillPerHour: number,
   documentClient: DynamoDBDocumentClient = dynamo,
 ): Promise<{ allowed: boolean; remaining: number }> {
-  const now = new Date();
   const maxAttempts = 3;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -136,6 +144,10 @@ export async function checkRateLimit(
       }),
     );
     const item = result.Item as Record<string, unknown> | null;
+    // Within the skew allowance lastRefill never moves back (proofs/Proofs/RateLimit.lean).
+    const now = new Date(
+      skewTolerantNow(Date.parse(String(item?.lastRefill ?? ""))),
+    );
 
     if (!item) {
       try {
@@ -158,9 +170,12 @@ export async function checkRateLimit(
       }
     }
 
-    const lastRefill = new Date(item.lastRefill as string);
+    const lastRefillMs = Date.parse(String(item.lastRefill));
+    // A stamp further ahead than the skew allowance is a bad clock, so the bucket refills.
     const hoursPassed =
-      (now.getTime() - lastRefill.getTime()) / (1000 * 60 * 60);
+      lastRefillMs - now.getTime() > MAX_CLOCK_SKEW_MS
+        ? Infinity
+        : Math.max(0, (now.getTime() - lastRefillMs) / (1000 * 60 * 60));
     let tokens = Math.min(
       maxTokens,
       (item.tokens as number) + hoursPassed * refillPerHour,
@@ -177,11 +192,13 @@ export async function checkRateLimit(
           TableName: tableName,
           Key: { pk: `RATE#${userId}`, sk: `LIMIT#${operation}` },
           UpdateExpression: "SET tokens = :t, lastRefill = :lr",
-          ConditionExpression: "lastRefill = :oldLr",
+          // Two writes in one millisecond share lastRefill, so the tokens read are checked too.
+          ConditionExpression: "lastRefill = :oldLr AND tokens = :oldTokens",
           ExpressionAttributeValues: {
             ":t": tokens,
             ":lr": now.toISOString(),
             ":oldLr": item.lastRefill as string,
+            ":oldTokens": item.tokens as number,
           },
         }),
       );
@@ -420,14 +437,14 @@ export async function getUsageSummary(
   tableName: string,
 ): Promise<UsageSummary> {
   const account = await getOrCreateAccount(userId, tableName);
-  const nowMs = Date.now();
+  const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
+  const nowMs = skewTolerantNow(storageUpdatedAt);
   const cycle = currentCycle(account, nowMs);
 
   const startDay = dayKey(cycle.startMs);
   const endDay = dayKey(cycle.endMs - 1);
   const spentNano = await sumUsageNano(userId, tableName, startDay, endDay);
 
-  const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
   const tracksCurrentCycle =
     startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
     Number.isFinite(storageUpdatedAt) &&
@@ -789,7 +806,8 @@ export async function setDocumentStatus(
 }
 
 /** Adds deltaBytes to the account's storage and accrued cost, once per operationId.
- * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches. */
+ * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches.
+ * Returns false, writing nothing, when growth would take the total past capBytes. */
 export async function updateStorageBytes(
   userId: string,
   tableName: string,
@@ -797,8 +815,10 @@ export async function updateStorageBytes(
   operationId?: string,
   alsoWrite?: TransactItem,
   expectedBytes?: number,
-): Promise<void> {
-  if (deltaBytes === 0) return;
+  capBytes?: number,
+): Promise<boolean> {
+  // A paired write must still run, with its condition, when the bytes do not change.
+  if (deltaBytes === 0 && !alsoWrite) return true;
   const pk = `ACCOUNT#${userId}`;
   const operationKey = operationId ? `STORAGE#${operationId}` : undefined;
 
@@ -811,7 +831,7 @@ export async function updateStorageBytes(
           ConsistentRead: true,
         }),
       );
-      if (existing.Item) return;
+      if (existing.Item) return true;
     }
 
     const result = await dynamo.send(
@@ -824,12 +844,23 @@ export async function updateStorageBytes(
     const account = result.Item as AccountRow | undefined;
     if (!account) throw new Error("Account profile not found");
 
-    const nowMs = Date.now();
+    const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
+    // Within the skew allowance accrued cost is never dropped.
+    const nowMs = skewTolerantNow(previousUpdateMs);
     const now = new Date(nowMs).toISOString();
     const cycle = currentCycle(account, nowMs);
     const cycleStart = new Date(cycle.startMs).toISOString();
     const storageBytes = account.storageBytes ?? 0;
-    if (expectedBytes !== undefined && storageBytes !== expectedBytes) return;
+    if (expectedBytes !== undefined && storageBytes !== expectedBytes) {
+      return true;
+    }
+    if (
+      capBytes !== undefined &&
+      deltaBytes > 0 &&
+      storageBytes + deltaBytes > capBytes
+    ) {
+      return false;
+    }
     // A delete can outrun a reset that already removed its bytes; it settles at
     // 0 instead of failing, so the cleanup never gets stuck.
     const nextStorageBytes = Math.max(0, storageBytes + deltaBytes);
@@ -839,7 +870,6 @@ export async function updateStorageBytes(
       });
     }
 
-    const previousUpdateMs = Date.parse(account.storageCostUpdatedAt ?? "");
     const tracksCurrentCycle =
       startsSameDay(account.storageCostCycleStart, cycle.startMs) &&
       Number.isFinite(previousUpdateMs) &&
@@ -896,7 +926,7 @@ export async function updateStorageBytes(
       await dynamo.send(
         new TransactWriteCommand({ TransactItems: transactItems }),
       );
-      return;
+      return true;
     } catch (error) {
       if ((error as Error).name !== "TransactionCanceledException") throw error;
       if (attempt < 2) {
@@ -1043,8 +1073,8 @@ export function fitFilterableMetadata<T extends Record<string, unknown>>(
   return fitted as T;
 }
 
-/** Whether a document still counts against the in-flight limit: a pending replacement
- * until it expires, UPLOADED for 15 minutes and other unsettled statuses for an hour. */
+/** Whether a document counts against the in-flight limit: a pending replacement until it can
+ * no longer land, UPLOADED for 15 minutes and other unsettled statuses for an hour. */
 export function isDocumentInFlight(
   item: {
     status?: unknown;
@@ -1053,7 +1083,10 @@ export function isDocumentInFlight(
   },
   nowMs: number,
 ): boolean {
-  if (Date.parse(String(item.replacementExpiresAt ?? "")) > nowMs) return true;
+  const replacementEnd =
+    Date.parse(String(item.replacementExpiresAt ?? "")) +
+    LATE_REPLACEMENT_GRACE_MS;
+  if (replacementEnd > nowMs) return true;
   if (SETTLED_STATUSES.has(String(item.status))) return false;
   const windowMs =
     item.status === "UPLOADED" ? REPLACEMENT_TTL_MS : IN_FLIGHT_WINDOW_MS;
@@ -1116,6 +1149,23 @@ export function metadataBytes(
   return Buffer.byteLength(
     JSON.stringify([title ?? "", tags ?? [], authors ?? []]),
   );
+}
+
+/** Trims tags and drops blanks and case-insensitive duplicates; null when none remain.
+ * Upload and edit store tags through it, so both keep the same set. */
+export function normalizeTags(tags: unknown): string[] | null {
+  if (!Array.isArray(tags)) return null;
+  const deduped = new Map<string, string>();
+  for (const tag of tags as string[]) {
+    const trimmed = tag.trim();
+    if (!trimmed) continue;
+    // First occurrence wins, so the casing the user picked first survives a
+    // case-insensitive duplicate.
+    const key = trimmed.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, trimmed);
+  }
+
+  return deduped.size > 0 ? [...deduped.values()] : null;
 }
 
 export function storageCostNanoUsd(bytes: number, seconds: number): number {
@@ -1203,6 +1253,16 @@ function monthAnchor(year: number, monthIndex: number, day: number): number {
 
 function nanoUsdToUsd(nano: number): number {
   return nano / NANO_PER_USD;
+}
+
+/** Returns now, or the last write's time when this clock trails it by at most the skew
+ * allowance. Used where a row's time must not move back. */
+function skewTolerantNow(lastWriteMs: number): number {
+  const nowMs = Date.now();
+
+  return lastWriteMs > nowMs && lastWriteMs - nowMs <= MAX_CLOCK_SKEW_MS
+    ? lastWriteMs
+    : nowMs;
 }
 
 // Cycles used to start at the account's creation time; one stored from that

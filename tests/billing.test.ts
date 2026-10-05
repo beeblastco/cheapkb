@@ -189,6 +189,109 @@ describe("billing", () => {
         PRICING.storagePerGbMonth / 2,
       );
     });
+    it("keeps accrued storage cost when this Lambda's clock trails the last write", async () => {
+      const lastWrite = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(lastWrite - 5_000);
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 1024,
+          storageCostCycleStart: "2024-01-01T00:00:00.000Z",
+          storageCostNano: 777,
+          storageCostUpdatedAt: new Date(lastWrite).toISOString(),
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      try {
+        await updateStorageBytes("user-1", "table", 1024);
+      } finally {
+        clock.mockRestore();
+      }
+
+      // A skewed clock used to start the cycle's cost over and drop the 777 already accrued.
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(777);
+      expect(update?.ExpressionAttributeValues?.[":now"]).toBe(
+        new Date(lastWrite).toISOString(),
+      );
+    });
+    it("ignores a storage write stamped far in the future, so the row heals", async () => {
+      const now = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 1024,
+          storageCostCycleStart: "2024-01-01T00:00:00.000Z",
+          storageCostNano: 777,
+          storageCostUpdatedAt: "2025-01-16T00:00:00.000Z",
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      try {
+        await updateStorageBytes("user-1", "table", 1024);
+      } finally {
+        clock.mockRestore();
+      }
+
+      // Only a skew of up to a minute is trusted; a year ahead would freeze the cycle.
+      const update =
+        dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
+          .TransactItems?.[0].Update;
+      expect(update?.ExpressionAttributeValues?.[":now"]).toBe(
+        new Date(now).toISOString(),
+      );
+      expect(update?.ExpressionAttributeValues?.[":cycleStart"]).toBe(
+        "2024-01-01T00:00:00.000Z",
+      );
+    });
+
+    it("charges growth that reaches the cap exactly and refuses one byte more", async () => {
+      const now = new Date().toISOString();
+      dynamoMock.on(GetCommand).resolves({
+        Item: {
+          pk: "ACCOUNT#user-1",
+          sk: "PROFILE",
+          storageBytes: 900,
+          storageCostCycleStart: now,
+          storageCostNano: 0,
+          storageCostUpdatedAt: now,
+          createdAt: now,
+        },
+      });
+      dynamoMock.on(TransactWriteCommand).resolves({});
+
+      const atCap = await updateStorageBytes(
+        "user-1",
+        "table",
+        100,
+        undefined,
+        undefined,
+        undefined,
+        1000,
+      );
+      const overCap = await updateStorageBytes(
+        "user-1",
+        "table",
+        101,
+        undefined,
+        undefined,
+        undefined,
+        1000,
+      );
+
+      expect(atCap).toBe(true);
+      expect(overCap).toBe(false);
+      expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
+    });
   });
 
   describe("billing cycle", () => {
@@ -323,6 +426,65 @@ describe("billing", () => {
       expect(embedUpdate.ExpressionAttributeValues[":c"]).toBe(
         Math.round(queryTokens * PRICING.embedPerToken),
       );
+    });
+
+    it("keeps accrued storage cost in the summary under a small clock skew", async () => {
+      const lastWrite = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(lastWrite - 5_000);
+      dynamoMock.on(GetCommand).callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? {
+              Item: {
+                storageBytes: 0,
+                storageCostCycleStart: "2024-01-01T00:00:00.000Z",
+                storageCostNano: 1_000_000,
+                storageCostUpdatedAt: new Date(lastWrite).toISOString(),
+                createdAt: "2024-01-01T00:00:00.000Z",
+                updatedAt: "2024-01-01T00:00:00.000Z",
+              },
+            }
+          : {},
+      );
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      try {
+        const summary = await getUsageSummary("user-1", "table");
+        expect(summary.storageUsd).toBe(0.001);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("sums the real cycle's usage when the storage write is far in the future", async () => {
+      const now = Date.UTC(2024, 0, 16);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      dynamoMock.on(GetCommand).callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? {
+              Item: {
+                storageBytes: 0,
+                storageCostCycleStart: "2025-01-01T00:00:00.000Z",
+                storageCostNano: 0,
+                storageCostUpdatedAt: "2025-01-16T00:00:00.000Z",
+                createdAt: "2024-01-01T00:00:00.000Z",
+                updatedAt: "2024-01-01T00:00:00.000Z",
+              },
+            }
+          : {},
+      );
+      dynamoMock.on(QueryCommand).resolves({ Items: [] });
+
+      try {
+        await getUsageSummary("user-1", "table");
+      } finally {
+        clock.mockRestore();
+      }
+
+      // A future cycle would read no usage rows and leave the allowance unenforced.
+      expect(
+        dynamoMock.commandCalls(QueryCommand)[0].args[0].input
+          .ExpressionAttributeValues?.[":start"],
+      ).toBe("USAGE#2024-01-01");
     });
 
     it("returns usage summary with default plan", async () => {

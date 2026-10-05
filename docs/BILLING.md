@@ -24,7 +24,7 @@ At `100%`, new billable activity pauses until the cycle resets or the account re
 
 ## Storage
 
-Storage is based on the original file bytes accepted by S3. Uploads add bytes, replacements and overwrites apply the size difference, and API or direct S3 deletions subtract bytes. New uploads are refused once an account reaches `MAX_STORAGE_BYTES` (1 GiB by default). Uploads already in progress can take it slightly past the cap. Each change records the cost accumulated at the previous size before applying the new size.
+Storage is based on the original file bytes accepted by S3. Uploads add bytes, replacements and overwrites apply the size difference, and API or direct S3 deletions subtract bytes. New uploads are refused once an account reaches `MAX_STORAGE_BYTES` (1 GiB by default). Uploads already in progress can take it past the cap, by at most 10 uploads of up to 50 MB each. Re-posting an upload form to replace a file with a larger one is refused once the account would pass the cap. Each change records the cost accumulated at the previous size before applying the new size.
 
 ```text
 storage cost = stored GiB × elapsed fraction of a 30-day month × $0.023

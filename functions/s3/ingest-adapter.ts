@@ -17,7 +17,10 @@ import {
   deleteDocumentVectors,
   dynamo,
   getDocument,
+  isDocumentInFlight,
+  LATE_REPLACEMENT_GRACE_MS,
   MAX_IMAGE_UPLOAD_BYTES,
+  MAX_STORAGE_BYTES,
   MAX_UPLOAD_BYTES,
   recordUsage,
   updateStorageBytes,
@@ -33,9 +36,8 @@ const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
 const VectorIndexName = process.env.VECTOR_INDEX_NAME!;
 const PipelineQueueUrl = process.env.PIPELINE_QUEUE_URL!;
 const DISPATCH_LEASE_MS = 60 * 1000;
-// A POST that starts just before its form expires can finish minutes later; edits
-// and reindex wait out the same grace, so nothing races a replacement before it.
-const LATE_REPLACEMENT_GRACE_MS = 15 * 60 * 1000;
+// This function's timeout, so a charge decided now commits within it.
+const INVOCATION_MS = 60 * 1000;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/gif",
@@ -65,6 +67,9 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     const eventId = `${documentId}:${record.s3.object.sequencer}`;
+    // The upload caps count a document only while it is in flight, so a file that lands
+    // later, or by the end of this invocation, is held to the storage cap.
+    const late = !isDocumentInFlight(doc, Date.parse(now) + INVOCATION_MS);
     if (await skipStaleReplacement(documentId, doc, key, eventId)) continue;
 
     const objectSize = Number(record.s3.object.size ?? 0);
@@ -86,7 +91,7 @@ export async function handler(event: S3Event): Promise<void> {
       continue;
     }
 
-    if (await refuseOverAllowance(documentId, doc, key, eventId, now)) {
+    if (await refuseOverAllowance(documentId, doc, key, eventId, now, late)) {
       continue;
     }
 
@@ -102,7 +107,7 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     if (isDispatched(doc)) {
-      await recountStorage(documentId, doc, key, eventId);
+      await recountStorage(documentId, doc, key, eventId, true);
       console.log(
         `[ingest-adapter] Document ${documentId} already dispatched, skipping`,
       );
@@ -118,16 +123,40 @@ export async function handler(event: S3Event): Promise<void> {
     }
 
     try {
-      await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
-      // Charge only the change in source size so a re-ingest or replacement
-      // does not double-count bytes already attributed to this document.
-      await updateStorageBytes(
+      // Charge only the change in source size so a re-ingest or replacement does not
+      // double-count bytes. The document's count moves in the same transaction, so a
+      // dispatch that fails afterwards cannot leave bytes no document accounts for.
+      const charged = await updateStorageBytes(
         doc.userId,
         AccountsTableName,
         objectSize - (doc.countedBytes ?? 0),
         `ingest:${eventId}`,
+        {
+          Update: {
+            TableName: TableName,
+            Key: { pk: `DOC#${documentId}`, sk: "META" },
+            UpdateExpression: "SET countedBytes = :counted",
+            ConditionExpression: "#s = :queued",
+            ExpressionAttributeNames: { "#s": "status" },
+            ExpressionAttributeValues: {
+              ":counted": objectSize,
+              ":queued": "QUEUED",
+            },
+          },
+        },
+        undefined,
+        late ? MAX_STORAGE_BYTES : undefined,
       );
-      await setCountedBytes(documentId, objectSize);
+      if (!charged) {
+        await refuseLateUpload(
+          documentId,
+          key,
+          record.s3.object.versionId,
+          now,
+        );
+        continue;
+      }
+      await recordUsage(doc.userId, AccountsTableName, "ingest", 1, eventId);
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: PipelineQueueUrl,
@@ -198,19 +227,18 @@ async function claimDispatch(
   }
 }
 
-/** Deletes the old derived data and promotes the pending replacement metadata. Returns
- * false for a stale event. Edits and reindex wait out the window, so only a delete or a
- * stray write from the old version's pipeline can change the row meanwhile. */
+/** Promotes a pending replacement after deleting the old derived data; false for a stale
+ * event. reindexedAt marks rows an older chunk run writes after the delete as stale. */
 async function finalizeReplacement(
   documentId: string,
   doc: DocumentRow,
   key: string,
   now: string,
 ): Promise<boolean> {
-  // Past the grace, edits and reindex may run again, so even a redriven event for a
-  // timely upload is rolled back rather than reset a document mid-operation.
+  // Past the grace, edits and reindex may run again and the caps stop counting it, so
+  // even a redriven event for a timely upload is rolled back, with this invocation's margin.
   const expiresAt = Date.parse(doc.replacementExpiresAt ?? "");
-  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now)) {
+  if (expiresAt + LATE_REPLACEMENT_GRACE_MS < Date.parse(now) + INVOCATION_MS) {
     await revertReplacement(
       documentId,
       doc,
@@ -236,7 +264,7 @@ async function finalizeReplacement(
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
-          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
+          "SET #s = :uploaded, filename = :filename, title = :title, tags = :tags, authors = :authors, #year = :year, updatedAt = :now, reindexedAt = :now REMOVE chunkCount, embeddedCount, lastError, retryCount, failedStep, replacementToken, replacementExpiresAt, replacementPreviousStatus, pendingFilename, pendingTitle, pendingTags, pendingAuthors, pendingYear",
         ConditionExpression: "replacementToken = :token AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status", "#year": "year" },
         ExpressionAttributeValues: {
@@ -281,51 +309,115 @@ async function markDispatchSent(
   );
 }
 
-/** Charges the source's current size after dispatch, since a presigned POST can overwrite it
- * for 15 minutes. The document's count moves in the same transaction. */
+/** Charges the source's current size, since a presigned POST can overwrite it for 15
+ * minutes. When capped, a version over the storage cap is removed and the one below rechecked. */
 async function recountStorage(
   documentId: string,
   doc: DocumentRow,
   key: string,
   eventId: string,
+  capped: boolean,
 ): Promise<void> {
-  let objectSize: number;
-  try {
-    const object = await s3.send(
-      new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
-    );
-    objectSize = object.ContentLength ?? 0;
-  } catch (error) {
-    if ((error as Error).name === "NotFound") return;
-    throw error;
-  }
-  const countedBytes = doc.countedBytes ?? 0;
-  if (objectSize === countedBytes) return;
+  // Two events can both refuse the newest version, so the one under it is recounted too.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let objectSize: number;
+    let versionId: string | undefined;
+    try {
+      const object = await s3.send(
+        new HeadObjectCommand({ Bucket: StorageBucketName, Key: key }),
+      );
+      objectSize = object.ContentLength ?? 0;
+      versionId = object.VersionId;
+    } catch (error) {
+      if ((error as Error).name === "NotFound") return;
+      throw error;
+    }
+    // Each pass reads the count consistently, since another event may have moved it.
+    const current = await getDocument(documentId, dynamo, TableName);
+    if (!current || current.status === "DELETING") return;
+    const countedBytes = current.countedBytes ?? 0;
+    if (objectSize === countedBytes) return;
 
-  await updateStorageBytes(
-    doc.userId,
-    AccountsTableName,
-    objectSize - countedBytes,
-    `recount:${eventId}:${objectSize}`,
-    {
-      Update: {
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: "META" },
-        UpdateExpression: "SET countedBytes = :counted",
-        ConditionExpression:
-          doc.countedBytes === undefined
-            ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
-            : "countedBytes = :previous AND #s <> :deleting",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":counted": objectSize,
-          ":deleting": "DELETING",
-          ...(doc.countedBytes === undefined
-            ? {}
-            : { ":previous": doc.countedBytes }),
+    const charged = await updateStorageBytes(
+      doc.userId,
+      AccountsTableName,
+      objectSize - countedBytes,
+      `recount:${eventId}:${objectSize}`,
+      {
+        Update: {
+          TableName: TableName,
+          Key: { pk: `DOC#${documentId}`, sk: "META" },
+          UpdateExpression: "SET countedBytes = :counted",
+          ConditionExpression:
+            current.countedBytes === undefined
+              ? "attribute_not_exists(countedBytes) AND #s <> :deleting"
+              : "countedBytes = :previous AND #s <> :deleting",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: {
+            ":counted": objectSize,
+            ":deleting": "DELETING",
+            ...(current.countedBytes === undefined
+              ? {}
+              : { ":previous": current.countedBytes }),
+          },
         },
       },
-    },
+      undefined,
+      capped ? MAX_STORAGE_BYTES : undefined,
+    );
+    if (charged) return;
+    // Another event may have charged this version since; then it stays.
+    const latest = await getDocument(documentId, dynamo, TableName);
+    if (latest?.countedBytes === objectSize) return;
+    // Removing the refused version makes S3 serve the version under it again.
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: StorageBucketName,
+        Key: key,
+        VersionId: versionId,
+      }),
+    );
+    console.log(
+      `[ingest-adapter] Refused a version of ${documentId} over the storage cap`,
+    );
+  }
+}
+
+/** Fails a late file that would pass the storage cap and removes it. Its count is left as
+ * is, so it still matches the version S3 serves once this one is gone. */
+async function refuseLateUpload(
+  documentId: string,
+  key: string,
+  versionId: string | undefined,
+  now: string,
+): Promise<void> {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: "META" },
+        UpdateExpression:
+          "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
+        ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":deleting": "DELETING",
+          ":e": "Storage limit reached. Delete documents to upload more.",
+          ":f": "UPLOAD",
+          ":s": "FAILED",
+          ":t": now,
+        },
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+  }
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: StorageBucketName,
+      Key: key,
+      VersionId: versionId,
+    }),
   );
 }
 
@@ -337,6 +429,7 @@ async function refuseOverAllowance(
   key: string,
   eventId: string,
   now: string,
+  late: boolean,
 ): Promise<boolean> {
   if (doc.status !== "UPLOADED" && !doc.replacementToken) return false;
   const { allowed } = await checkUsageLimit(doc.userId, AccountsTableName);
@@ -352,7 +445,7 @@ async function refuseOverAllowance(
     throw new Error(`Upload ${documentId} was claimed concurrently`);
   }
   // A failed upload keeps its source, so its bytes are charged like any other.
-  await recountStorage(documentId, doc, key, eventId);
+  await recountStorage(documentId, doc, key, eventId, late);
 
   return true;
 }
@@ -446,26 +539,6 @@ async function rollbackQueueStatus(
   );
 }
 
-/** Stores the source bytes already charged to the user for this document. */
-async function setCountedBytes(
-  documentId: string,
-  countedBytes: number,
-): Promise<void> {
-  await dynamo.send(
-    new UpdateCommand({
-      TableName: TableName,
-      Key: { pk: `DOC#${documentId}`, sk: "META" },
-      UpdateExpression: "SET countedBytes = :counted",
-      ConditionExpression: "#s = :queued",
-      ExpressionAttributeNames: { "#s": "status" },
-      ExpressionAttributeValues: {
-        ":counted": countedBytes,
-        ":queued": "QUEUED",
-      },
-    }),
-  );
-}
-
 /** Returns true when this event wrote through an old token-less POST while a
  * replacement is pending; its bytes are charged and dispatch is skipped. */
 async function skipStaleReplacement(
@@ -480,7 +553,9 @@ async function skipStaleReplacement(
   );
   if (object.Metadata?.["upload-token"] === doc.replacementToken) return false;
   // The old token-less POST can still overwrite a dispatched source, so charge what now sits there.
-  if (isDispatched(doc)) await recountStorage(documentId, doc, key, eventId);
+  if (isDispatched(doc)) {
+    await recountStorage(documentId, doc, key, eventId, true);
+  }
   console.log(
     `[ingest-adapter] Skipping stale replacement event for ${documentId}`,
   );
@@ -488,7 +563,8 @@ async function skipStaleReplacement(
   return true;
 }
 
-/** Marks the document FAILED at the UPLOAD step with the given error. */
+/** Marks the document FAILED at the UPLOAD step with the given error. Returns false when the
+ * document is gone or being deleted, or, with onlyIfUploaded, was claimed meanwhile. */
 async function updateFailure(
   documentId: string,
   error: string,
@@ -502,23 +578,26 @@ async function updateFailure(
         Key: { pk: `DOC#${documentId}`, sk: "META" },
         UpdateExpression:
           "SET #s = :s, lastError = :e, failedStep = :f, updatedAt = :t",
-        // Another event may have claimed the upload since it was read.
-        ConditionExpression: onlyIfUploaded ? "#s = :uploaded" : undefined,
+        // Another event may have claimed the upload since it was read. An unconditional
+        // update would recreate a row a delete just removed.
+        ConditionExpression: onlyIfUploaded
+          ? "#s = :uploaded"
+          : "attribute_exists(pk) AND #s <> :deleting",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":s": "FAILED",
           ":e": error,
           ":f": "UPLOAD",
           ":t": now,
-          ...(onlyIfUploaded ? { ":uploaded": "UPLOADED" } : {}),
+          ...(onlyIfUploaded
+            ? { ":uploaded": "UPLOADED" }
+            : { ":deleting": "DELETING" }),
         },
       }),
     );
     return true;
   } catch (err) {
-    if (onlyIfUploaded && err instanceof ConditionalCheckFailedException) {
-      return false;
-    }
+    if (err instanceof ConditionalCheckFailedException) return false;
     throw err;
   }
 }

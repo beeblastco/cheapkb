@@ -6,7 +6,7 @@ import type {
   APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
-import type { ChunkItem } from "../types";
+import type { ChunkItem, DocumentRow } from "../types";
 import {
   deleteDocumentChunkRecords,
   deleteDocumentS3Data,
@@ -54,10 +54,12 @@ export async function handler(
     };
   }
 
-  // Pipeline stages refuse to write to a DELETING document, so nothing they
-  // write after this point outlives the cleanup below.
+  // Pipeline stages refuse to write to a DELETING document, so nothing they write after
+  // this point outlives the cleanup below. Only this delete sets countedBytes after the
+  // mark, for a legacy document, so the refund uses the value the mark returns.
+  let countedBytes: number | undefined;
   try {
-    await markDeleting(documentId, null);
+    ({ countedBytes } = await markDeleting(documentId, null));
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
     return markRefusedResponse(documentId);
@@ -66,7 +68,7 @@ export async function handler(
   // Older documents have no countedBytes, so the size is read and saved before
   // the source is deleted; a retry then refunds it. Other errors stop the delete.
   let sourceSize = 0;
-  if (typeof doc.countedBytes !== "number" && doc.sourceKey) {
+  if (typeof countedBytes !== "number" && doc.sourceKey) {
     try {
       const head = await s3.send(
         new HeadObjectCommand({
@@ -147,7 +149,7 @@ export async function handler(
   }
 
   const decrement =
-    typeof doc.countedBytes === "number" ? doc.countedBytes : sourceSize;
+    typeof countedBytes === "number" ? countedBytes : sourceSize;
   try {
     await updateStorageBytes(
       doc.userId,
@@ -193,13 +195,13 @@ export async function handler(
 }
 
 /** A failed delete stays DELETING so in-flight pipeline work still cannot write
- * to it; lastError tells the user to delete again. */
+ * to it; lastError tells the user to delete again. Returns the counted bytes to refund. */
 async function markDeleting(
   documentId: string,
   lastError: string | null,
-): Promise<void> {
+): Promise<{ countedBytes?: number }> {
   const now = new Date().toISOString();
-  await dynamo.send(
+  const result = await dynamo.send(
     new UpdateCommand({
       TableName: TableName,
       Key: { pk: `DOC#${documentId}`, sk: "META" },
@@ -219,8 +221,13 @@ async function markDeleting(
         ":s": "DELETING",
         ":t": now,
       },
+      ReturnValues: "ALL_NEW",
     }),
   );
+
+  return {
+    countedBytes: (result.Attributes as DocumentRow | undefined)?.countedBytes,
+  };
 }
 
 /** The first mark fails when the row vanished or an edit lease is live; tell the two apart. */

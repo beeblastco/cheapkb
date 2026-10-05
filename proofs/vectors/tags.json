@@ -1,0 +1,13 @@
+[{"tags": [], "expected": null},
+ {"tags": ["  "], "expected": null},
+ {"tags": ["a"], "expected": ["a"]},
+ {"tags": ["Alpha", "alpha", "ALPHA"], "expected": ["Alpha"]},
+ {"tags": [" x ", "X", "y", "\u0009y\u0009"], "expected": ["x", "y"]},
+ {"tags": ["b", "", "  ", "B ", "c"], "expected": ["b", "c"]},
+ {"tags": ["Report 2024", "report 2024", "Report-2024"],
+  "expected": ["Report 2024", "Report-2024"]},
+ {"tags": ["one", "two", "One", "three", "TWO"], "expected": ["one", "two", "three"]},
+ {"tags": ["\u000cform\u000c", "FORM", " nbsp　", "NBSP"], "expected": ["form", "nbsp"]},
+ {"tags": ["Ñandú", "ñANDÚ", "Ωmega", "ωMEGA"], "expected": ["Ñandú", "Ωmega"]},
+ {"tags": ["Привет", "пРИВЕТ", "Ёлка", "ёлка", "日本", " 日本 "], "expected": ["Привет", "Ёлка", "日本"]},
+ {"tags": ["\u000c 　"], "expected": null}]

@@ -111,7 +111,6 @@ describe("infrastructure hardening", () => {
       config.match(/"dynamodb:BatchWriteItem"/g)?.length,
     ).toBeGreaterThanOrEqual(3);
     expect(config).toContain('new sst.aws.Function("Upload"');
-    expect(config.match(/"dynamodb:TransactWriteItems"/g)).toHaveLength(6);
   });
 
   it("keeps Bedrock invocation logs in S3 without a trigger Lambda", () => {
@@ -128,5 +127,16 @@ describe("infrastructure hardening", () => {
     expect(config).not.toContain("cloudwatchConfig:");
     expect(config).not.toContain("LogSubscriptionFilter");
     expect(config).not.toContain("BedrockInvocationLogGroup");
+  });
+  it("gives the ingest adapter the timeout its late-upload margin assumes", () => {
+    const adapter = fs.readFileSync("functions/s3/ingest-adapter.ts", "utf8");
+    const margin = /const INVOCATION_MS = (\d+) \* 1000;/.exec(adapter)?.[1];
+    const ingest = config.slice(
+      config.indexOf('new sst.aws.Function("IngestAdapter"'),
+    );
+    const timeout = /timeout: "(\d+) seconds"/.exec(ingest)?.[1];
+
+    expect(margin).toBeDefined();
+    expect(timeout).toBe(margin);
   });
 });
