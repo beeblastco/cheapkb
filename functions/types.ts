@@ -50,7 +50,6 @@ export interface AccountRow extends Account {
 export interface ChunkItem {
   pk: string;
   sk: string;
-  s3ChunkKey?: string;
   pageStart?: number;
   pageEnd?: number;
   tokenCount?: number;
@@ -110,6 +109,20 @@ export interface DocumentRow {
   dispatchEventId?: string;
   dispatchLeaseUntil?: string;
   dispatchState?: "CLAIMED" | "SENT";
+}
+
+// The chunk stage carries each chunk inline, so embedding reads no chunk object.
+export interface EmbedMessage {
+  stage: "embed";
+  documentId: string;
+  chunkId: string;
+  // The chunk row's createdAt; a message from an earlier chunking no longer matches it.
+  createdAt: string;
+  modality: "image" | "text";
+  text?: string;
+  tokenCount?: number;
+  pageStart: number;
+  pageEnd: number;
 }
 
 export interface Plan {

@@ -509,18 +509,15 @@ export default $config({
             resources: [
               pulumi.interpolate`${storage.arn}/raw/*`,
               pulumi.interpolate`${storage.arn}/parsed/*`,
-              pulumi.interpolate`${storage.arn}/chunks/*`,
             ],
           },
           {
             actions: ["s3:PutObject"],
-            resources: [
-              pulumi.interpolate`${storage.arn}/parsed/*`,
-              pulumi.interpolate`${storage.arn}/chunks/*`,
-            ],
+            resources: [pulumi.interpolate`${storage.arn}/parsed/*`],
           },
           {
             actions: [
+              "dynamodb:BatchWriteItem",
               "dynamodb:GetItem",
               "dynamodb:PutItem",
               "dynamodb:TransactWriteItems",
@@ -566,6 +563,7 @@ export default $config({
       description: "Vector similarity search with metadata filters",
       environment: embedEnv,
       permissions: [
+        // Only legacy vectors point at a chunk object; new ones carry their text.
         {
           actions: ["s3:GetObject"],
           resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
@@ -658,7 +656,6 @@ export default $config({
           resources: [accountsTable.arn, rateLimitsTable.arn],
         },
         { actions: ["dynamodb:GetItem"], resources: [plansTable.arn] },
-        { actions: ["s3:ListBucket"], resources: [storage.arn] },
         {
           actions: ["sqs:SendMessage"],
           resources: [pipelineQueue.arn],
@@ -720,28 +717,9 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "60 seconds",
       memory: "256 MB",
-      description:
-        "Update document metadata and propagate tags to chunks and vectors",
+      description: "Update document tags in metadata and vectors",
       environment: baseEnv,
       permissions: [
-        {
-          // Only chunk JSON is rewritten, and removed again when a delete ran
-          // mid-edit; raw uploads and parsed pages are never touched.
-          actions: [
-            "s3:GetObject",
-            "s3:PutObject",
-            "s3:DeleteObject",
-            "s3:DeleteObjectVersion",
-          ],
-          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
-        },
-        {
-          actions: ["s3:ListBucketVersions"],
-          resources: [storage.arn],
-          conditions: [
-            { test: "StringLike", variable: "s3:prefix", values: ["chunks/*"] },
-          ],
-        },
         {
           actions: [
             "dynamodb:GetItem",

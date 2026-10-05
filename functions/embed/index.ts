@@ -13,8 +13,9 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type { DocumentType } from "@smithy/types";
-import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import type { SQSBatchResponse, SQSEvent, SQSRecord } from "aws-lambda";
 import { encode } from "gpt-tokenizer";
+import type { EmbedMessage } from "../types";
 import {
   dynamo,
   embeddingDimension,
@@ -54,6 +55,11 @@ const MAX_COHERE_REQUEST_BYTES = 19 * 1024 * 1024;
 // Matches the pipeline Lambda timeout, so a crashed attempt's claim has expired
 // before SQS redelivers its message (visibility timeout 900 seconds).
 const EMBED_CLAIM_LEASE_MS = 300_000;
+// S3 Vectors allows 40 KB of metadata per vector, 2 KB of it filterable. The full
+// chunk text (about 3 KB at 700 tokens) is kept so search needs no S3 read.
+const MAX_VECTOR_TEXT_BYTES = 32 * 1024;
+// A transaction holds up to 100 items: the chunk rows plus their META row.
+const MAX_TRANSACT_CHUNKS = 99;
 
 interface ChunkMetadata {
   documentId: string;
@@ -67,7 +73,6 @@ interface ChunkMetadata {
   year?: number;
   pageStart?: number;
   pageEnd?: number;
-  s3ChunkKey: string;
   sourceKey?: string;
   modality: "image" | "text";
   mimeType?: string;
@@ -75,8 +80,22 @@ interface ChunkMetadata {
   chunkPreview?: string;
 }
 
+interface EmbeddingChunk {
+  attempt: number;
+  chunkId: string;
+  createdAt: string;
+  documentId: string;
+  messageId: string;
+  modality: "image" | "text";
+  pageEnd?: number;
+  pageStart?: number;
+  text: string;
+  tokenCount?: number;
+}
+
 interface EmbeddingWork {
   attempt: number;
+  createdAt: string;
   imageBase64?: string;
   imageFormat?: "gif" | "jpeg" | "png" | "webp";
   messageId: string;
@@ -86,35 +105,16 @@ interface EmbeddingWork {
 
 /** Embed stage entry, called by the pipeline router with embed records. */
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
-  const chunks: Array<{
-    documentId: string;
-    s3ChunkKey: string;
-    messageId: string;
-    attempt: number;
-  }> = [];
+  const chunks: EmbeddingChunk[] = [];
   const failedMessageIds = new Set<string>();
 
   for (const record of event.Records) {
-    let body: { documentId?: string; s3ChunkKey?: string };
-    try {
-      body = JSON.parse(record.body);
-    } catch {
-      console.error("[embed] Invalid JSON in record:", record.messageId);
+    const chunk = parseEmbedRecord(record);
+    if (chunk) {
+      chunks.push(chunk);
+    } else {
       failedMessageIds.add(record.messageId);
-      continue;
     }
-    const { documentId, s3ChunkKey } = body;
-    if (!documentId || !s3ChunkKey) {
-      console.error("[embed] Missing required fields:", record.messageId);
-      failedMessageIds.add(record.messageId);
-      continue;
-    }
-    chunks.push({
-      documentId: documentId,
-      s3ChunkKey: s3ChunkKey,
-      messageId: record.messageId,
-      attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
-    });
   }
 
   if (chunks.length === 0) {
@@ -182,16 +182,12 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
 /** Embeds one batch of chunks, writes their vectors and marks them embedded.
  * Returns the per-message failures for the handler to record. */
 async function batchProcess(
-  batch: Array<{
-    documentId: string;
-    s3ChunkKey: string;
-    messageId: string;
-    attempt: number;
-  }>,
+  batch: EmbeddingChunk[],
 ): Promise<
   Map<string, { attempt: number; documentId: string; error: unknown }>
 > {
-  const owners = new Map<string, string>();
+  // Title, tags and source come from META, read once per document in the batch.
+  const documents = new Map<string, ReturnType<typeof getDocument>>();
   const reconcileDocuments = new Set<string>();
   const failures = new Map<
     string,
@@ -201,77 +197,65 @@ async function batchProcess(
   const loaded = await Promise.all(
     batch.map(async (chunk): Promise<EmbeddingWork | undefined> => {
       try {
-        const resp = await s3.send(
-          new GetObjectCommand({
-            Bucket: StorageBucketName,
-            Key: chunk.s3ChunkKey,
-          }),
-        );
-        const chunkData = JSON.parse(await resp.Body!.transformToString());
-        let userId: string | undefined =
-          chunkData.userId ?? owners.get(chunk.documentId);
-        if (!userId) {
-          const doc = await getDocument(
-            chunk.documentId,
-            dynamo,
-            TableName,
-            false,
-          );
-          userId = doc?.userId;
-          if (!userId) throw new Error("Document owner is missing");
-          owners.set(chunk.documentId, userId);
+        let document = documents.get(chunk.documentId);
+        if (!document) {
+          document = getDocument(chunk.documentId, dynamo, TableName, false);
+          documents.set(chunk.documentId, document);
         }
-        const modality = chunkData.modality === "image" ? "image" : "text";
-        const text = typeof chunkData.text === "string" ? chunkData.text : "";
+        let doc = await document;
+        // An eventually consistent miss is confirmed with a strong read before dropping.
+        if (!doc || doc.status === "DELETING") {
+          doc = await getDocument(chunk.documentId, dynamo, TableName);
+        }
+        if (!doc || doc.status === "DELETING") {
+          console.log(`[embed] ${chunk.documentId} was deleted, dropping`);
+          return undefined;
+        }
+        if (!doc.userId) throw new Error("Document owner is missing");
+        const { modality, text } = chunk;
         if (modality === "text" && !text.trim()) return undefined;
         const tokenCount =
           modality === "text"
-            ? typeof chunkData.tokenCount === "number" &&
-              chunkData.tokenCount > 0
-              ? chunkData.tokenCount
+            ? typeof chunk.tokenCount === "number" && chunk.tokenCount > 0
+              ? chunk.tokenCount
               : encode(text, { disallowedSpecial: new Set() }).length
             : undefined;
         const metadata: ChunkMetadata = {
           documentId: chunk.documentId,
-          userId: userId,
-          chunkId: chunkData.chunkId,
+          userId: doc.userId,
+          chunkId: chunk.chunkId,
           modality: modality,
           ...(tokenCount ? { tokenCount: tokenCount } : {}),
-          ...(chunkData.title ? { title: chunkData.title } : {}),
-          ...(chunkData.tags ? { tags: chunkData.tags } : {}),
-          ...(chunkData.authors ? { authors: chunkData.authors } : {}),
-          ...(chunkData.year ? { year: chunkData.year } : {}),
-          ...(chunkData.mimeType ? { mimeType: chunkData.mimeType } : {}),
-          ...(chunkData.sourceKey ? { sourceKey: chunkData.sourceKey } : {}),
-          pageStart: chunkData.pageStart,
-          pageEnd: chunkData.pageEnd,
-          s3ChunkKey: chunk.s3ChunkKey,
+          ...(doc.title ? { title: doc.title } : {}),
+          ...(doc.tags ? { tags: doc.tags } : {}),
+          ...(doc.authors ? { authors: doc.authors } : {}),
+          ...(doc.year ? { year: doc.year } : {}),
+          ...(doc.mimeType ? { mimeType: doc.mimeType } : {}),
+          ...(doc.sourceKey ? { sourceKey: doc.sourceKey } : {}),
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
         };
 
-        // A duplicate message for an embedded chunk must not be embedded and
-        // billed again, whichever delivery it is.
-        const existing = await dynamo.send(
-          new GetCommand({
-            TableName: TableName,
-            Key: {
-              pk: `DOC#${chunk.documentId}`,
-              sk: `CHUNK#${metadata.chunkId}`,
-            },
-            ConsistentRead: true,
-          }),
+        // Only the delivery that claims the chunk calls Bedrock, so a duplicate
+        // message is never embedded and billed twice.
+        const claim = await claimChunk(
+          chunk.documentId,
+          metadata.chunkId,
+          chunk.createdAt,
         );
-        if (existing.Item?.status === "EMBEDDED") {
+        if (claim === "embedded") {
           reconcileDocuments.add(chunk.documentId);
           return undefined;
         }
-        // Two deliveries can both pass the read above, so only the one that
-        // claims the chunk calls Bedrock; the other is dropped.
-        if (
-          existing.Item &&
-          !(await claimChunk(chunk.documentId, metadata.chunkId))
-        ) {
+        if (claim === "held") {
           console.log(
             `[embed] ${metadata.chunkId} is claimed by another delivery, dropping`,
+          );
+          return undefined;
+        }
+        if (claim === "missing" || claim === "stale") {
+          console.log(
+            `[embed] ${metadata.chunkId} is ${claim}, its document was deleted or re-chunked, dropping`,
           );
           return undefined;
         }
@@ -296,6 +280,7 @@ async function batchProcess(
           }
           return {
             attempt: chunk.attempt,
+            createdAt: chunk.createdAt,
             imageBase64: Buffer.from(imageBytes).toString("base64"),
             imageFormat: imageFormat(metadata.mimeType),
             messageId: chunk.messageId,
@@ -306,6 +291,7 @@ async function batchProcess(
 
         return {
           attempt: chunk.attempt,
+          createdAt: chunk.createdAt,
           messageId: chunk.messageId,
           metadata: metadata,
           text: text,
@@ -331,6 +317,7 @@ async function batchProcess(
 
   const vectorBatch: Array<{
     attempt: number;
+    createdAt: string;
     data: number[];
     key: string;
     messageId: string;
@@ -338,21 +325,22 @@ async function batchProcess(
   }> = [];
   for (const item of workItems) {
     const meta = item.metadata;
-    const preview = item.text ?? "";
+    const fullText = item.text ?? "";
     const embedding = embeddingsByChunk.get(meta.chunkId);
     if (!embedding) continue;
     vectorBatch.push({
       key: meta.chunkId,
       data: embedding,
       attempt: item.attempt,
+      createdAt: item.createdAt,
       messageId: item.messageId,
       metadata: {
         ...fitFilterableMetadata({
           ...meta,
           embeddingModel: embeddingModel(),
         }),
-        text: preview.substring(0, 500),
-        chunkPreview: preview.substring(0, 200),
+        text: truncateUtf8(fullText, MAX_VECTOR_TEXT_BYTES),
+        chunkPreview: fullText.substring(0, 200),
       },
     });
   }
@@ -393,9 +381,20 @@ async function batchProcess(
     }
   }
 
+  const chunksByDocument = new Map<
+    string,
+    Array<{ chunkId: string; createdAt: string }>
+  >();
   for (const vector of writtenVectors) {
-    await markChunkEmbedded(vector.metadata.documentId, vector.key);
-    writtenDocuments.add(vector.metadata.documentId);
+    const { documentId } = vector.metadata;
+    chunksByDocument.set(documentId, [
+      ...(chunksByDocument.get(documentId) ?? []),
+      { chunkId: vector.key, createdAt: vector.createdAt },
+    ]);
+    writtenDocuments.add(documentId);
+  }
+  for (const [documentId, chunks] of chunksByDocument) {
+    await markChunksEmbedded(documentId, chunks);
   }
   await Promise.all(
     Array.from(writtenDocuments, (documentId) => markEmbedded(documentId)),
@@ -405,12 +404,13 @@ async function batchProcess(
   return failures;
 }
 
-/** Claims a chunk for this delivery, or returns false when another delivery holds a
- * live claim or the chunk is already embedded. */
+/** Claims a chunk for this delivery. A failed claim returns the row it saw, which tells an
+ * embedded chunk from a live claim, a row from a newer chunking, or one that no longer exists. */
 async function claimChunk(
   documentId: string,
   chunkId: string,
-): Promise<boolean> {
+  createdAt: string,
+): Promise<"claimed" | "embedded" | "held" | "missing" | "stale"> {
   const now = Date.now();
   try {
     await dynamo.send(
@@ -419,19 +419,24 @@ async function claimChunk(
         Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
         UpdateExpression: "SET embedClaimedAt = :now",
         ConditionExpression:
-          "attribute_exists(pk) AND #s <> :embedded AND (attribute_not_exists(embedClaimedAt) OR embedClaimedAt < :expired)",
+          "attribute_exists(pk) AND createdAt = :createdAt AND #s <> :embedded AND (attribute_not_exists(embedClaimedAt) OR embedClaimedAt < :expired)",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
+          ":createdAt": createdAt,
           ":embedded": "EMBEDDED",
           ":expired": now - EMBED_CLAIM_LEASE_MS,
           ":now": now,
         },
+        ReturnValuesOnConditionCheckFailure: "ALL_OLD",
       }),
     );
-    return true;
+    return "claimed";
   } catch (error) {
-    if (error instanceof ConditionalCheckFailedException) return false;
-    throw error;
+    if (!(error instanceof ConditionalCheckFailedException)) throw error;
+    if (!error.Item) return "missing";
+    if (error.Item.createdAt?.S !== createdAt) return "stale";
+
+    return error.Item.status?.S === "EMBEDDED" ? "embedded" : "held";
   }
 }
 
@@ -478,11 +483,12 @@ async function embedItems(
   }
 }
 
-/** Marks a chunk EMBEDDED and bumps the document count in one transaction.
- * A chunk already embedded is left alone; one whose document is gone loses its vector. */
+/** Marks a chunk EMBEDDED and bumps the document count in one transaction. A chunk already
+ * embedded is left alone; one whose document or chunk row is gone loses its vector. */
 async function markChunkEmbedded(
   documentId: string,
   chunkId: string,
+  createdAt: string,
 ): Promise<void> {
   try {
     await dynamo.send(
@@ -494,9 +500,12 @@ async function markChunkEmbedded(
               Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
               UpdateExpression: "SET #s = :embedded",
               ConditionExpression:
-                "attribute_exists(pk) AND (attribute_not_exists(#s) OR #s <> :embedded)",
+                "attribute_exists(pk) AND createdAt = :createdAt AND (attribute_not_exists(#s) OR #s <> :embedded)",
               ExpressionAttributeNames: { "#s": "status" },
-              ExpressionAttributeValues: { ":embedded": "EMBEDDED" },
+              ExpressionAttributeValues: {
+                ":createdAt": createdAt,
+                ":embedded": "EMBEDDED",
+              },
             },
           },
           {
@@ -520,10 +529,17 @@ async function markChunkEmbedded(
     );
   } catch (err) {
     if ((err as Error).name !== "TransactionCanceledException") throw err;
-    // Delete marks META as DELETING before it removes vectors, so a vector
-    // written after that point is removed here instead of staying searchable.
+    // Delete marks META as DELETING before it removes vectors, and a shorter re-chunk removes
+    // surplus rows, so a vector written after either is removed instead of staying searchable.
     const doc = await getDocument(documentId, dynamo, TableName);
-    if (!doc || doc.status === "DELETING") {
+    const existing = await dynamo.send(
+      new GetCommand({
+        TableName: TableName,
+        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+        ConsistentRead: true,
+      }),
+    );
+    if (!doc || doc.status === "DELETING" || !existing.Item) {
       await vectors.send(
         new DeleteVectorsCommand({
           vectorBucketName: VectorBucketName,
@@ -533,15 +549,62 @@ async function markChunkEmbedded(
       );
       return;
     }
-    const existing = await dynamo.send(
-      new GetCommand({
-        TableName: TableName,
-        Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
-        ConsistentRead: true,
-      }),
-    );
-    if (existing.Item?.status === "EMBEDDED") return;
+    // A newer chunking owns the row and writes its own vector under this key.
+    if (existing.Item.createdAt !== createdAt) return;
+    if (existing.Item.status === "EMBEDDED") return;
     throw err;
+  }
+}
+
+/** Marks a document's chunks EMBEDDED and adds them to its count, one transaction
+ * per 99 chunks. A cancelled group retries chunk by chunk to keep those semantics. */
+async function markChunksEmbedded(
+  documentId: string,
+  chunks: Array<{ chunkId: string; createdAt: string }>,
+): Promise<void> {
+  for (let i = 0; i < chunks.length; i += MAX_TRANSACT_CHUNKS) {
+    const group = chunks.slice(i, i + MAX_TRANSACT_CHUNKS);
+    try {
+      await dynamo.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            ...group.map(({ chunkId, createdAt }) => ({
+              Update: {
+                TableName: TableName,
+                Key: { pk: `DOC#${documentId}`, sk: `CHUNK#${chunkId}` },
+                UpdateExpression: "SET #s = :embedded",
+                ConditionExpression:
+                  "attribute_exists(pk) AND createdAt = :createdAt AND (attribute_not_exists(#s) OR #s <> :embedded)",
+                ExpressionAttributeNames: { "#s": "status" },
+                ExpressionAttributeValues: {
+                  ":createdAt": createdAt,
+                  ":embedded": "EMBEDDED",
+                },
+              },
+            })),
+            {
+              Update: {
+                TableName: TableName,
+                Key: { pk: `DOC#${documentId}`, sk: "META" },
+                UpdateExpression: "SET #s = :embedding ADD embeddedCount :n",
+                ConditionExpression: "attribute_exists(pk) AND #s <> :deleting",
+                ExpressionAttributeNames: { "#s": "status" },
+                ExpressionAttributeValues: {
+                  ":deleting": "DELETING",
+                  ":embedding": "EMBEDDING",
+                  ":n": group.length,
+                },
+              },
+            },
+          ],
+        }),
+      );
+    } catch (err) {
+      if ((err as Error).name !== "TransactionCanceledException") throw err;
+      for (const { chunkId, createdAt } of group) {
+        await markChunkEmbedded(documentId, chunkId, createdAt);
+      }
+    }
   }
 }
 
@@ -668,4 +731,44 @@ function packEmbeddingBatches(items: EmbeddingWork[]): EmbeddingWork[][] {
   if (current.length > 0) batches.push(current);
 
   return batches;
+}
+
+/** Reads one embed record, or returns undefined after logging why it is unusable. */
+function parseEmbedRecord(record: SQSRecord): EmbeddingChunk | undefined {
+  let body: Partial<EmbedMessage>;
+  try {
+    body = JSON.parse(record.body);
+  } catch {
+    console.error("[embed] Invalid JSON in record:", record.messageId);
+    return undefined;
+  }
+  const { chunkId, createdAt, documentId } = body;
+  if (!documentId || !chunkId || !createdAt) {
+    console.error("[embed] Missing required fields:", record.messageId);
+    return undefined;
+  }
+
+  return {
+    documentId: documentId,
+    chunkId: chunkId,
+    createdAt: createdAt,
+    modality: body.modality === "image" ? "image" : "text",
+    text: typeof body.text === "string" ? body.text : "",
+    tokenCount: body.tokenCount,
+    pageStart: body.pageStart,
+    pageEnd: body.pageEnd,
+    messageId: record.messageId,
+    attempt: parseInt(record.attributes.ApproximateReceiveCount ?? "1", 10),
+  };
+}
+
+/** Cuts text to at most maxBytes of UTF-8, backing off a split character. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength <= maxBytes) return text;
+  let end = maxBytes;
+  // Continuation bytes are 10xxxxxx, so the cut moves back to a character start.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+
+  return bytes.subarray(0, end).toString("utf8");
 }

@@ -606,7 +606,6 @@ export async function listDocumentChunkItems(
       ...((chunkRecords.Items ?? []) as ChunkItem[]).map((item) => ({
         pk: item.pk,
         sk: item.sk,
-        s3ChunkKey: item.s3ChunkKey,
         pageStart: item.pageStart,
         pageEnd: item.pageEnd,
         tokenCount: item.tokenCount,
@@ -1049,7 +1048,7 @@ export function embeddingModel(): string {
 }
 
 /** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
- * title, tags, authors and then sourceKey are added back while they fit. */
+ * sourceKey, title, tags and then authors are added back while they fit. */
 export function fitFilterableMetadata<T extends Record<string, unknown>>(
   metadata: T,
 ): T {
@@ -1067,8 +1066,12 @@ export function fitFilterableMetadata<T extends Record<string, unknown>>(
     `Trimmed metadata of ${String(metadata.chunkId)} to fit the filterable cap`,
   );
 
+  // The short sourceKey goes first, so a search result keeps its file link over a long title.
   const { authors, sourceKey, tags, title, ...required } = metadata;
   const fitted: Record<string, unknown> = { ...required };
+  if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {
+    fitted.sourceKey = sourceKey;
+  }
   if (title !== undefined && fits({ ...fitted, title: title })) {
     fitted.title = title;
   }
@@ -1080,9 +1083,6 @@ export function fitFilterableMetadata<T extends Record<string, unknown>>(
       const next = [...((fitted[field] as unknown[] | undefined) ?? []), value];
       if (fits({ ...fitted, [field]: next })) fitted[field] = next;
     }
-  }
-  if (sourceKey !== undefined && fits({ ...fitted, sourceKey: sourceKey })) {
-    fitted.sourceKey = sourceKey;
   }
 
   return fitted as T;

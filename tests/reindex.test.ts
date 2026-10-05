@@ -1,10 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import {
-  SendMessageBatchCommand,
-  SendMessageCommand,
-  SQSClient,
-} from "@aws-sdk/client-sqs";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -41,20 +36,18 @@ vi.mock("../functions/utils", async (importOriginal) => ({
 import { handler } from "../functions/admin/reindex";
 import { apiEvent } from "./helpers/events";
 
-const s3Mock = mockClient(S3Client);
 const sqsMock = mockClient(SQSClient);
 const dynamoMock = mockClient(DynamoDBDocumentClient);
 
 describe("reindex migration", () => {
   beforeEach(() => {
-    s3Mock.reset();
     sqsMock.reset();
     dynamoMock.reset();
     limits.checkRateLimit.mockResolvedValue({ allowed: true, remaining: 9 });
     limits.checkUsageLimit.mockResolvedValue({ allowed: true });
   });
 
-  it("re-embeds completed documents so tenant metadata can be migrated", async () => {
+  it("re-chunks an embedded document from its parsed file", async () => {
     dynamoMock.on(GetCommand).callsFake((input) => {
       if (input.Key?.pk?.startsWith("RATE#")) return {};
       return {
@@ -67,23 +60,54 @@ describe("reindex migration", () => {
       };
     });
     dynamoMock.on(UpdateCommand).resolves({});
-    s3Mock.on(ListObjectsV2Command).resolves({
-      Contents: [{ Key: "chunks/doc-1/chunk_doc-1_0.json" }],
-    });
-    sqsMock.on(SendMessageBatchCommand).resolves({});
+    sqsMock.on(SendMessageCommand).resolves({});
 
     const response = await handler(
       apiEvent({ pathParameters: { id: "doc-1" } }),
     );
 
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body!).restartFrom).toBe("EMBEDDING");
-    expect(sqsMock.commandCalls(SendMessageBatchCommand)).toHaveLength(1);
-    const chunkReset = dynamoMock
-      .commandCalls(UpdateCommand)
-      .find((call) => call.args[0].input.Key?.sk === "CHUNK#chunk_doc-1_0");
-    expect(chunkReset?.args[0].input.UpdateExpression).toContain(
-      "REMOVE embedClaimedAt",
+    expect(JSON.parse(response.body!).restartFrom).toBe("CHUNKING");
+    // The chunk stage overwrites the chunk rows, so only META is written here.
+    const [claim] = dynamoMock.commandCalls(UpdateCommand);
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    const message = JSON.parse(
+      String(
+        sqsMock.commandCalls(SendMessageCommand)[0].args[0].input.MessageBody,
+      ),
+    );
+    expect(message).toEqual({
+      stage: "chunk",
+      documentId: "doc-1",
+      parsedKey: "parsed/doc-1/v1/pages.json",
+      reindexedAt: claim.args[0].input.ExpressionAttributeValues?.[":t"],
+    });
+  });
+
+  it("marks the document FAILED when the reindex cannot be queued", async () => {
+    dynamoMock.on(GetCommand).callsFake((input) => {
+      if (input.Key?.pk?.startsWith("RATE#")) return {};
+      return {
+        Item: {
+          documentId: "doc-1",
+          userId: "owner",
+          status: "EMBEDDED",
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+    dynamoMock.on(UpdateCommand).resolves({});
+    sqsMock.on(SendMessageCommand).rejects(new Error("queue down"));
+
+    const response = await handler(
+      apiEvent({ pathParameters: { id: "doc-1" } }),
+    );
+
+    expect(response.statusCode).toBe(500);
+    const rollback = dynamoMock.commandCalls(UpdateCommand).at(-1)!.args[0]
+      .input;
+    expect(rollback.ExpressionAttributeValues).toEqual(
+      expect.objectContaining({ ":failed": "FAILED", ":step": "CHUNKING" }),
     );
   });
 

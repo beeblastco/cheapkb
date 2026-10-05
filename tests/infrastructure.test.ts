@@ -53,21 +53,26 @@ describe("infrastructure hardening", () => {
     expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(2);
   });
 
-  it("scopes the update function's storage access to chunk objects", () => {
-    // Other functions are legitimately scoped to chunks/*, so a bare substring
-    // check would still pass if AdminUpdate regressed to the whole bucket.
-    const block = config.slice(
-      config.indexOf('new sst.aws.Function("AdminUpdate"') + 1,
+  it("writes no chunk objects and reads them only for legacy search results", () => {
+    const fnBlock = (marker: string): string => {
+      const block = config.slice(config.indexOf(marker) + 1);
+      return block.slice(0, block.indexOf("new sst.aws.Function("));
+    };
+    const pipeline = config.slice(
+      config.indexOf("pipelineQueue.subscribe("),
+      config.indexOf('new sst.aws.Function("Query"'),
     );
-    const adminUpdateFn = block.slice(
-      0,
-      block.indexOf("new sst.aws.Function("),
+    expect(pipeline).not.toContain("chunks/*");
+    // Retagging touches only META and vectors, so the update function has no storage access.
+    expect(fnBlock('new sst.aws.Function("AdminUpdate"')).not.toContain(
+      "storage.arn",
     );
-    expect(adminUpdateFn).toContain("${storage.arn}/chunks/*");
-    expect(adminUpdateFn).not.toContain("${storage.arn}/*");
-    // Listing versions to remove chunks after a mid-edit delete stays on chunks/.
-    expect(adminUpdateFn).toContain('values: ["chunks/*"]');
-    expect(adminUpdateFn).toContain('"s3vectors:DeleteVectors"');
+    expect(fnBlock('new sst.aws.Function("AdminReindex"')).not.toContain(
+      "storage.arn",
+    );
+    expect(fnBlock('new sst.aws.Function("Query"')).toContain(
+      "${storage.arn}/chunks/*",
+    );
   });
 
   it("refuses to provision into the wrong AWS account", () => {

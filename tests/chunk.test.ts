@@ -1,7 +1,16 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { SQSClient } from "@aws-sdk/client-sqs";
 import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import {
+  DeleteVectorsCommand,
+  S3VectorsClient,
+} from "@aws-sdk/client-s3vectors";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
+import {
+  BatchWriteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
@@ -24,6 +33,14 @@ import { sqsEvent } from "./helpers/events";
 const s3Mock = mockClient(S3Client);
 const sqsMock = mockClient(SQSClient);
 const dynamoMock = mockClient(DynamoDBDocumentClient);
+const vectorsMock = mockClient(S3VectorsClient);
+
+function sentMessages(): Array<Record<string, unknown>> {
+  return sqsMock
+    .commandCalls(SendMessageBatchCommand)
+    .flatMap((call) => call.args[0].input.Entries ?? [])
+    .map((entry) => JSON.parse(String(entry.MessageBody)));
+}
 
 describe("chunk records", () => {
   beforeEach(() => {
@@ -31,9 +48,10 @@ describe("chunk records", () => {
     sqsMock.reset();
     sqsMock.resolves({});
     dynamoMock.reset();
+    vectorsMock.reset();
   });
 
-  it("stores ownership and API-visible chunk metadata", async () => {
+  it("stores API-visible chunk metadata and queues the chunk text inline", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { userId: "owner", title: "Title" },
     });
@@ -66,13 +84,22 @@ describe("chunk records", () => {
         status: "QUEUED",
       }),
     );
-    const chunkBody = JSON.parse(
-      String(
-        s3Mock.calls().find((call) => "Body" in call.args[0].input)?.args[0]
-          .input.Body,
-      ),
-    );
-    expect(chunkBody.userId).toBe("owner");
+    expect(item).not.toHaveProperty("s3ChunkKey");
+    // The parsed file is the source of truth, so no chunk object is written.
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    expect(sentMessages()).toEqual([
+      {
+        stage: "embed",
+        documentId: "doc-1",
+        chunkId: "chunk_doc-1_0",
+        createdAt: item?.createdAt,
+        modality: "text",
+        text: "Hello world",
+        tokenCount: item?.tokenCount,
+        pageStart: 1,
+        pageEnd: 1,
+      },
+    ]);
   });
 
   it("writes every chunk of a long document across write groups", async () => {
@@ -102,10 +129,7 @@ describe("chunk records", () => {
     expect(result.batchItemFailures).toEqual([]);
     const written = dynamoMock.commandCalls(PutCommand).length;
     expect(written).toBeGreaterThan(10);
-    const sent = sqsMock
-      .calls()
-      .flatMap((call) => (call.args[0].input as any).Entries ?? []);
-    expect(sent).toHaveLength(written);
+    expect(sentMessages()).toHaveLength(written);
   });
 
   it("does not emit the overlap tail again as its own chunk", async () => {
@@ -204,13 +228,7 @@ describe("chunk records", () => {
     );
 
     expect(result.batchItemFailures).toEqual([]);
-    const chunkBody = JSON.parse(
-      String(
-        s3Mock.calls().find((call) => "Body" in call.args[0].input)?.args[0]
-          .input.Body,
-      ),
-    );
-    expect(chunkBody.text).toBe("Before <|endoftext|> after");
+    expect(sentMessages()[0].text).toBe("Before <|endoftext|> after");
   });
 
   it("creates one image chunk without text tokenization", async () => {
@@ -246,20 +264,19 @@ describe("chunk records", () => {
     );
 
     expect(result.batchItemFailures).toEqual([]);
-    const chunkBody = JSON.parse(
-      String(
-        s3Mock.calls().find((call) => "Body" in call.args[0].input)?.args[0]
-          .input.Body,
-      ),
-    );
-    expect(chunkBody).toEqual(
-      expect.objectContaining({
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    // The embed step reads the source key and MIME type from the META row.
+    expect(sentMessages()).toEqual([
+      {
+        stage: "embed",
+        documentId: "doc-1",
+        chunkId: "image_doc-1_0",
+        createdAt: expect.any(String),
         modality: "image",
-        mimeType: "image/png",
-        sourceKey: "raw/doc-1/photo.png",
-      }),
-    );
-    expect(chunkBody).not.toHaveProperty("tokenCount");
+        pageStart: 1,
+        pageEnd: 1,
+      },
+    ]);
   });
 
   it("keeps embedded chunks when a message is redelivered", async () => {
@@ -304,6 +321,78 @@ describe("chunk records", () => {
       dynamoMock.commandCalls(UpdateCommand).at(-1)?.args[0].input
         .ExpressionAttributeValues,
     ).toEqual(expect.objectContaining({ ":s": "EMBEDDED", ":count": 1 }));
+  });
+
+  it("redoes chunks embedded before the reindex that a redelivery restarts", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title" },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    await handler(
+      sqsEvent(
+        "chunk-reindex-again",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+          reindexedAt: "2026-01-01T00:00:00.000Z",
+        }),
+        2,
+      ),
+    );
+
+    const put = dynamoMock.commandCalls(PutCommand)[0].args[0].input;
+    // Only chunks embedded since the reindex are kept; older ones are embedded again.
+    expect(put.ConditionExpression).toContain("createdAt < :reindexedAt");
+    expect(put.ExpressionAttributeValues?.[":reindexedAt"]).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+  });
+
+  it("removes the rows and vectors of chunks a shorter re-chunk no longer has", async () => {
+    dynamoMock.on(GetCommand).resolves({
+      Item: { userId: "owner", title: "Title", chunkCount: 3 },
+    });
+    dynamoMock.on(PutCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(BatchWriteCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: {
+        transformToString: async () =>
+          JSON.stringify({ pages: [{ pageNumber: 1, text: "Hello world" }] }),
+      } as any,
+    });
+
+    const result = await handler(
+      sqsEvent(
+        "chunk-shrink",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(
+      vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
+    ).toEqual(["chunk_doc-1_1", "chunk_doc-1_2"]);
+    const [deletes] = Object.values(
+      dynamoMock.commandCalls(BatchWriteCommand)[0].args[0].input
+        .RequestItems ?? {},
+    );
+    expect(deletes?.map((request) => request.DeleteRequest?.Key?.sk)).toEqual([
+      "CHUNK#chunk_doc-1_1",
+      "CHUNK#chunk_doc-1_2",
+    ]);
   });
 
   it("treats a message the sweeper re-queued as a redelivery", async () => {

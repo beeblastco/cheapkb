@@ -1,11 +1,5 @@
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import {
-  DeleteObjectsCommand,
-  GetObjectCommand,
-  ListObjectVersionsCommand,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
 import {
   DeleteVectorsCommand,
   GetVectorsCommand,
@@ -69,26 +63,7 @@ function chunkRecords(count = 1) {
       pk: "DOC#doc-1",
       sk: `CHUNK#chunk_doc-1_${i}`,
       chunkId: `chunk_doc-1_${i}`,
-      s3ChunkKey: `chunks/doc-1/chunk_doc-1_${i}.json`,
     })),
-  };
-}
-
-function chunkObject(tags: string[] | null = ["old"]) {
-  return {
-    Body: {
-      transformToString: async () =>
-        JSON.stringify({
-          documentId: "doc-1",
-          userId: "owner",
-          chunkId: "chunk_doc-1_0",
-          text: "chunk body",
-          title: "Title",
-          tags: tags,
-          pageStart: 1,
-          pageEnd: 2,
-        }),
-    } as any,
   };
 }
 
@@ -108,7 +83,6 @@ function storedVector(key = "chunk_doc-1_0") {
       year: 2026,
       pageStart: 1,
       pageEnd: 2,
-      s3ChunkKey: `chunks/doc-1/${key}.json`,
       text: "chunk body",
       chunkPreview: "chunk bod",
     },
@@ -128,8 +102,6 @@ describe("PATCH /documents/{id}", () => {
     });
     dynamoMock.on(UpdateCommand).resolves({});
     dynamoMock.on(QueryCommand).resolves(chunkRecords());
-    s3Mock.on(GetObjectCommand).resolves(chunkObject());
-    s3Mock.on(PutObjectCommand).resolves({});
     vectorsMock.on(GetVectorsCommand).resolves({ vectors: [storedVector()] });
     vectorsMock.on(PutVectorsCommand).resolves({});
   });
@@ -152,7 +124,6 @@ describe("PATCH /documents/{id}", () => {
         year: 2026,
         pageStart: 1,
         pageEnd: 2,
-        s3ChunkKey: "chunks/doc-1/chunk_doc-1_0.json",
         text: "chunk body",
         chunkPreview: "chunk bod",
       });
@@ -192,7 +163,7 @@ describe("PATCH /documents/{id}", () => {
     });
   });
 
-  describe("propagation to all three stores", () => {
+  describe("propagation to META and vectors", () => {
     it("updates the META row", async () => {
       await update(patchEvent({ tags: ["research"] }));
 
@@ -201,17 +172,11 @@ describe("PATCH /documents/{id}", () => {
       expect(call.ExpressionAttributeValues![":tags"]).toEqual(["research"]);
     });
 
-    it("rewrites the S3 chunk JSON so a later reindex cannot restore old tags", async () => {
-      await update(patchEvent({ tags: ["research"] }));
+    it("makes no S3 calls, since a re-embed reads tags from META", async () => {
+      const response = await update(patchEvent({ tags: ["research"] }));
 
-      const put = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input;
-      expect(put.Key).toBe("chunks/doc-1/chunk_doc-1_0.json");
-      const written = JSON.parse(put.Body as string);
-      expect(written.tags).toEqual(["research"]);
-      // The rest of the chunk payload must survive the rewrite.
-      expect(written.text).toBe("chunk body");
-      expect(written.userId).toBe("owner");
-      expect(written.chunkId).toBe("chunk_doc-1_0");
+      expect(response.statusCode).toBe(200);
+      expect(s3Mock.calls()).toHaveLength(0);
     });
   });
 
@@ -264,7 +229,7 @@ describe("PATCH /documents/{id}", () => {
       const response = await update(patchEvent({ tags: ["research"] }));
 
       expect(response.statusCode).toBe(429);
-      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+      expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
 
     it("returns 404 for a missing document", async () => {
@@ -289,7 +254,6 @@ describe("PATCH /documents/{id}", () => {
       expect(response.statusCode).toBe(409);
       // Nothing may be written while the pipeline owns the document.
       expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
-      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
       expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
 
@@ -303,7 +267,7 @@ describe("PATCH /documents/{id}", () => {
 
       const call = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
       // Status alone would let two concurrent edits both pass and then
-      // interleave their S3 and vector writes.
+      // interleave their vector writes.
       expect(call.ConditionExpression).toContain("updatedAt = :revision");
       expect(call.ExpressionAttributeValues![":revision"]).toBe(
         "2026-01-01T00:00:00.000Z",
@@ -356,7 +320,6 @@ describe("PATCH /documents/{id}", () => {
 
       expect(response.statusCode).toBe(409);
       expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
-      expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
       expect(vectorsMock.commandCalls(PutVectorsCommand)).toHaveLength(0);
     });
 
@@ -433,12 +396,6 @@ describe("PATCH /documents/{id}", () => {
             message: "status is DELETING",
           }),
         );
-      s3Mock.on(ListObjectVersionsCommand).resolves({
-        Versions: [
-          { Key: "chunks/doc-1/chunk_doc-1_0.json", VersionId: "version-1" },
-        ],
-      });
-      s3Mock.on(DeleteObjectsCommand).resolves({});
       vectorsMock.on(DeleteVectorsCommand).resolves({});
 
       const response = await update(patchEvent({ tags: ["research"] }));
@@ -452,19 +409,15 @@ describe("PATCH /documents/{id}", () => {
       expect(
         vectorsMock.commandCalls(DeleteVectorsCommand)[0].args[0].input.keys,
       ).toEqual(["chunk_doc-1_0"]);
-      expect(
-        s3Mock.commandCalls(ListObjectVersionsCommand)[0].args[0].input.Prefix,
-      ).toBe("chunks/doc-1/");
-      expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
+      expect(s3Mock.calls()).toHaveLength(0);
     });
 
-    it("leaves chunk data alone when a failed edit's document is still live", async () => {
+    it("leaves vectors alone when a failed edit's document is still live", async () => {
       vectorsMock.on(PutVectorsCommand).rejects(new Error("vector store down"));
 
       await update(patchEvent({ tags: ["research"] }));
 
       expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
-      expect(s3Mock.commandCalls(ListObjectVersionsCommand)).toHaveLength(0);
     });
 
     it("only releases a lease it still owns", async () => {
