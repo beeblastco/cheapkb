@@ -346,12 +346,14 @@ async function commitWithinCaps(
         isNew ? "Document is being uploaded" : "Document is being processed",
       );
     }
-    await new Promise((resolve) => {
-      setTimeout(
-        resolve,
-        (attempt + 1 + Math.random()) * COMMIT_RETRY_BACKOFF_MS,
-      );
-    });
+    if (attempt + 1 < MAX_COMMIT_ATTEMPTS) {
+      await new Promise((resolve) => {
+        setTimeout(
+          resolve,
+          (attempt + 1 + Math.random()) * COMMIT_RETRY_BACKOFF_MS,
+        );
+      });
+    }
   }
 
   // DocumentsCard's bulk sync waits and retries on this code.

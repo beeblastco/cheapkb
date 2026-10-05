@@ -941,7 +941,9 @@ export async function updateStorageBytes(
       return;
     } catch (error) {
       if ((error as Error).name !== "TransactionCanceledException") throw error;
-      await delay((attempt + 1 + Math.random()) * STORAGE_RETRY_BACKOFF_MS);
+      if (attempt < 2) {
+        await delay((attempt + 1 + Math.random()) * STORAGE_RETRY_BACKOFF_MS);
+      }
     }
   }
   throw new Error("Storage usage changed concurrently");

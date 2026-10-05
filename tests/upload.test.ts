@@ -445,6 +445,30 @@ describe("upload validation", () => {
     expect(JSON.parse(response.body).code).toBe("PROCESSING_LIMIT");
   });
 
+  it("counts a document once when GSI2 and recent commits both list it", async () => {
+    const now = new Date().toISOString();
+    dynamoMock.on(QueryCommand).resolves({
+      Items: Array.from({ length: 9 }, (_, i) => ({
+        pk: `DOC#doc-${i}`,
+        status: "QUEUED",
+        updatedAt: now,
+      })),
+    });
+    dynamoMock
+      .on(GetCommand)
+      .callsFake((input) =>
+        input.Key?.pk === "ACCOUNT#user-1"
+          ? { Item: { uploadSeq: 9, recentUploads: { "doc-8": Date.now() } } }
+          : {},
+      );
+
+    const response = await handler(
+      jsonApiEvent({ filename: "paper.pdf", mimeType: "application/pdf" }),
+    );
+
+    expect(response.statusCode).toBe(200);
+  });
+
   it("records the commit and drops recent commits past the window", async () => {
     const nowMs = Date.now();
     dynamoMock.on(GetCommand).callsFake((input) =>
