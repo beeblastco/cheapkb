@@ -693,7 +693,7 @@ describe("multimodal pipeline", () => {
       .callsFake((input) =>
         input.Key?.sk === "META"
           ? { Item: { userId: "user-1", status: "EMBEDDING" } }
-          : { Item: { status: "EMBEDDED" } },
+          : { Item: { createdAt: CHUNKED_AT, status: "EMBEDDED" } },
       );
     const first = sqsEvent("embed-a", embedMessage("doc-1", "chunk_doc-1_0"));
     const second = sqsEvent("embed-b", embedMessage("doc-1", "chunk_doc-1_1"));
@@ -708,6 +708,35 @@ describe("multimodal pipeline", () => {
       .map((call) => call.args[0].input.TransactItems?.length);
     expect(transactions).toEqual([3, 2, 2]);
     // The already embedded chunk is skipped, and the live document keeps its vectors.
+    expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
+  });
+
+  it("leaves the vector to a newer chunking that owns the row", async () => {
+    bedrockMock.send.callsFake(bedrockEmbeddings([[0.1, 0.2, 0.3]], 2));
+    vectorsMock.on(PutVectorsCommand).resolves({});
+    vectorsMock.on(DeleteVectorsCommand).resolves({});
+    dynamoMock.on(UpdateCommand).resolves({});
+    dynamoMock.on(TransactWriteCommand).callsFake((input) => {
+      if (input.TransactItems?.[0]?.Update?.Key?.sk?.startsWith("CHUNK#")) {
+        const error = new Error("cancelled");
+        error.name = "TransactionCanceledException";
+        throw error;
+      }
+      return {};
+    });
+    dynamoMock.on(GetCommand).callsFake((input) =>
+      input.Key?.sk === "META"
+        ? { Item: { userId: "user-1", status: "EMBEDDING" } }
+        : {
+            Item: { createdAt: "2026-02-01T00:00:00.000Z", status: "QUEUED" },
+          },
+    );
+
+    const result = await embed(
+      sqsEvent("embed-old", embedMessage("doc-1", "chunk_doc-1_0")),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
     expect(vectorsMock.commandCalls(DeleteVectorsCommand)).toHaveLength(0);
   });
 });

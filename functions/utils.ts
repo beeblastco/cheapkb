@@ -1048,7 +1048,7 @@ export function embeddingModel(): string {
 }
 
 /** Keeps a vector's filterable metadata under the S3 Vectors cap. When it is over,
- * title, tags, authors and then sourceKey are added back while they fit. */
+ * sourceKey, title, tags and then authors are added back while they fit. */
 export function fitFilterableMetadata<T extends Record<string, unknown>>(
   metadata: T,
 ): T {
