@@ -44,15 +44,31 @@ jobs:
       - run: API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
       # Writes the bundle size table to the job summary and fails on growth.
       - run: npm run bundle:check
-      # PRs fail on new high advisories; main still deploys. The allowed two have no fixed release and
-      # only reach tooling: http-cache-semantics under @pulumi/pulumi, braces under the shadcn CLI.
+      # PRs fail on new high advisories; main still deploys. Each allowed advisory has no fixed release and only
+      # reaches tooling, and its exception fails the check once GitHub names a fix or npm stops reporting it.
       - if: github.event_name == 'pull_request'
         env:
-          ALLOWED_ADVISORIES: "GHSA-ch52-4w7c-c8xp|GHSA-vfj7-8cjw-p6xm"
+          ALLOWED_ADVISORIES: "GHSA-ch52-4w7c-c8xp GHSA-vfj7-8cjw-p6xm"
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for dir in . web; do
-            npm --prefix "$dir" audit --json > audit.json || true
-            jq -r --arg allowed "$ALLOWED_ADVISORIES" '[.vulnerabilities[].via[] | objects | select(.severity == "high" or .severity == "critical") | .url] | unique | map(select(test($allowed) | not)) | .[]' audit.json >> blocking.txt
+          npm audit --json > audit-root.json || true
+          npm --prefix web audit --json > audit-web.json || true
+          for file in audit-root.json audit-web.json; do
+            jq -e 'has("vulnerabilities")' "$file" > /dev/null || { echo "npm audit failed: $(cat "$file")"; exit 1; }
+          done
+          jq -s -r '[.[].vulnerabilities[]?.via[] | objects | .url | split("/") | last] | unique | .[]' audit-*.json > reported.txt
+          jq -s -r '[.[].vulnerabilities[]?.via[] | objects | select(.severity == "high" or .severity == "critical") | .url | split("/") | last] | unique | .[]' audit-*.json > high.txt
+          : > blocking.txt
+          for ghsa in $(grep -v -x -F -f <(tr ' ' '\n' <<< "$ALLOWED_ADVISORIES") high.txt || true); do
+            echo "$ghsa is a new high advisory" >> blocking.txt
+          done
+          for ghsa in $ALLOWED_ADVISORIES; do
+            grep -q -x "$ghsa" reported.txt || echo "$ghsa is no longer reported; remove its exception" >> blocking.txt
+            if ! patched=$(gh api "/advisories/$ghsa" --jq '[.vulnerabilities[].first_patched_version // empty] | join(", ")' 2>/dev/null); then
+              echo "::warning::Could not look up $ghsa on GitHub"
+              patched=""
+            fi
+            [ -z "$patched" ] || echo "$ghsa is fixed in $patched; update the dependency and remove its exception" >> blocking.txt
           done
           if [ -s blocking.txt ]; then cat blocking.txt; exit 1; fi
 
