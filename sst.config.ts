@@ -44,9 +44,6 @@ export default $config({
     const vectorIndexArn = `arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/${vectorBucketName}/index/${vectorIndexName}`;
     const embeddingModelId =
       process.env.BEDROCK_EMBEDDING_MODEL ?? "us.cohere.embed-v4:0";
-    const bedrockAssumeRoleArn = process.env.BEDROCK_ASSUME_ROLE_ARN;
-    const bedrockAssumeRoleExternalId =
-      process.env.BEDROCK_ASSUME_ROLE_EXTERNAL_ID;
     const embeddingBaseModelId = embeddingModelId.replace(
       /^(?:apac|eu|global|us)\./,
       "",
@@ -59,15 +56,10 @@ export default $config({
           `arn:aws:bedrock:*::foundation-model/${embeddingBaseModelId}`,
         ]
       : [`arn:aws:bedrock:${REGION}::foundation-model/${embeddingBaseModelId}`];
-    const embeddingInvocationPermission = bedrockAssumeRoleArn
-      ? {
-          actions: ["sts:AssumeRole"],
-          resources: [bedrockAssumeRoleArn],
-        }
-      : {
-          actions: ["bedrock:InvokeModel"],
-          resources: embeddingModelResources,
-        };
+    const embeddingInvocationPermission = {
+      actions: ["bedrock:InvokeModel"],
+      resources: embeddingModelResources,
+    };
 
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
@@ -332,8 +324,6 @@ export default $config({
     const embedEnv = {
       ...baseEnv,
       BEDROCK_EMBEDDING_MODEL: embeddingModelId,
-      BEDROCK_ASSUME_ROLE_ARN: bedrockAssumeRoleArn ?? "",
-      BEDROCK_ASSUME_ROLE_EXTERNAL_ID: bedrockAssumeRoleExternalId ?? "",
       EMBEDDING_DIMENSION: "1024",
     };
 

@@ -4,7 +4,6 @@ import {
   QueryVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
-import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import type { DocumentType } from "@smithy/types";
 import type {
   APIGatewayProxyEventV2WithLambdaAuthorizer,
@@ -24,23 +23,7 @@ import {
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const bedrockRoleArn = process.env.BEDROCK_ASSUME_ROLE_ARN;
-const bedrockExternalId = process.env.BEDROCK_ASSUME_ROLE_EXTERNAL_ID;
-const bedrock = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION,
-  ...(bedrockRoleArn
-    ? {
-        credentials: fromTemporaryCredentials({
-          clientConfig: { region: process.env.AWS_REGION },
-          params: {
-            RoleArn: bedrockRoleArn,
-            RoleSessionName: "cheapkb-query",
-            ...(bedrockExternalId ? { ExternalId: bedrockExternalId } : {}),
-          },
-        }),
-      }
-    : {}),
-});
+const bedrock = new BedrockRuntimeClient({});
 const FILTER_KEYS = new Set([
   "authors",
   "documentId",

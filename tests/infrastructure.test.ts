@@ -82,11 +82,11 @@ describe("infrastructure hardening", () => {
     expect(config).toContain("Refusing to deploy as account");
   });
 
-  it("limits cross-account Bedrock access to the configured assume role", () => {
-    expect(config).toContain("process.env.BEDROCK_ASSUME_ROLE_ARN");
-    expect(config).toContain('actions: ["sts:AssumeRole"]');
-    expect(config).toContain("resources: [bedrockAssumeRoleArn]");
+  it("limits Bedrock access to invoking the embedding model", () => {
+    expect(config).toContain('actions: ["bedrock:InvokeModel"]');
+    expect(config).toContain("resources: embeddingModelResources");
     expect(config.match(/embeddingInvocationPermission/g)?.length).toBe(3);
+    expect(config).not.toContain('sts:AssumeRole"');
     expect(config).not.toContain("BEDROCK_REGION");
   });
 

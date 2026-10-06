@@ -1,6 +1,6 @@
 # Deploy
 
-Copy `.env.example` to `.env`, set `AWS_ACCOUNT_ID` to the deployment account, and review the optional model, pricing, and cross-account values.
+Copy `.env.example` to `.env`, set `AWS_ACCOUNT_ID` to the deployment account, and review the optional model and pricing values.
 
 ```bash
 aws sts get-caller-identity --query Account --output text
@@ -13,11 +13,9 @@ The deployer owns plan configuration. Update the seeded default plan in `sst.con
 
 ## Bedrock
 
-`BEDROCK_EMBEDDING_MODEL` defaults to `us.cohere.embed-v4:0`. Enable access to Cohere Embed v4 in Amazon Bedrock before deploying.
+`BEDROCK_EMBEDDING_MODEL` defaults to `us.cohere.embed-v4:0`. Enable access to Cohere Embed v4 in Amazon Bedrock in the deployment account before deploying; the Pipeline and Query Lambdas call it directly.
 
-For Bedrock in another AWS account, set `BEDROCK_ASSUME_ROLE_ARN` and `BEDROCK_ASSUME_ROLE_EXTERNAL_ID`. The target role must trust the deployment account and permit Cohere Embed v4 invocation in the deployment region.
-
-Production keeps short-lived Bedrock diagnostic logs in S3. Enable logging in the Bedrock account when using cross-account inference.
+Production keeps short-lived Bedrock diagnostic logs in S3.
 
 ## CI
 
@@ -25,4 +23,4 @@ Merges to `main` deploy through GitHub Actions in the `production` environment, 
 
 Run the first production deploy locally, since it creates that role. Then set `AWS_ACCOUNT_ID` as a repository secret and the role ARN (the `deployRoleArn` output) as the `AWS_DEPLOY_ROLE_ARN` variable.
 
-CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`, and cross-account Bedrock uses the `BEDROCK_ASSUME_ROLE_ARN` and `BEDROCK_ASSUME_ROLE_EXTERNAL_ID` repository variables.
+CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`.

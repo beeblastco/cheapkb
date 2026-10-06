@@ -6,7 +6,6 @@ import {
   PutVectorsCommand,
   S3VectorsClient,
 } from "@aws-sdk/client-s3vectors";
-import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import {
   GetCommand,
   TransactWriteCommand,
@@ -29,23 +28,7 @@ import {
 
 const s3 = new S3Client({});
 const vectors = new S3VectorsClient({});
-const bedrockRoleArn = process.env.BEDROCK_ASSUME_ROLE_ARN;
-const bedrockExternalId = process.env.BEDROCK_ASSUME_ROLE_EXTERNAL_ID;
-const bedrock = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION,
-  ...(bedrockRoleArn
-    ? {
-        credentials: fromTemporaryCredentials({
-          clientConfig: { region: process.env.AWS_REGION },
-          params: {
-            RoleArn: bedrockRoleArn,
-            RoleSessionName: "cheapkb-pipeline",
-            ...(bedrockExternalId ? { ExternalId: bedrockExternalId } : {}),
-          },
-        }),
-      }
-    : {}),
-});
+const bedrock = new BedrockRuntimeClient({});
 const TableName = process.env.TABLE_NAME!;
 const StorageBucketName = process.env.STORAGE_BUCKET_NAME!;
 const VectorBucketName = process.env.VECTOR_BUCKET_NAME!;
