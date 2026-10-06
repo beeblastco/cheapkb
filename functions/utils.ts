@@ -606,6 +606,8 @@ export async function recordStageError(
 ): Promise<void> {
   const now = new Date().toISOString();
   const failed = attempt >= 3;
+  // The private log keeps the real cause; the document only shows a safe summary.
+  console.error(`[pipeline] ${step} failed for ${documentId}:`, err);
   // Raw SDK messages can name buckets and ARNs, so only content errors are shown.
   let lastError = "Processing failed. Reindex to try again.";
   if (step === "EMBEDDING")

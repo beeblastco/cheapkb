@@ -99,8 +99,10 @@ describe("SQS partial failures", () => {
   });
 
   it("returns failed embedding records to SQS and records the attempt", async () => {
-    dynamoMock.on(GetCommand).rejects(new Error("temporary DynamoDB failure"));
+    const failure = new Error("temporary DynamoDB failure");
+    dynamoMock.on(GetCommand).rejects(failure);
     dynamoMock.on(UpdateCommand).resolves({});
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const result = await embed(
       sqsEvent(
@@ -129,5 +131,10 @@ describe("SQS partial failures", () => {
         }),
       }),
     );
+    expect(logged).toHaveBeenCalledWith(
+      "[pipeline] EMBEDDING failed for doc-1:",
+      failure,
+    );
+    logged.mockRestore();
   });
 });
