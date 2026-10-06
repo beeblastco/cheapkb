@@ -17,7 +17,7 @@ Live web app: https://ds8aejb7efd81.cloudfront.net
 
 ## Quickstart
 
-Prerequisites: Node.js 22, AWS credentials, and Cohere Embed v4 access through Amazon Bedrock.
+Prerequisites: Node.js 22.18 or later (`npm run bundle:check` runs TypeScript directly), AWS credentials, and Cohere Embed v4 access through Amazon Bedrock. The Lean proofs need [elan](https://github.com/leanprover/elan).
 
 ```bash
 npm ci --legacy-peer-deps
@@ -26,12 +26,14 @@ cp .env.example .env
 npx sst dev
 ```
 
-Start the web app against a deployed or local API:
+Start the web app against a non-production stage, such as the one `npx sst dev` deploys. Production rejects tokens issued to localhost.
 
 ```bash
 cd web
-API_URL=https://<your-api-url>/v1 npm run dev   # http://localhost:5173
+API_URL=https://<your-stage-api-url>/v1 npm run dev   # http://localhost:5173
 ```
+
+Uploads from localhost also need `VITE_STORAGE_ORIGIN` and an S3 CORS rule for localhost, so test uploads on the deployed web app.
 
 ## Configuration
 

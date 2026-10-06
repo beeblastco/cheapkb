@@ -11,6 +11,8 @@ Thanks for helping improve CheapKB.
 
 ## Development Setup
 
+Prerequisites: Node.js 22.18 or later, AWS credentials, and [elan](https://github.com/leanprover/elan) for the Lean proofs.
+
 1. Install dependencies:
 
    ```bash

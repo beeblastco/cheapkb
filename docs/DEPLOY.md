@@ -21,4 +21,8 @@ Production keeps short-lived Bedrock diagnostic logs in S3. Enable logging in th
 
 ## CI
 
-Merges to `main` deploy through GitHub Actions in the `production` environment. The production stage creates a `github-deploy` IAM role that trusts GitHub's OIDC provider for this repository's `production` environment only; the deploy job assumes it with short-lived tokens. Set `AWS_ACCOUNT_ID` as a repository secret and the role ARN as the `AWS_DEPLOY_ROLE_ARN` variable.
+Merges to `main` deploy through GitHub Actions in the `production` environment, only after the Check, Secrets scan and Proofs jobs pass. The production stage creates a `github-deploy` IAM role that trusts GitHub's OIDC provider for this repository's `production` environment only; the deploy job assumes it with short-lived tokens.
+
+Run the first production deploy locally, since it creates that role. Then set `AWS_ACCOUNT_ID` as a repository secret and the role ARN (the `deployRoleArn` output) as the `AWS_DEPLOY_ROLE_ARN` variable.
+
+CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`, and cross-account Bedrock uses the `BEDROCK_ASSUME_ROLE_ARN` and `BEDROCK_ASSUME_ROLE_EXTERNAL_ID` repository variables.

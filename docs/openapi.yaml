@@ -6,6 +6,12 @@ info:
     Multimodal RAG document ingestion and text/image vector search API.
     All requests and responses use JSON. Auth via a Shoo ID token as a Bearer
     token, verified by a Lambda authorizer that caches its result for 5 minutes.
+    API Gateway itself returns the 401 (no token) and 403 (invalid or expired
+    token), so those bodies are `{"message": ...}`. A cached token stays accepted
+    for up to 5 minutes past its expiry. If shoo.dev is unreachable the request
+    fails with a 500, which is not cached.
+    Rate limits are per user per hour: upload 50, query 100, tag edit 20,
+    reindex 10, account reset 3.
 servers:
   - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
     description: Production
@@ -17,6 +23,7 @@ paths:
     post:
       operationId: uploadDocument
       summary: Get a presigned POST form to upload a file
+      description: Limited to 50 per hour per user.
       tags: [documents]
       responses:
         "200":
@@ -83,6 +90,7 @@ paths:
     post:
       operationId: queryVectors
       summary: Text, image, or mixed vector similarity search with metadata filters
+      description: Limited to 100 per hour per user.
       tags: [search]
       responses:
         "200":
@@ -149,6 +157,7 @@ paths:
     patch:
       operationId: updateDocument
       summary: Update document tags in metadata and vectors
+      description: Limited to 20 per hour per user.
       tags: [documents]
       parameters:
         - { $ref: "#/components/parameters/DocumentId" }
@@ -278,7 +287,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "409":
-          description: Tag limit reached or tag was concurrently deleted
+          description: The 200-tag limit is reached, or a concurrent create or delete kept this tag from landing; retry
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -361,7 +370,7 @@ paths:
     delete:
       operationId: deleteAccountData
       summary: Delete every document and tag the caller owns
-      description: Marks every document DELETING and removes its source, which starts the same cleanup as a single delete. Storage bytes not counted on any document are removed at once, so storage reaches 0 once the cleanups finish. Usage already spent this cycle stays.
+      description: Limited to 3 per hour per user. Marks every document DELETING and removes its source, which starts the same cleanup as a single delete. Storage bytes not counted on any document are removed at once, so storage reaches 0 once the cleanups finish. Usage already spent this cycle stays.
       tags: [account]
       responses:
         "202":
@@ -463,7 +472,10 @@ components:
         code:
           type: string
           enum: [PROCESSING_LIMIT]
-          description: Set when an upload is refused because 10 documents are already processing
+          description: Set when an upload is refused because 10 documents are already processing, or because concurrent uploads for the account kept its commit from landing
+        status:
+          type: string
+          description: Reindex 409 only. The document's current status.
 
     GatewayError:
       type: object
@@ -497,10 +509,12 @@ components:
         title:
           type: string
           maxLength: 200
+          description: Title, tags and authors together must fit in 1,200 bytes of JSON.
         tags:
           type: array
           items: { type: string, maxLength: 100 }
           maxItems: 20
+          description: Trimmed, with blanks and case-insensitive duplicates dropped; the first spelling wins.
         authors:
           type: array
           items: { type: string, maxLength: 100 }
@@ -558,7 +572,7 @@ components:
           maxLength: 4000
         image:
           type: string
-          description: JPEG, PNG, WebP, or GIF data URI up to 5 MB
+          description: JPEG, PNG, WebP, or GIF data URI up to 5 MiB
         topK:
           type: integer
           minimum: 1
@@ -628,7 +642,7 @@ components:
         score:
           type: number
           format: float
-          description: "Similarity score 0..1 (1 = perfect match)"
+          description: 1 minus the cosine distance (1 = perfect match). Can be negative.
         title:
           type: string
         modality:
@@ -642,7 +656,7 @@ components:
           type: integer
         text:
           type: string
-          description: The chunk's full text, up to 32 KB of UTF-8
+          description: The chunk's full text, up to 32 KiB of UTF-8
         source:
           type: object
           required: [bucket, key]
@@ -679,6 +693,9 @@ components:
       properties:
         documentId:
           type: string
+        userId:
+          type: string
+          description: GET /documents only. The owner's user id.
         title:
           type: string
         status:
@@ -686,7 +703,6 @@ components:
           enum:
             [
               UPLOADED,
-              UPDATING,
               QUEUED,
               PARSING,
               PARSED,
@@ -694,6 +710,8 @@ components:
               CHUNKED,
               EMBEDDING,
               EMBEDDED,
+              UPDATING,
+              DELETING,
               FAILED,
             ]
         lastError:
@@ -764,6 +782,7 @@ components:
           items: { type: string, maxLength: 100 }
           maxItems: 20
           nullable: true
+          description: Trimmed, with blanks and case-insensitive duplicates dropped; the first spelling wins. An edit that grows the title, tags and authors past 1,200 bytes of JSON is refused.
 
     DocumentUpdateResponse:
       type: object

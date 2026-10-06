@@ -13,7 +13,6 @@ export const TAG_COLORS = [
 ] as const;
 
 export type DocumentStatus =
-  | "UPLOADING"
   | "UPLOADED"
   | "QUEUED"
   | "PARSING"
@@ -22,6 +21,7 @@ export type DocumentStatus =
   | "CHUNKED"
   | "EMBEDDING"
   | "EMBEDDED"
+  | "UPDATING"
   | "DELETING"
   | "FAILED";
 

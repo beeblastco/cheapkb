@@ -674,7 +674,7 @@ export default $config({
       timeout: "30 seconds",
       memory: "128 MB",
       description:
-        "Delete a document and all derived data (vectors, chunks, parsed, source)",
+        "Delete a document and all derived data (vectors, parsed, legacy chunk objects, source)",
       environment: baseEnv,
       permissions: [
         {

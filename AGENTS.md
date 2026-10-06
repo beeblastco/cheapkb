@@ -6,7 +6,7 @@ Before every AWS CLI or SST interaction, verify with `aws sts get-caller-identit
 
 The .env file is used to store the environment variables. The sst.config.ts will load the env variables from the .env file.
 
-The README.md contains the documentation, instructions and architecture of the project. Update when you changed anything, prevent stale.
+README.md is the entry point. Architecture lives in docs/ARCHITECTURE.md, billing in docs/BILLING.md, deploy in docs/DEPLOY.md, the API in docs/openapi.yaml and the proofs in proofs/README.md. Update the matching doc on any behaviour change, so none goes stale.
 
 Do not use dash comments, banner comments, separate comments in the code.
 
@@ -31,4 +31,5 @@ Don't try to add custom gap an stuff as the current shadcn/ui already include th
 - `.oxlintrc.json` also enforces `eqeqeq`, `radix`, `no-empty`, `no-implicit-coercion`, `no-plusplus`, `prefer-destructuring`, `import/no-duplicates` and the promise rules. `no-await-in-loop` stays off: pagination, retries, ordered side effects and free-tier throttling are sequential on purpose, so parallelize only when the iterations are independent.
 - `.codeant/configuration.json` turns off CodeAnt's antipattern scan, since oxlint now owns those rules. Its security, secrets, dependency, IaC and docstring scans stay on.
 - `npm install` sets `core.hooksPath` to `.githooks`, whose pre-commit runs gitleaks, oxlint and prettier on staged files. `.claude/settings.json` formats and lints every file an agent edits.
-- CI runs lint, format, typecheck, tests, the web build, the bundle budget and a gitleaks scan on every PR, and deploys `main` to production after both jobs pass.
+- Editing a source line a proof is anchored to fails `tests/proofs.test.ts`. Update the model in `proofs/Proofs/*.lean`, run `cd proofs && lake build && lake exe vectors`, and commit the regenerated vectors. See `proofs/README.md`.
+- CI runs three jobs on every PR and push. Check runs lint, format, typecheck, tests, the web build and the bundle budget, plus an npm audit gate on PRs whose allowed advisories expire once a fix ships. Secrets scan runs gitleaks. Proofs runs `lake build`, fails on banned words or warnings, and checks the vectors are unchanged. `main` deploys to production only after all three pass.
