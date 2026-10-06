@@ -71,7 +71,6 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
         console.log(`[chunk] Document ${documentId} was deleted, dropping`);
         continue;
       }
-      console.error(`[chunk] Failed for ${documentId}:`, err);
       // A failed error write retries only this record, so the records already
       // chunked in this batch are not replayed.
       try {

@@ -60,7 +60,6 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
         console.log(`[parse] Document ${documentId} was deleted, dropping`);
         continue;
       }
-      console.error(`[parse] Failed for ${documentId}:`, err);
       const attempt =
         err instanceof ContentError
           ? 3
