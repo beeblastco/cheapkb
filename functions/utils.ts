@@ -99,7 +99,8 @@ const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
 const EMBEDDING_INPUT_PRICE_PER_TOKEN =
   EMBEDDING_INPUT_PRICE_PER_1M_TOKENS / 1_000_000;
 
-// A query result costs one S3 GET ($0.0004 per 1k) to load its chunk text.
+// queryPerResult was priced at one S3 GET per result; only legacy vectors still need one,
+// and the rate is kept so the cost basis stays conservative.
 export const PRICING = {
   queryPerRequest: 5_000,
   queryPerResult: 400,

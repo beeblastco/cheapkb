@@ -2,7 +2,7 @@
 
 ## Plans
 
-The deployer defines the default plan and its monthly price and usage allowance. New accounts receive that plan. CheapKB stores plan pricing but does not collect payments.
+The deployer defines the default plan and its monthly price and usage allowance in `sst.config.ts`. The shipped default is Basic: free, with a $1.00 monthly allowance. New accounts receive that plan. CheapKB stores plan pricing but does not collect payments.
 
 CheapKB tracks these costs:
 
@@ -20,11 +20,11 @@ The progress bar uses their combined cost in the current billing cycle:
 progress = spent / monthly allowance × 100
 ```
 
-At `100%`, new billable activity pauses until the cycle resets or the account receives a larger allowance. Cycles start at midnight UTC on the account's creation day of the month.
+At `100%`, new billable activity pauses until the cycle resets or the account receives a larger allowance. Cycles start at midnight UTC on the account's creation day of the month, or on the month's last day when it is shorter.
 
 ## Storage
 
-Storage is based on the original file bytes accepted by S3. Uploads add bytes, replacements and overwrites apply the size difference, and API or direct S3 deletions subtract bytes. New uploads are refused once an account reaches `MAX_STORAGE_BYTES` (1 GiB by default). Uploads already in progress can take it past the cap, by at most 10 uploads of up to 50 MB each. Re-posting an upload form to replace a file with a larger one is refused once the account would pass the cap. Each change records the cost accumulated at the previous size before applying the new size.
+Storage is based on the original file bytes accepted by S3. Uploads add bytes, replacements and overwrites apply the size difference, and API or direct S3 deletions subtract bytes. New uploads are refused once an account reaches `MAX_STORAGE_BYTES` (1 GiB by default). Uploads already in progress can take it past the cap, by at most 10 uploads of up to 50 MiB each. Re-posting an upload form to replace a file with a larger one is refused once the account would pass the cap. A first file that lands after its upload stops counting as processing is held to the same cap and marked failed if it would pass it. Each change records the cost accumulated at the previous size before applying the new size.
 
 ```text
 storage cost = stored GiB × elapsed fraction of a 30-day month × $0.023
