@@ -17,6 +17,7 @@ import {
 } from "../web/src/lib/client";
 
 import type { Document } from "../web/src/lib/types";
+import { formatPercent } from "../web/src/lib/utils";
 
 const API_URL = "https://api.cheapkb.test/v1";
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
@@ -534,6 +535,13 @@ describe("frontend", () => {
       expect(html).not.toContain("__API_ORIGIN__");
       expect(html).not.toContain("__STORAGE_ORIGIN__");
     }, 30000);
+  });
+
+  it("shows a small but nonzero usage as <1% instead of 0%", () => {
+    expect(formatPercent(0)).toBe("0%");
+    expect(formatPercent(0.097)).toBe("<1%");
+    expect(formatPercent(42.4)).toBe("42%");
+    expect(formatPercent(130)).toBe("100%");
   });
 });
 

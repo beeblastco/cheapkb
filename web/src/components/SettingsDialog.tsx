@@ -27,7 +27,7 @@ import {
   rotateMcpKey,
 } from "@/lib/client";
 import type { UsageSummary } from "@/lib/types";
-import { formatBytes } from "@/lib/utils";
+import { formatBytes, formatPercent } from "@/lib/utils";
 import { Copy, KeyRound, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { parse, render } from "sugar-high/core";
@@ -167,7 +167,7 @@ export function SettingsDialog({
               <div className="flex flex-col gap-3">
                 <div className="flex items-baseline justify-between">
                   <p className="text-2xl font-semibold tabular-nums">
-                    {usagePct.toFixed(0)}%
+                    {formatPercent(usage.pctUsed)}
                     <span className="ml-2 text-sm font-normal text-muted-foreground">
                       of {usage.planLabel} plan
                     </span>
