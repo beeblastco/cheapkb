@@ -80,7 +80,10 @@ export function Header({
       <header className="sticky top-0 z-40 bg-background px-3 pt-3">
         <Card size="sm">
           <CardContent className="flex items-center justify-between">
-            <p className="font-semibold">cheapkb</p>
+            <div className="flex items-center gap-2">
+              <img alt="" className="size-6" src="/icon.svg" />
+              <p className="font-semibold">cheapkb</p>
+            </div>
 
             <DropdownMenu>
               <DropdownMenuTrigger className="cursor-pointer">
