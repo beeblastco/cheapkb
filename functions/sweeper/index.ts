@@ -87,7 +87,9 @@ async function markFailed(documentId: string, step: string): Promise<void> {
         },
       }),
     );
-    await captureEvent(String(Attributes?.userId ?? ""), "document_failed", {
+    // Not awaited: one sweep can fail hundreds of documents, and a slow PostHog
+    // must not push it past its timeout.
+    void captureEvent(String(Attributes?.userId ?? ""), "document_failed", {
       document_id: documentId,
       mime_type: Attributes?.mimeType,
       step: step,

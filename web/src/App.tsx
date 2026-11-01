@@ -23,6 +23,7 @@ import {
   isActiveStatus,
   mergeDocuments,
   readPendingDocuments,
+  SIGNED_IN_KEY,
   signOut,
   startSignIn,
   watchSession,
@@ -159,6 +160,10 @@ export default function App(): React.JSX.Element {
             email: profile.email,
             name: profile.name,
           });
+          if (sessionStorage.getItem(SIGNED_IN_KEY)) {
+            sessionStorage.removeItem(SIGNED_IN_KEY);
+            posthog.capture("user_signed_in");
+          }
         }
         setDocuments(readPendingDocuments());
         watchSession();

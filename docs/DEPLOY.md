@@ -19,7 +19,7 @@ Production keeps short-lived Bedrock diagnostic logs in S3.
 
 ## Analytics
 
-Set `POSTHOG_KEY` (a PostHog project token) to send product analytics; `POSTHOG_HOST` defaults to `https://eu.i.posthog.com`. Leave the key unset to send nothing. The web app bundles PostHog's no-external build, so no PostHog script loads at runtime; its Content Security Policy only adds the ingest host and the matching assets host, which serves the project config, to `connect-src`.
+Set `POSTHOG_KEY` (a PostHog project token) to send product analytics; `POSTHOG_HOST` defaults to `https://eu.i.posthog.com`. Leave the key unset to send nothing. The web app bundles PostHog's no-external build, so no PostHog script loads at runtime; its Content Security Policy only adds the ingest host and the matching assets host, which serves the project config, to `connect-src`. Session replay and surveys need PostHog's external scripts, so they are not available.
 
 ## CI
 
@@ -27,4 +27,4 @@ Merges to `main` deploy through GitHub Actions in the `production` environment, 
 
 Run the first production deploy locally, since it creates that role. Then set `AWS_ACCOUNT_ID` as a repository secret and the role ARN (the `deployRoleArn` output) as the `AWS_DEPLOY_ROLE_ARN` variable.
 
-CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`, plus the optional `POSTHOG_KEY` repository variable.
+CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`, plus the optional `POSTHOG_KEY` and `POSTHOG_HOST` repository variables.

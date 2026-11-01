@@ -56,9 +56,9 @@ CheapKB shares pipeline resources and batches available embedding work to avoid 
 
 ## Analytics
 
-With `POSTHOG_KEY` set, the web app sends PostHog events: `sign_in_started`, `document_uploaded`, `document_deleted`, `document_reindexed`, `search_performed`, `account_data_deleted`, and `error_shown` with the title of each error notice, once while it is shown. Uncaught errors go to error tracking. Users are identified by their Shoo user id with their name and email, which also marks each sign-in. The sign-in callback page loads no analytics, so its auth code never leaves the browser. Autocapture masks all element text and attributes, and events carry counts and file types, never titles, queries or document content.
+With `POSTHOG_KEY` set, the web app sends PostHog events: `sign_in_started`, `user_signed_in`, `document_uploaded`, `document_deleted`, `document_reindexed`, `search_performed`, `account_data_deleted`, and `error_shown` with the title of each error notice, once while it is shown. Uncaught errors go to error tracking. Users are identified by their Shoo user id with their name and email. The sign-in callback page loads no analytics, so its auth code never leaves the browser; `user_signed_in` is sent on the next load. Autocapture masks all element text and attributes and never records copied text, signing out or an expired session resets the PostHog identity, and events carry counts and file types, never document titles, search queries or document content.
 
-The pipeline sends `document_indexed` when a document first becomes searchable and `document_failed` when its processing gives up, from the stage error handler or the sweeper, under the same user id. Each is one HTTP request with a 1 second timeout, skipped when the key is unset. Upload refusals and reindex queue errors are not sent.
+The pipeline sends `document_indexed` each time a document finishes indexing, including after a reindex or a rare queue redelivery, and `document_failed` each time its processing gives up, from the stage error handler or the sweeper, under the same user id. Each is one HTTP request with a 1 second timeout, skipped when the key is unset. Upload refusals and reindex queue errors are not sent.
 
 ## Correctness proofs
 

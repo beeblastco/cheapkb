@@ -135,7 +135,7 @@ export async function captureEvent(
   const key = process.env.POSTHOG_KEY;
   if (!key || !userId) return;
   try {
-    await fetch(`${process.env.POSTHOG_HOST}/i/v0/e/`, {
+    const response = await fetch(`${process.env.POSTHOG_HOST}/i/v0/e/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -146,6 +146,9 @@ export async function captureEvent(
       }),
       signal: AbortSignal.timeout(1000),
     });
+    if (!response.ok) {
+      console.warn(`[posthog] ${event} rejected with HTTP ${response.status}`);
+    }
   } catch (err) {
     console.warn(`[posthog] Failed to send ${event}:`, err);
   }

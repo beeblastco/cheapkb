@@ -14,6 +14,7 @@ const queryClient = new QueryClient();
 if (POSTHOG_KEY && window.location.pathname !== SHOO_CALLBACK_PATH) {
   posthog.init(POSTHOG_KEY, {
     api_host: import.meta.env.VITE_POSTHOG_HOST,
+    autocapture: { capture_copied_text: false },
     defaults: "2026-08-30",
     mask_all_element_attributes: true,
     mask_all_text: true,

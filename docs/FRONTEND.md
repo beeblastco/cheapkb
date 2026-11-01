@@ -22,7 +22,7 @@ Search with text, one supported image up to 5 MiB, or both. Add filters when you
 
 ## Analytics
 
-When the deployment sets a PostHog key, the app records which actions you take (sign in, upload, search, delete) and the errors you see, under your account. Titles, search text and document content are never sent.
+When the deployment sets a PostHog key, the app records which actions you take (sign in, upload, search, delete, reindex, delete all data) and the errors you see, under your account. Titles, search text and document content are never sent.
 
 ## Development
 
