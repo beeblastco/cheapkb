@@ -7,7 +7,7 @@ aws sts get-caller-identity --query Account --output text
 npx sst deploy --stage production
 ```
 
-The caller account must match `AWS_ACCOUNT_ID`. The deployment output includes the API and web addresses.
+The caller account must match `AWS_ACCOUNT_ID`. The deployment output includes the web address and the API base URL, `/v1` included.
 
 The deployer owns plan configuration. Update the seeded default plan in `sst.config.ts` and deploy; existing accounts use its current price and allowance, and accounts on a removed plan fall back to it. Users cannot create or assign plans through the API.
 

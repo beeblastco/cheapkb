@@ -84,6 +84,7 @@ export default $config({
       },
     });
     const apiOrigin = api.url.apply((url) => new URL(url).origin);
+    const apiUrl = pulumi.interpolate`${apiOrigin}/v1`;
 
     // Browsers ignore frame-ancestors in a <meta> CSP, so framing and
     // transport rules are sent as headers from CloudFront.
@@ -117,7 +118,7 @@ export default $config({
         output: "dist",
       },
       environment: {
-        VITE_API_URL: pulumi.interpolate`${apiOrigin}/v1`,
+        VITE_API_URL: apiUrl,
         VITE_API_ORIGIN: apiOrigin,
         VITE_STORAGE_ORIGIN: storageOrigin,
         VITE_POSTHOG_KEY: process.env.POSTHOG_KEY ?? "",
@@ -1172,7 +1173,7 @@ export default $config({
     }
 
     return {
-      apiEndpoint: apiOrigin,
+      apiEndpoint: apiUrl,
       webEndpoint: web.url,
       deployRoleArn: deployRoleArn,
     };
