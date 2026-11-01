@@ -12,6 +12,7 @@ Live web app: https://ds8aejb7efd81.cloudfront.net
 - Search with natural language, an image, or combined text and image
 - Filter results by document metadata
 - Track processing status, usage, and plan allowance
+- Search from Claude Code, Codex, Broods, or any MCP client
 - Replace, retry, edit, and delete uploaded content
 - Keep each user's content and search results isolated
 
@@ -41,7 +42,35 @@ Copy [.env.example](.env.example) to `.env` and provide the required values. See
 
 ## API
 
-The `/v1` API supports uploads, search, documents, tags, account usage, and read-only account details. All routes require a Shoo bearer token. See [OpenAPI](docs/openapi.yaml) for request and response examples.
+The `/v1` API supports uploads, search, documents, tags, account usage, account details, and the MCP key. All routes except `/mcp` require a Shoo bearer token. See [OpenAPI](docs/openapi.yaml) for request and response examples.
+
+## MCP
+
+Claude Code, Codex, Broods and other MCP clients can search your knowledge base. The server speaks MCP 2026-07-28 and answers 2025-era clients statelessly. Create an MCP key in the web app under Settings, then:
+
+```bash
+claude mcp add --transport http cheapkb <API_URL>/mcp --header "Authorization: Bearer <MCP_KEY>"
+```
+
+For Codex, add this to `~/.codex/config.toml` and export `CHEAPKB_MCP_KEY`:
+
+```toml
+[mcp_servers.cheapkb]
+url = "<API_URL>/mcp"
+bearer_token_env_var = "CHEAPKB_MCP_KEY"
+```
+
+For Broods, run `broods env set CHEAPKB_MCP_KEY` and add:
+
+```ts
+defineMcp({
+  name: "cheapkb",
+  url: "<API_URL>/mcp",
+  headers: { Authorization: "Bearer ${CHEAPKB_MCP_KEY}" },
+});
+```
+
+Tools: `search`, `list_documents`, `get_document`. All are read-only.
 
 ## Verify changes
 

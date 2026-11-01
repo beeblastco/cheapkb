@@ -2,8 +2,6 @@ export { DEFAULT_TAG_COLOR, TAG_COLORS } from "../../../functions/types";
 export type {
   Document,
   DocumentStatus,
-  QueryResult,
-  ResultGroup,
   Tag,
   TagColor,
   UsageSummary,

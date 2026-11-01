@@ -85,7 +85,7 @@ describe("infrastructure hardening", () => {
   it("limits Bedrock access to invoking the embedding model", () => {
     expect(config).toContain('actions: ["bedrock:InvokeModel"]');
     expect(config).toContain("resources: embeddingModelResources");
-    expect(config.match(/embeddingInvocationPermission/g)?.length).toBe(3);
+    expect(config.match(/embeddingInvocationPermission/g)?.length).toBe(4);
     expect(config).not.toContain('sts:AssumeRole"');
     expect(config).not.toContain("BEDROCK_REGION");
   });

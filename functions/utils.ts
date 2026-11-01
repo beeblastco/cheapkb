@@ -33,6 +33,7 @@ import type {
   APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
+import { createHash } from "node:crypto";
 import type {
   Account,
   AccountRow,
@@ -1074,6 +1075,11 @@ export function fitFilterableMetadata<T extends Record<string, unknown>>(
   }
 
   return fitted as T;
+}
+
+/** SHA-256 of an MCP API key; the key route stores it and the MCP route compares it. */
+export function hashMcpKey(apiKey: string): string {
+  return createHash("sha256").update(apiKey).digest("hex");
 }
 
 /** Whether a document counts against the in-flight limit: a pending replacement until it can

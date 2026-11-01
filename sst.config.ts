@@ -64,7 +64,13 @@ export default $config({
     const api = new sst.aws.ApiGatewayV2("Api", {
       cors: {
         allowOrigins: ["*"],
-        allowHeaders: ["Content-Type", "Authorization"],
+        allowHeaders: [
+          "Content-Type",
+          "Authorization",
+          "Mcp-Method",
+          "Mcp-Name",
+          "Mcp-Protocol-Version",
+        ],
         allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
       },
       transform: {
@@ -919,6 +925,73 @@ export default $config({
       },
     });
 
+    const mcpKeyFn = new sst.aws.Function("McpKey", {
+      handler: "./functions/mcp/key.handler",
+      runtime: "nodejs22.x",
+      timeout: "10 seconds",
+      memory: "128 MB",
+      description: "Read, rotate or revoke the caller's MCP key",
+      environment: baseEnv,
+      permissions: [
+        {
+          actions: [
+            "dynamodb:DeleteItem",
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+          ],
+          resources: [accountsTable.arn],
+        },
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("mcp-key");
+        },
+      },
+    });
+
+    // Runs the search, list and get handlers in process, so it needs their permissions.
+    const mcpFn = new sst.aws.Function("Mcp", {
+      handler: "./functions/mcp/index.handler",
+      runtime: "nodejs22.x",
+      timeout: "30 seconds",
+      memory: "256 MB",
+      description: "Stateless MCP server for MCP clients",
+      environment: embedEnv,
+      permissions: [
+        {
+          actions: ["s3:GetObject"],
+          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+        },
+        {
+          actions: [
+            "dynamodb:GetItem",
+            "dynamodb:PutItem",
+            "dynamodb:Query",
+            "dynamodb:UpdateItem",
+          ],
+          resources: [accountsTable.arn, rateLimitsTable.arn],
+        },
+        {
+          actions: ["dynamodb:GetItem"],
+          resources: [plansTable.arn],
+        },
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [table.arn, pulumi.interpolate`${table.arn}/index/*`],
+        },
+        {
+          actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
+          resources: [vectorIndexArn],
+        },
+        embeddingInvocationPermission,
+      ],
+      transform: {
+        function: (a) => {
+          a.name = name("mcp");
+        },
+      },
+    });
+
     const ingestAdapterFn = new sst.aws.Function("IngestAdapter", {
       handler: "./functions/s3/ingest-adapter.handler",
       runtime: "nodejs22.x",
@@ -1122,6 +1195,12 @@ export default $config({
     api.route("GET /account/usage", billingFn.arn, auth);
     api.route("GET /account", billingAccountFn.arn, auth);
     api.route("DELETE /account/data", accountResetFn.arn, auth);
+    api.route("GET /account/mcp-key", mcpKeyFn.arn, auth);
+    api.route("POST /account/mcp-key", mcpKeyFn.arn, auth);
+    api.route("DELETE /account/mcp-key", mcpKeyFn.arn, auth);
+    // The MCP Lambda checks the long-lived key on every call, so a revoke applies at once
+    // and the shared Shoo authorizer's per-token cache never sees the key.
+    api.route("ANY /mcp", mcpFn.arn);
 
     // GitHub Actions deploys through this role with short-lived OIDC tokens,
     // and only from this repository's production environment.

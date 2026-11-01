@@ -4,11 +4,15 @@
 
 Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pinned `@shoojs/auth` client instead of loading a script from shoo.dev, and signs you out when your token expires or the session is revoked. Each account can only access its own documents, images, and search results.
 
-Settings has **Delete all my data**, which deletes every document, image and tag in the account and resets storage to 0. Usage already spent in the current cycle stays.
+Open Settings from the avatar menu, or the usage line in the footer. It has three tabs:
+
+- **Usage**: percent of the plan used, reset date and storage.
+- **Connect agent**: create, rotate or revoke your MCP key and copy the setup for Claude Code, Codex or Broods. The key is shown once. See [MCP](../README.md#mcp).
+- **Account**: **Delete all my data**, which deletes every document, image and tag in the account and resets storage to 0. Usage already spent in the current cycle stays.
 
 ## Documents
 
-The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
+One toolbar holds the status filters (All, Indexed, Processing, Failed, Ready) with their counts, the search box, Add files, Sync all and the avatar menu. The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
 
 Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A failed document list or usage load has a Retry button and stays until you retry or close it. A failed detail load closes the detail panel. A document's own processing error also stays on its row.
 
@@ -18,7 +22,7 @@ Completed or failed documents can be replaced. Existing content remains searchab
 
 ## Search
 
-Search with text, one supported image up to 5 MiB, or both. Add filters when you want results from specific metadata.
+The web app has no semantic search panel. Search your content from Claude Code, Codex, Broods or another MCP client, or call `POST /query` with text, one supported image up to 5 MiB, or both.
 
 ## Development
 

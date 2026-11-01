@@ -15,12 +15,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardFooter,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -66,6 +64,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -85,7 +84,13 @@ import {
   validateUploadFile,
   writePendingDocuments,
 } from "@/lib/client";
-import type { Document, Tag, TagColor, UploadQueueItem } from "@/lib/types";
+import type {
+  Document,
+  Tag,
+  TagColor,
+  UploadQueueItem,
+  UsageSummary,
+} from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 import {
   type Column,
@@ -134,6 +139,13 @@ const SUPPORTED_EXTENSIONS = [
   ".txt",
   ".webp",
 ];
+const STATUS_FILTERS = [
+  { label: "All", value: "all" },
+  { label: "Indexed", value: "indexed" },
+  { label: "Processing", value: "processing" },
+  { label: "Failed", value: "failed" },
+  { label: "Ready", value: "ready" },
+] as const;
 // Mirrors the statuses the update endpoint accepts; anything mid-pipeline would
 // have its tags overwritten by the run in progress.
 const EDITABLE_TAG_STATUSES = new Set(["EMBEDDED", "FAILED"]);
@@ -191,8 +203,14 @@ const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
 type DocumentTableRow =
   | { document: Document; kind: "document" }
   | { item: UploadQueueItem; kind: "upload" };
+type StatusFilter = (typeof STATUS_FILTERS)[number]["value"];
 
+/** The whole workspace: one toolbar with status filters, search, upload actions and
+ * the account menu, the documents table, and a footer with usage and paging. */
 export function DocumentsCard({
+  accountMenu,
+  usage,
+  onOpenUsage,
   documents,
   loading,
   token,
@@ -206,6 +224,9 @@ export function DocumentsCard({
   onUsageChange,
   tagVocabulary,
 }: {
+  accountMenu: React.ReactNode;
+  usage: UsageSummary | null;
+  onOpenUsage: () => void;
   documents: Document[];
   loading: boolean;
   token: string;
@@ -234,6 +255,7 @@ export function DocumentsCard({
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sorting, setSorting] = useState<SortingState>([
     { id: "createdAt", desc: true },
   ]);
@@ -390,7 +412,7 @@ export function DocumentsCard({
     };
   }, [addFiles]);
 
-  const tableData = useMemo<DocumentTableRow[]>(
+  const allRows = useMemo<DocumentTableRow[]>(
     () => [
       ...items.map((item) => ({ item: item, kind: "upload" as const })),
       ...documents.map((document) => ({
@@ -399,6 +421,32 @@ export function DocumentsCard({
       })),
     ],
     [documents, items],
+  );
+  // Counts follow the search, so each tab shows how many rows it would list.
+  const statusCounts = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const counts: Record<StatusFilter, number> = {
+      all: 0,
+      failed: 0,
+      indexed: 0,
+      processing: 0,
+      ready: 0,
+    };
+    for (const row of allRows) {
+      if (getSearchValue(row).includes(search)) {
+        counts.all += 1;
+        counts[statusBucket(row)] += 1;
+      }
+    }
+
+    return counts;
+  }, [allRows, query]);
+  const tableData = useMemo(
+    () =>
+      statusFilter === "all"
+        ? allRows
+        : allRows.filter((row) => statusBucket(row) === statusFilter),
+    [allRows, statusFilter],
   );
   const table = useTable({
     // Polling replaces the data every few seconds; the clamp effect below keeps
@@ -449,20 +497,21 @@ export function DocumentsCard({
   const editingDocument =
     documents.find((document) => document.documentId === editingDocumentId) ||
     null;
+  const filtering = query !== "" || statusFilter !== "all";
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
 
   useEffect(() => {
     setRowSelection({});
-  }, [query]);
+  }, [query, statusFilter]);
 
   // A new search or sort starts from the top; polling alone keeps the page.
   useEffect(() => {
     setPagination((current) =>
       current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
     );
-  }, [query, sorting]);
+  }, [query, sorting, statusFilter]);
 
   useEffect(() => {
     if (pageCount === 0 || pagination.pageIndex < pageCount) return;
@@ -670,11 +719,41 @@ export function DocumentsCard({
       ) : null}
       <Card className="h-full min-w-0">
         <CardHeader>
-          <CardTitle>Documents</CardTitle>
-          <CardDescription>
-            {documents.length + items.length} total · 50 per page
-          </CardDescription>
-          <CardAction>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
+              <img alt="" className="size-6" src="/icon.svg" />
+              <p className="font-semibold">cheapkb</p>
+            </div>
+            <Tabs
+              onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+              value={statusFilter}
+            >
+              <TabsList>
+                {STATUS_FILTERS.map((filter) => (
+                  <TabsTrigger
+                    className="cursor-pointer"
+                    key={filter.value}
+                    value={filter.value}
+                  >
+                    {filter.label}
+                    <span className="text-muted-foreground tabular-nums">
+                      {statusCounts[filter.value]}
+                    </span>
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            <InputGroup className="ml-auto max-w-xs">
+              <InputGroupInput
+                aria-label="Search documents"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search"
+                value={query}
+              />
+              <InputGroupAddon>
+                <Search />
+              </InputGroupAddon>
+            </InputGroup>
             <div className="flex items-center gap-2">
               {loading ? <Spinner /> : null}
               {selectedCount ? (
@@ -737,8 +816,9 @@ export function DocumentsCard({
                 )}
                 Sync all{readyCount ? ` (${readyCount})` : ""}
               </Button>
+              {accountMenu}
             </div>
-          </CardAction>
+          </div>
           <input
             ref={fileInput}
             accept=".pdf,.txt,.md,.gif,.jpeg,.jpg,.png,.webp"
@@ -752,18 +832,6 @@ export function DocumentsCard({
           />
         </CardHeader>
         <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <InputGroup className="mb-4 max-w-sm">
-            <InputGroupInput
-              aria-label="Search documents"
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search documents"
-              value={query}
-            />
-            <InputGroupAddon>
-              <Search />
-            </InputGroupAddon>
-          </InputGroup>
-
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden *:data-[slot=table-container]:h-full">
             <Table className="min-w-250 table-fixed">
               <TableHeader className="sticky top-0 z-10">
@@ -854,11 +922,13 @@ export function DocumentsCard({
                       <Empty>
                         <EmptyHeader>
                           <EmptyTitle>
-                            {query ? "No matching documents" : "No documents"}
+                            {filtering
+                              ? "No matching documents"
+                              : "No documents"}
                           </EmptyTitle>
                           <EmptyDescription>
-                            {query
-                              ? "Try a different search."
+                            {filtering
+                              ? "Try a different search or filter."
                               : "Drop documents or images anywhere on this page."}
                           </EmptyDescription>
                         </EmptyHeader>
@@ -870,8 +940,18 @@ export function DocumentsCard({
             </Table>
           </div>
         </CardContent>
-        <CardFooter className="justify-between">
-          <CardDescription>
+        <CardFooter>
+          <Button
+            className="cursor-pointer"
+            onClick={onOpenUsage}
+            size="sm"
+            variant="ghost"
+          >
+            {usage
+              ? `${Math.min(usage.pctUsed, 100).toFixed(0)}% of ${usage.planLabel} plan used`
+              : "Usage"}
+          </Button>
+          <CardDescription className="ml-auto">
             {totalCount
               ? `${pagination.pageIndex * PAGE_SIZE + 1}–${Math.min((pagination.pageIndex + 1) * PAGE_SIZE, totalCount)} of ${totalCount}`
               : "0 documents"}
@@ -1482,4 +1562,15 @@ function splitList(value: string): string[] | undefined {
     .map((item) => item.trim())
     .filter(Boolean);
   return items.length ? items : undefined;
+}
+
+/** Which status filter tab a table row falls under. */
+function statusBucket(row: DocumentTableRow): StatusFilter {
+  if (row.kind === "upload") {
+    if (row.item.state === "READY") return "ready";
+    return row.item.state === "FAILED" ? "failed" : "processing";
+  }
+  if (row.document.status === "EMBEDDED") return "indexed";
+
+  return row.document.status === "FAILED" ? "failed" : "processing";
 }
