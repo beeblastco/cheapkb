@@ -11,10 +11,20 @@ import type {
 import { z } from "zod";
 import { handler as getHandler } from "../admin/get";
 import { handler as listHandler } from "../admin/list";
+import { handler as uploadHandler } from "../admin/upload";
 import { handler as queryHandler } from "../query/index";
 import { dynamo, hashMcpKey } from "../utils";
 
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
+const MIME_TYPES = [
+  "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "text/markdown",
+  "text/plain",
+] as const;
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false };
 // Built once per container; each request gets a fresh server for the user in its authInfo.
 const mcp = createMcpHandler(
@@ -25,10 +35,11 @@ const mcp = createMcpHandler(
 
     return createServer(event, authInfo.clientId);
   },
-  { responseMode: "json" },
+  // Only MCP 2026-07-28: stateless by design, so there is no 2025 session fallback.
+  { legacy: "reject", responseMode: "json" },
 );
 
-/** ANY /mcp: stateless MCP 2026-07-28, plus 2025-era clients, authenticated by the MCP key.
+/** ANY /mcp: stateless MCP 2026-07-28, authenticated by the caller's MCP key.
  * Tools run the matching API handler, so search keeps its rate limit and usage charge. */
 export async function handler(
   event: APIGatewayProxyEventV2,
@@ -87,6 +98,66 @@ export async function handler(
     statusCode: response.status,
     headers: Object.fromEntries(response.headers),
     body: body,
+  };
+}
+
+/** Creates the document through the upload handler, so caps, rate limit and usage apply,
+ * then posts the bytes to its S3 form; the S3 event starts indexing as for the web app. */
+async function addDocument(
+  event: APIGatewayProxyEventV2,
+  userId: string,
+  args: {
+    filename: string;
+    mimeType: string;
+    content: string;
+    title?: string;
+    tags?: string[];
+  },
+): Promise<APIGatewayProxyStructuredResultV2> {
+  const { content, ...metadata } = args;
+  const created = await uploadHandler(
+    withUser(event, userId, { body: JSON.stringify(metadata) }),
+  );
+  if ((created.statusCode ?? 500) >= 400) return created;
+  const { documentId, uploadUrl, uploadFields, maxUploadBytes } = JSON.parse(
+    created.body ?? "{}",
+  ) as {
+    documentId: string;
+    uploadUrl: string;
+    uploadFields: Record<string, string>;
+    maxUploadBytes: number;
+  };
+  const bytes = Buffer.from(
+    content,
+    args.mimeType.startsWith("text/") ? "utf8" : "base64",
+  );
+  if (bytes.length > maxUploadBytes) {
+    return {
+      statusCode: 413,
+      body: JSON.stringify({
+        error: `File is over the ${maxUploadBytes} byte limit`,
+      }),
+    };
+  }
+  const form = new FormData();
+  for (const [key, value] of Object.entries(uploadFields)) {
+    form.append(key, value);
+  }
+  form.append("file", new Blob([bytes], { type: args.mimeType }));
+  const stored = await fetch(uploadUrl, { method: "POST", body: form });
+  if (!stored.ok) {
+    return {
+      statusCode: 502,
+      body: JSON.stringify({
+        error: "Storage rejected the file",
+        documentId: documentId,
+      }),
+    };
+  }
+
+  return {
+    statusCode: 202,
+    body: JSON.stringify({ documentId: documentId, status: "UPLOADED" }),
   };
 }
 
@@ -175,6 +246,27 @@ function createServer(
           withUser(event, userId, { pathParameters: { id: documentId } }),
         ),
       ),
+  );
+  server.registerTool(
+    "add_document",
+    {
+      title: "Add document",
+      description:
+        "Add a file to the user's cheapkb. Text and Markdown go in as-is; PDF and images as base64. A file with the same name and type replaces the old one. Indexing runs in the background; check it with get_document.",
+      inputSchema: z.object({
+        filename: z
+          .string()
+          .describe('File name with extension, e.g. "notes.md"'),
+        mimeType: z.enum(MIME_TYPES),
+        content: z
+          .string()
+          .describe("UTF-8 text for text/*, base64 for PDF and images"),
+        title: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    async (args) => toToolResult(await addDocument(event, userId, args)),
   );
 
   return server;

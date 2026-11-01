@@ -443,14 +443,15 @@ paths:
   /mcp:
     post:
       operationId: mcp
-      summary: MCP Streamable HTTP endpoint for Claude Code, Codex and other MCP clients
+      summary: MCP endpoint for Claude Code, Codex, Broods and other MCP clients
       description: |
-        Stateless MCP server for protocol 2026-07-28 (server/discover, no
-        session), with stateless fallback for 2025-era clients that send
-        initialize. Authenticates with an MCP key
-        from POST /account/mcp-key as a Bearer token instead of a Shoo token.
-        Tools: search (same limits and usage charge as POST /query),
-        list_documents and get_document, all read-only. GET and DELETE return 405.
+        Stateless MCP server for protocol 2026-07-28 only (server/discover, no
+        session). A 2025-era initialize is refused as an unsupported version.
+        Authenticates with an MCP key from POST /account/mcp-key as a Bearer
+        token instead of a Shoo token. Tools: search (same limits and usage
+        charge as POST /query), list_documents, get_document, and add_document
+        (same caps, rate limit and charges as POST /upload).
+        subscriptions/listen returns 405.
       tags: [mcp]
       security:
         - mcpKey: []

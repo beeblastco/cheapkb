@@ -955,29 +955,35 @@ export default $config({
       runtime: "nodejs22.x",
       timeout: "30 seconds",
       memory: "256 MB",
-      description: "Stateless MCP server for MCP clients",
+      description: "Stateless MCP 2026-07-28 server for agents",
       environment: embedEnv,
       permissions: [
         {
           actions: ["s3:GetObject"],
           resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
         },
+        // add_document signs the S3 upload form with this role, as the Upload function does.
+        {
+          actions: ["s3:PutObject"],
+          resources: [pulumi.interpolate`${storage.arn}/raw/*`],
+        },
         {
           actions: [
             "dynamodb:GetItem",
             "dynamodb:PutItem",
             "dynamodb:Query",
+            "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
-          resources: [accountsTable.arn, rateLimitsTable.arn],
+          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
         },
         {
           actions: ["dynamodb:GetItem"],
           resources: [plansTable.arn],
         },
         {
-          actions: ["dynamodb:GetItem", "dynamodb:Query"],
-          resources: [table.arn, pulumi.interpolate`${table.arn}/index/*`],
+          actions: ["dynamodb:Query"],
+          resources: [pulumi.interpolate`${table.arn}/index/*`],
         },
         {
           actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],

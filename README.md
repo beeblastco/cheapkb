@@ -46,7 +46,7 @@ The `/v1` API supports uploads, search, documents, tags, account usage, account 
 
 ## MCP
 
-Claude Code, Codex, Broods and other MCP clients can search your knowledge base. The server speaks MCP 2026-07-28 and answers 2025-era clients statelessly. Create an MCP key in the web app under Settings, then:
+Claude Code, Codex, Broods and other MCP clients can search and add to your knowledge base. The server speaks MCP 2026-07-28 only. Create an MCP key in the web app under Settings, then:
 
 ```bash
 claude mcp add --transport http cheapkb <API_URL>/mcp --header "Authorization: Bearer <MCP_KEY>"
@@ -70,7 +70,7 @@ defineMcp({
 });
 ```
 
-Tools: `search`, `list_documents`, `get_document`. All are read-only.
+Tools: `search`, `list_documents`, `get_document` and `add_document`.
 
 ## Verify changes
 

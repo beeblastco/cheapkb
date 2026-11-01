@@ -14,7 +14,7 @@ Open Settings from the avatar menu, or the usage line in the footer. It has thre
 
 One toolbar holds the status filters (All, Indexed, Processing, Failed, Ready) with their counts, the search box, Add files, Sync all and the avatar menu. The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
 
-Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A failed document list or usage load has a Retry button and stays until you retry or close it. A failed detail load closes the detail panel. A document's own processing error also stays on its row.
+Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A failed document list or usage load has a Retry button and stays until you retry or close it. A failed detail load closes the detail panel. Every row is one line of fixed height. A document's own processing error shows on its status badge: hover it to read the error.
 
 Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MiB and other files over 50 MiB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
 

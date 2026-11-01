@@ -113,6 +113,7 @@ import {
 } from "@tanstack/react-table";
 import {
   ArrowDownUp,
+  CircleAlert,
   FilePlus2,
   Pencil,
   RefreshCw,
@@ -1075,7 +1076,7 @@ function DocumentRow({
   return (
     <TableRow
       aria-label={`View ${document.title || document.documentId}`}
-      className="cursor-pointer"
+      className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
@@ -1098,27 +1099,24 @@ function DocumentRow({
         />
       </TableCell>
       <TableCell className="max-w-0">
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-medium">
             {document.title || document.documentId}
           </span>
-          <span className="truncate text-muted-foreground">
-            {document.mimeType || document.documentId}
+          <span className="shrink-0 text-muted-foreground">
+            {document.mimeType}
           </span>
-          {document.lastError ? (
-            <span className="truncate text-destructive">
-              {document.lastError}
-            </span>
-          ) : null}
         </div>
       </TableCell>
       <TableCell className="max-w-0">
         <TagList colorOf={colorOf} tags={document.tags ?? []} />
       </TableCell>
       <TableCell>
-        <Badge variant={getStatusBadgeVariant(document.status)}>
-          {document.status}
-        </Badge>
+        <StatusBadge
+          error={document.lastError}
+          label={document.status}
+          variant={getStatusBadgeVariant(document.status)}
+        />
       </TableCell>
       <TableCell>
         <span className="block truncate">{formatDate(document.createdAt)}</span>
@@ -1321,6 +1319,33 @@ function SortableHead({
 }
 
 /** Renders a document's tags as colored badges, or a dash when there are none. */
+/** Status badge for a row; an error shows in a tooltip, so a failed row keeps one line. */
+function StatusBadge({
+  error,
+  label,
+  variant,
+}: {
+  error?: string | null;
+  label: string;
+  variant: React.ComponentProps<typeof Badge>["variant"];
+}): React.JSX.Element {
+  if (!error) return <Badge variant={variant}>{label}</Badge>;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        className="cursor-help"
+        onClick={(event) => event.stopPropagation()}
+        render={<Badge variant={variant} />}
+      >
+        <CircleAlert data-icon="inline-start" />
+        {label}
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80">{error}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function TagList({
   colorOf,
   tags,
@@ -1331,7 +1356,7 @@ function TagList({
   if (!tags.length) return <span className="text-muted-foreground">—</span>;
 
   return (
-    <div className="flex flex-wrap gap-1">
+    <div className="flex gap-1 overflow-hidden">
       {tags.map((name) => (
         <TagBadge color={colorOf(name)} key={name} name={name} />
       ))}
@@ -1453,7 +1478,7 @@ function UploadRow({
   return (
     <TableRow
       aria-label={`Edit ${item.title}`}
-      className="cursor-pointer"
+      className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
       onClick={onEdit}
       onKeyDown={(event) => {
@@ -1476,14 +1501,11 @@ function UploadRow({
         />
       </TableCell>
       <TableCell className="max-w-0">
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-medium">{item.title}</span>
-          <span className="truncate text-muted-foreground">
+          <span className="shrink-0 text-muted-foreground">
             {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
           </span>
-          {item.error ? (
-            <span className="truncate text-destructive">{item.error}</span>
-          ) : null}
         </div>
       </TableCell>
       <TableCell className="max-w-0">
@@ -1494,7 +1516,11 @@ function UploadRow({
           {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
             <Spinner />
           ) : null}
-          <Badge variant="outline">{item.state}</Badge>
+          <StatusBadge
+            error={item.error}
+            label={item.state}
+            variant="outline"
+          />
         </div>
       </TableCell>
       <TableCell>—</TableCell>

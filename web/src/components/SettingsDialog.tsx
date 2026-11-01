@@ -30,6 +30,13 @@ import type { UsageSummary } from "@/lib/types";
 import { formatBytes } from "@/lib/utils";
 import { Copy, KeyRound, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { parse, render } from "sugar-high/core";
+import * as shell from "sugar-high/lang/shell";
+import * as toml from "sugar-high/lang/toml";
+import * as typescript from "sugar-high/lang/typescript";
+
+// Only the three grammars the setup snippets use, not sugar-high's full registry.
+const LANGUAGES = { shell: shell, toml: toml, typescript: typescript };
 
 export type SettingsTab = "usage" | "agent" | "account";
 
@@ -182,24 +189,12 @@ export function SettingsDialog({
 
           <TabsContent value="agent">
             <div className="flex flex-col gap-3">
-              <p className="text-muted-foreground">
-                Search and read your documents from Claude Code, Codex or Broods
-                over MCP.
-              </p>
-              {newKey ? (
-                <div className="flex flex-col gap-1">
-                  <CodeLine onCopy={copy} text={newKey} />
-                  <p className="text-muted-foreground">
-                    Shown once. Copy it now.
-                  </p>
-                </div>
-              ) : null}
               <div className="flex items-center gap-2">
                 <p className="flex-1 text-muted-foreground">
                   {keyCreatedAt === undefined
-                    ? "Loading key status"
+                    ? "Loading key"
                     : keyCreatedAt
-                      ? `Active key created ${formatDate(keyCreatedAt)}`
+                      ? `Key created ${formatDate(keyCreatedAt)}`
                       : "No key yet"}
                 </p>
                 {keyCreatedAt ? (
@@ -239,26 +234,68 @@ export function SettingsDialog({
                   </Button>
                 )}
               </div>
-              <p className="font-medium">Claude Code</p>
-              <CodeLine
-                onCopy={copy}
-                text={`claude mcp add --transport http cheapkb ${mcpUrl} --header "Authorization: Bearer ${shownKey}"`}
-              />
-              <p className="font-medium">Codex, in ~/.codex/config.toml</p>
-              <CodeLine
-                onCopy={copy}
-                text={`[mcp_servers.cheapkb]\nurl = "${mcpUrl}"\nbearer_token_env_var = "CHEAPKB_MCP_KEY"`}
-              />
-              <CodeLine
-                onCopy={copy}
-                text={`export CHEAPKB_MCP_KEY=${shownKey}`}
-              />
-              <p className="font-medium">Broods</p>
-              <CodeLine onCopy={copy} text="broods env set CHEAPKB_MCP_KEY" />
-              <CodeLine
-                onCopy={copy}
-                text={`defineMcp({\n  name: "cheapkb",\n  url: "${mcpUrl}",\n  headers: { Authorization: "Bearer \${CHEAPKB_MCP_KEY}" },\n});`}
-              />
+              {newKey ? (
+                <CodeLine
+                  lang="shell"
+                  note="Shown once"
+                  onCopy={copy}
+                  text={newKey}
+                />
+              ) : null}
+              <Tabs defaultValue="claude">
+                <TabsList variant="line">
+                  <TabsTrigger className="cursor-pointer" value="claude">
+                    Claude Code
+                  </TabsTrigger>
+                  <TabsTrigger className="cursor-pointer" value="codex">
+                    Codex
+                  </TabsTrigger>
+                  <TabsTrigger className="cursor-pointer" value="broods">
+                    Broods
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="claude">
+                  {" "}
+                  <div className="flex flex-col gap-2">
+                    <CodeLine
+                      lang="shell"
+                      onCopy={copy}
+                      text={`claude mcp add --transport http cheapkb ${mcpUrl} \\\n  --header "Authorization: Bearer ${shownKey}"`}
+                    />{" "}
+                  </div>{" "}
+                </TabsContent>
+                <TabsContent value="codex">
+                  {" "}
+                  <div className="flex flex-col gap-2">
+                    <CodeLine
+                      lang="shell"
+                      onCopy={copy}
+                      text={`export CHEAPKB_MCP_KEY=${shownKey}`}
+                    />
+                    <CodeLine
+                      lang="toml"
+                      note="~/.codex/config.toml"
+                      onCopy={copy}
+                      text={`[mcp_servers.cheapkb]\nurl = "${mcpUrl}"\nbearer_token_env_var = "CHEAPKB_MCP_KEY"`}
+                    />{" "}
+                  </div>{" "}
+                </TabsContent>
+                <TabsContent value="broods">
+                  {" "}
+                  <div className="flex flex-col gap-2">
+                    <CodeLine
+                      lang="shell"
+                      onCopy={copy}
+                      text="broods env set CHEAPKB_MCP_KEY"
+                    />
+                    <CodeLine
+                      lang="typescript"
+                      onCopy={copy}
+                      text={`defineMcp({\n  name: "cheapkb",\n  url: "${mcpUrl}",\n  headers: { Authorization: "Bearer \${CHEAPKB_MCP_KEY}" },\n});`}
+                    />{" "}
+                  </div>{" "}
+                </TabsContent>
+              </Tabs>
             </div>
           </TabsContent>
 
@@ -287,19 +324,31 @@ export function SettingsDialog({
   );
 }
 
-/** Monospace snippet with a copy button, used for the MCP key and setup commands. */
+/** Syntax-highlighted snippet with a copy button, for the MCP key and agent setup.
+ * An optional note labels it, such as the file it belongs in. */
 function CodeLine({
-  text,
+  lang,
+  note,
   onCopy,
+  text,
 }: {
-  text: string;
+  lang: keyof typeof LANGUAGES;
+  note?: string;
   onCopy: (text: string) => void;
+  text: string;
 }): React.JSX.Element {
   return (
     <div className="flex items-start gap-2 rounded-md bg-muted p-2">
-      <pre className="min-w-0 flex-1 font-mono text-xs break-all whitespace-pre-wrap">
-        {text}
-      </pre>
+      <div className="min-w-0 flex-1">
+        {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+        <pre
+          className="font-mono text-xs break-all whitespace-pre-wrap"
+          // sugar-high escapes the code and only adds its own token spans.
+          dangerouslySetInnerHTML={{
+            __html: render(parse(text, LANGUAGES[lang])),
+          }}
+        />
+      </div>
       <Button
         aria-label="Copy"
         className="cursor-pointer"

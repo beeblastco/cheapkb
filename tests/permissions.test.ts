@@ -36,10 +36,9 @@ const TRANSACT_ITEM_ACTIONS: Record<string, string> = {
   Update: "dynamodb:UpdateItem",
 };
 const UTILS = "functions/utils.ts";
-// Calls the code can't reach: query, also run in process by the MCP server, records usage
-// without an operationId, so it never takes recordUsage's transaction branch.
+// Calls the code can't reach: query records usage without an operationId, so it never
+// takes recordUsage's transaction branch.
 const UNREACHABLE: Record<string, string[]> = {
-  "functions/mcp/index": ["dynamodb:TransactWriteItems"],
   "functions/query/index": ["dynamodb:TransactWriteItems"],
 };
 
