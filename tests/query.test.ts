@@ -80,6 +80,24 @@ describe("query tenant filter", () => {
       "Unsupported filter",
     );
   });
+
+  it("keeps filters within the 100 constraints S3 Vectors accepts", () => {
+    const values = (count: number): string[] =>
+      Array.from({ length: count }, (_, index) => `v${index}`);
+
+    expect(() =>
+      buildFilter({ tags: { $in: values(98) } }, "owner"),
+    ).not.toThrow();
+    expect(() => buildFilter({ tags: { $in: values(99) } }, "owner")).toThrow(
+      "at most 98 values",
+    );
+    expect(() =>
+      buildFilter(
+        { tags: { $in: values(50) }, authors: { $in: values(49) } },
+        "owner",
+      ),
+    ).toThrow("at most 98 values");
+  });
 });
 
 describe("query handler usage", () => {

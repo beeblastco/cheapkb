@@ -34,6 +34,8 @@ const FILTER_KEYS = new Set([
   "year",
 ]);
 const FILTER_OPERATORS = new Set(["$eq", "$gte", "$lte", "$in"]);
+// S3 Vectors counts each condition and each $in value; more is a ValidationException
+const MAX_FILTER_CONSTRAINTS = 100;
 const IMAGE_DATA_URI =
   /^data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
 
@@ -292,6 +294,7 @@ export function buildFilter(
     { embeddingModel: { $eq: embeddingModel() } },
     { userId: { $eq: userId } },
   ];
+  let constraints = conditions.length;
   for (const [key, value] of Object.entries(filters ?? {})) {
     if (key === "userId") continue;
     if (!FILTER_KEYS.has(key)) {
@@ -317,6 +320,7 @@ export function buildFilter(
         conditions.push({
           [key]: { [operator]: operatorValue as DocumentType },
         });
+        constraints += Array.isArray(operatorValue) ? operatorValue.length : 1;
       }
     } else {
       // JSON like 1e999 parses to Infinity, which S3 Vectors rejects with a 500.
@@ -330,8 +334,15 @@ export function buildFilter(
         );
       }
       conditions.push({ [key]: { $eq: value } });
+      constraints += 1;
     }
   }
+  if (constraints > MAX_FILTER_CONSTRAINTS) {
+    throw new Error(
+      `Filters allow at most ${MAX_FILTER_CONSTRAINTS - 2} values in total, counting each $in value`,
+    );
+  }
+
   return { $and: conditions };
 }
 
