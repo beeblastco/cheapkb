@@ -1,9 +1,11 @@
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
   QueryCommand,
   TransactWriteCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
   Client,
@@ -121,6 +123,14 @@ describe("MCP", () => {
       "list_documents",
       "get_document",
       "add_document",
+      "update_document_tags",
+      "reindex_document",
+      "delete_document",
+      "list_tags",
+      "create_tag",
+      "update_tag",
+      "delete_tag",
+      "get_usage",
     ]);
     expect(tools.every((tool) => tool.inputSchema.type === "object")).toBe(
       true,
@@ -135,6 +145,24 @@ describe("MCP", () => {
     );
     const form = storage.mock.calls[0][1].body as FormData;
     expect(await (form.get("file") as Blob).text()).toBe("# Notes");
+  });
+
+  it("refuses to delete another user's document", async () => {
+    const apiKey = await trustIssuedKey();
+    dynamoMock
+      .on(GetCommand, { Key: { pk: "DOC#doc_other", sk: "META" } })
+      .resolves({ Item: { documentId: "doc_other", userId: "someone-else" } });
+    const client = await connect(apiKey, "2026-07-28");
+
+    const deleted = await client.callTool({
+      name: "delete_document",
+      arguments: { documentId: "doc_other" },
+    });
+    await client.close();
+
+    expect(deleted.isError).toBe(true);
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(dynamoMock.commandCalls(DeleteCommand)).toHaveLength(0);
   });
 
   it("refuses empty or non-base64 content before reserving the filename", async () => {

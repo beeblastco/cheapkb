@@ -959,7 +959,7 @@ export default $config({
       },
     });
 
-    // Runs the search, list, get and upload handlers in process, so it needs their permissions.
+    // Runs the document, tag, search and usage handlers in process, so it needs their permissions.
     const mcpFn = new sst.aws.Function("Mcp", {
       handler: "./functions/mcp/index.handler",
       runtime: "nodejs22.x",
@@ -968,10 +968,17 @@ export default $config({
       description: "Stateless MCP 2026-07-28 server for agents",
       environment: embedEnv,
       permissions: [
+        // delete_document removes every object and version under the document, as AdminDelete does.
         {
-          actions: ["s3:GetObject"],
-          resources: [pulumi.interpolate`${storage.arn}/chunks/*`],
+          actions: [
+            "s3:ListBucketVersions",
+            "s3:GetObject",
+            "s3:DeleteObject",
+            "s3:DeleteObjectVersion",
+          ],
+          resources: [storage.arn, pulumi.interpolate`${storage.arn}/*`],
         },
+        { actions: ["s3:ListBucket"], resources: [storage.arn] },
         // add_document signs the S3 upload form with this role, as the Upload function does.
         {
           actions: ["s3:PutObject"],
@@ -979,13 +986,20 @@ export default $config({
         },
         {
           actions: [
+            "dynamodb:BatchWriteItem",
+            "dynamodb:DeleteItem",
             "dynamodb:GetItem",
             "dynamodb:PutItem",
             "dynamodb:Query",
             "dynamodb:TransactWriteItems",
             "dynamodb:UpdateItem",
           ],
-          resources: [table.arn, accountsTable.arn, rateLimitsTable.arn],
+          resources: [
+            table.arn,
+            accountsTable.arn,
+            rateLimitsTable.arn,
+            tagsTable.arn,
+          ],
         },
         {
           actions: ["dynamodb:GetItem"],
@@ -996,9 +1010,15 @@ export default $config({
           resources: [pulumi.interpolate`${table.arn}/index/*`],
         },
         {
-          actions: ["s3vectors:QueryVectors", "s3vectors:GetVectors"],
+          actions: [
+            "s3vectors:DeleteVectors",
+            "s3vectors:GetVectors",
+            "s3vectors:PutVectors",
+            "s3vectors:QueryVectors",
+          ],
           resources: [vectorIndexArn],
         },
+        { actions: ["sqs:SendMessage"], resources: [pipelineQueue.arn] },
         embeddingInvocationPermission,
       ],
       transform: {

@@ -458,7 +458,11 @@ paths:
         charge as POST /query), list_documents, get_document, and add_document
         (same caps, rate limit and charges as POST /upload; empty, non-base64
         or oversized content is refused before the document is created; the
-        6 MB Lambda request cap limits it to files of about 4 MB).
+        6 MB Lambda request cap limits it to files of about 4 MB),
+        update_document_tags, reindex_document, delete_document, list_tags,
+        create_tag, update_tag, delete_tag and get_usage, each with the same
+        checks as its API route. Deleting all data and the MCP key are web
+        app only.
         subscriptions/listen returns 405.
       tags: [mcp]
       security:

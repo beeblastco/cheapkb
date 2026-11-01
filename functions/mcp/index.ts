@@ -9,10 +9,19 @@ import type {
   APIGatewayProxyStructuredResultV2,
 } from "aws-lambda";
 import { z } from "zod";
+import { handler as deleteHandler } from "../admin/delete";
 import { handler as getHandler } from "../admin/get";
 import { handler as listHandler } from "../admin/list";
+import { handler as reindexHandler } from "../admin/reindex";
+import { handler as updateHandler } from "../admin/update";
 import { handler as uploadHandler } from "../admin/upload";
+import { handler as usageHandler } from "../admin/usage";
 import { handler as queryHandler } from "../query/index";
+import { handler as createTagHandler } from "../tags/create";
+import { handler as deleteTagHandler } from "../tags/delete";
+import { handler as listTagsHandler } from "../tags/list";
+import { handler as updateTagHandler } from "../tags/update";
+import { TAG_COLORS } from "../types";
 import {
   dynamo,
   hashMcpKey,
@@ -31,7 +40,17 @@ const MIME_TYPES = [
   "text/markdown",
   "text/plain",
 ] as const;
+const DESTRUCTIVE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  openWorldHint: false,
+};
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false };
+const WRITE = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+};
 // Built once per container; each request gets a fresh server for the user in its authInfo.
 const mcp = createMcpHandler(
   ({ authInfo }) => {
@@ -46,7 +65,7 @@ const mcp = createMcpHandler(
 );
 
 /** ANY /mcp: stateless MCP 2026-07-28, authenticated by the caller's MCP key.
- * Tools run the matching API handler, so search keeps its rate limit and usage charge. */
+ * Tools run the matching API handler, so every limit, ownership check and charge still applies. */
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
@@ -195,7 +214,8 @@ async function verifyMcpKey(apiKey: string): Promise<string | null> {
   return result.Item?.keyHash === hashMcpKey(apiKey) ? userId : null;
 }
 
-/** Builds the per-request server with the search, read and add tools, bound to the key's user. */
+/** Builds the per-request server bound to the key's user: everything the web app does except
+ * deleting all data and managing the MCP key, which stay in the web app. */
 function createServer(
   event: APIGatewayProxyEventV2,
   userId: string,
@@ -281,9 +301,147 @@ function createServer(
         tags: z.array(z.string()).optional(),
       }),
       // A file with the same name and type replaces the old one.
-      annotations: { readOnlyHint: false, destructiveHint: true },
+      annotations: DESTRUCTIVE,
     },
     async (args) => toToolResult(await addDocument(event, userId, args)),
+  );
+  server.registerTool(
+    "update_document_tags",
+    {
+      title: "Update document tags",
+      description:
+        "Replace a document's tags. Pass the full list; an empty list clears them.",
+      inputSchema: z.object({
+        documentId: z.string().describe("Document id"),
+        tags: z.array(z.string()),
+      }),
+      annotations: DESTRUCTIVE,
+    },
+    async ({ documentId, tags }) =>
+      toToolResult(
+        await updateHandler(
+          withUser(event, userId, {
+            pathParameters: { id: documentId },
+            body: JSON.stringify({ tags: tags }),
+          }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "reindex_document",
+    {
+      title: "Reindex document",
+      description:
+        "Restart indexing for a failed or stuck document from its last good step.",
+      inputSchema: z.object({
+        documentId: z.string().describe("Document id"),
+      }),
+      annotations: WRITE,
+    },
+    async ({ documentId }) =>
+      toToolResult(
+        await reindexHandler(
+          withUser(event, userId, { pathParameters: { id: documentId } }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "delete_document",
+    {
+      title: "Delete document",
+      description:
+        "Permanently delete a document with its file, search data and vectors.",
+      inputSchema: z.object({
+        documentId: z.string().describe("Document id"),
+      }),
+      annotations: DESTRUCTIVE,
+    },
+    async ({ documentId }) =>
+      toToolResult(
+        await deleteHandler(
+          withUser(event, userId, { pathParameters: { id: documentId } }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "list_tags",
+    {
+      title: "List tags",
+      description: "List the user's tags with their colors.",
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+    },
+    async () =>
+      toToolResult(await listTagsHandler(withUser(event, userId, {}))),
+  );
+  server.registerTool(
+    "create_tag",
+    {
+      title: "Create tag",
+      description:
+        "Create a tag, or return the existing one with that name. Tags on documents are set with update_document_tags.",
+      inputSchema: z.object({
+        name: z.string(),
+        color: z.enum(TAG_COLORS).optional(),
+      }),
+      annotations: WRITE,
+    },
+    async (args) =>
+      toToolResult(
+        await createTagHandler(
+          withUser(event, userId, { body: JSON.stringify(args) }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "update_tag",
+    {
+      title: "Update tag color",
+      description: "Change a tag's color.",
+      inputSchema: z.object({
+        name: z.string(),
+        color: z.enum(TAG_COLORS),
+      }),
+      annotations: WRITE,
+    },
+    async ({ name, color }) =>
+      toToolResult(
+        await updateTagHandler(
+          withUser(event, userId, {
+            pathParameters: { name: encodeURIComponent(name) },
+            body: JSON.stringify({ color: color }),
+          }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "delete_tag",
+    {
+      title: "Delete tag",
+      description:
+        "Delete a tag from the user's tag list. Documents keep their tags until retagged.",
+      inputSchema: z.object({ name: z.string() }),
+      annotations: DESTRUCTIVE,
+    },
+    async ({ name }) =>
+      toToolResult(
+        await deleteTagHandler(
+          withUser(event, userId, {
+            pathParameters: { name: encodeURIComponent(name) },
+          }),
+        ),
+      ),
+  );
+  server.registerTool(
+    "get_usage",
+    {
+      title: "Get usage",
+      description:
+        "This month's usage: spend against the plan allowance, storage, and the reset date.",
+      inputSchema: z.object({}),
+      annotations: READ_ONLY,
+    },
+    async () => toToolResult(await usageHandler(withUser(event, userId, {}))),
   );
 
   return server;
@@ -294,7 +452,13 @@ function toToolResult(
   response: APIGatewayProxyStructuredResultV2,
 ): CallToolResult {
   return {
-    content: [{ type: "text", text: response.body ?? "" }],
+    // A 204 has no body, so the status stands in for it.
+    content: [
+      {
+        type: "text",
+        text: response.body || JSON.stringify({ status: response.statusCode }),
+      },
+    ],
     isError: (response.statusCode ?? 200) >= 400,
   };
 }
