@@ -46,7 +46,7 @@ jobs:
       # reaches tooling, and its exception fails the check once GitHub names a fix or npm stops reporting it.
       - if: github.event_name == 'pull_request'
         env:
-          ALLOWED_ADVISORIES: "GHSA-ch52-4w7c-c8xp GHSA-vfj7-8cjw-p6xm"
+          ALLOWED_ADVISORIES: ""
           GH_TOKEN: ${{ github.token }}
         run: |
           npm audit --json > audit-root.json || true
