@@ -13,9 +13,15 @@ import { handler as getHandler } from "../admin/get";
 import { handler as listHandler } from "../admin/list";
 import { handler as uploadHandler } from "../admin/upload";
 import { handler as queryHandler } from "../query/index";
-import { dynamo, hashMcpKey } from "../utils";
+import {
+  dynamo,
+  hashMcpKey,
+  MAX_IMAGE_UPLOAD_BYTES,
+  MAX_UPLOAD_BYTES,
+} from "../utils";
 
 const AccountsTableName = process.env.ACCOUNTS_TABLE_NAME!;
+const BASE64 = /^[A-Za-z0-9+/\s]+={0,2}\s*$/;
 const MIME_TYPES = [
   "application/pdf",
   "image/gif",
@@ -101,8 +107,8 @@ export async function handler(
   };
 }
 
-/** Creates the document through the upload handler, so caps, rate limit and usage apply,
- * then posts the bytes to its S3 form; the S3 event starts indexing as for the web app. */
+/** Checks the bytes, then creates the document through the upload handler, so caps, rate limit
+ * and usage apply, and posts them to its S3 form; the S3 event starts indexing as for the web app. */
 async function addDocument(
   event: APIGatewayProxyEventV2,
   userId: string,
@@ -115,30 +121,39 @@ async function addDocument(
   },
 ): Promise<APIGatewayProxyStructuredResultV2> {
   const { content, ...metadata } = args;
+  const isText = args.mimeType.startsWith("text/");
+  const bytes = Buffer.from(content, isText ? "utf8" : "base64");
+  const maxBytes = args.mimeType.startsWith("image/")
+    ? MAX_IMAGE_UPLOAD_BYTES
+    : MAX_UPLOAD_BYTES;
+  // Checked before the upload handler reserves the name, which a rejected file would block.
+  if (bytes.length === 0 || (!isText && !BASE64.test(content))) {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({
+        error: isText ? "content is empty" : "content must be base64",
+      }),
+    };
+  }
+  if (bytes.length > maxBytes) {
+    return {
+      statusCode: 413,
+      body: JSON.stringify({
+        error: `File is over the ${maxBytes} byte limit`,
+      }),
+    };
+  }
   const created = await uploadHandler(
     withUser(event, userId, { body: JSON.stringify(metadata) }),
   );
   if ((created.statusCode ?? 500) >= 400) return created;
-  const { documentId, uploadUrl, uploadFields, maxUploadBytes } = JSON.parse(
+  const { documentId, uploadUrl, uploadFields } = JSON.parse(
     created.body ?? "{}",
   ) as {
     documentId: string;
     uploadUrl: string;
     uploadFields: Record<string, string>;
-    maxUploadBytes: number;
   };
-  const bytes = Buffer.from(
-    content,
-    args.mimeType.startsWith("text/") ? "utf8" : "base64",
-  );
-  if (bytes.length > maxUploadBytes) {
-    return {
-      statusCode: 413,
-      body: JSON.stringify({
-        error: `File is over the ${maxUploadBytes} byte limit`,
-      }),
-    };
-  }
   const form = new FormData();
   for (const [key, value] of Object.entries(uploadFields)) {
     form.append(key, value);
@@ -149,7 +164,8 @@ async function addDocument(
     return {
       statusCode: 502,
       body: JSON.stringify({
-        error: "Storage rejected the file",
+        error:
+          "Storage rejected the file. Delete this document in the web app before adding it again.",
         documentId: documentId,
       }),
     };
@@ -264,7 +280,8 @@ function createServer(
         title: z.string().optional(),
         tags: z.array(z.string()).optional(),
       }),
-      annotations: { readOnlyHint: false, destructiveHint: false },
+      // A file with the same name and type replaces the old one.
+      annotations: { readOnlyHint: false, destructiveHint: true },
     },
     async (args) => toToolResult(await addDocument(event, userId, args)),
   );

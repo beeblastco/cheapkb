@@ -136,6 +136,29 @@ describe("MCP", () => {
     const form = storage.mock.calls[0][1].body as FormData;
     expect(await (form.get("file") as Blob).text()).toBe("# Notes");
   });
+
+  it("refuses empty or non-base64 content before reserving the filename", async () => {
+    const apiKey = await trustIssuedKey();
+    const client = await connect(apiKey, "2026-07-28");
+
+    const empty = await client.callTool({
+      name: "add_document",
+      arguments: { filename: "a.md", mimeType: "text/markdown", content: "" },
+    });
+    const notBase64 = await client.callTool({
+      name: "add_document",
+      arguments: {
+        filename: "a.pdf",
+        mimeType: "application/pdf",
+        content: "not base64!",
+      },
+    });
+    await client.close();
+
+    expect(empty.isError).toBe(true);
+    expect(notBase64.isError).toBe(true);
+    expect(dynamoMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
 });
 
 /** Connects a client pinned to one revision, the way Broods connects. */
