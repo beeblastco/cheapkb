@@ -21,6 +21,7 @@ import {
   getDocument,
   recordStageError,
   setDocumentStatus,
+  startStage,
 } from "../utils";
 
 const s3 = new S3Client({});
@@ -69,7 +70,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       await chunkDocument(documentId, parsedKey, body.reindexedAt);
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
-        console.log(`[chunk] Document ${documentId} was deleted, dropping`);
+        console.log(
+          `[chunk] Document ${documentId} was deleted or already indexed, dropping`,
+        );
         continue;
       }
       // A failed error write retries only this record, so the records already
@@ -171,7 +174,7 @@ async function chunkDocument(
   reindexedAt: string | undefined,
 ): Promise<void> {
   const now = new Date().toISOString();
-  await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
+  await startStage(documentId, TableName, "CHUNKING", now);
   const doc = await getDocument(documentId, dynamo, TableName);
   const previousCount = doc?.chunkCount ?? 0;
   // A re-parse after a reindex carries no reindexedAt, so META's is used when it has one.

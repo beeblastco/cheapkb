@@ -845,6 +845,32 @@ export async function setDocumentStatus(
   );
 }
 
+/** Moves a document into the parse or chunk stage. Reindex and replacement leave EMBEDDED
+ * first, so an EMBEDDED document means a late redelivery, refused like a deleted one. */
+export async function startStage(
+  documentId: string,
+  tableName: string,
+  status: "CHUNKING" | "PARSING",
+  now: string,
+): Promise<void> {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET #s = :s, updatedAt = :t",
+      ConditionExpression:
+        "attribute_exists(pk) AND NOT #s IN (:deleting, :embedded)",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":deleting": "DELETING",
+        ":embedded": "EMBEDDED",
+        ":s": status,
+        ":t": now,
+      },
+    }),
+  );
+}
+
 /** Adds deltaBytes to the account's storage and accrued cost, once per operationId.
  * alsoWrite commits atomically with it; expectedBytes skips it unless the total matches.
  * Returns false, writing nothing, when growth would take the total past capBytes. */

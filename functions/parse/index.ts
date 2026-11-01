@@ -16,6 +16,7 @@ import {
   matchesImageSignature,
   recordStageError,
   setDocumentStatus,
+  startStage,
 } from "../utils";
 
 const s3 = new S3Client({});
@@ -57,7 +58,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       await parseDocument(documentId, sourceKey, mimeType ?? "");
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
-        console.log(`[parse] Document ${documentId} was deleted, dropping`);
+        console.log(
+          `[parse] Document ${documentId} was deleted or already indexed, dropping`,
+        );
         continue;
       }
       const attempt =
@@ -138,7 +141,7 @@ async function parseDocument(
   mimeType: string,
 ): Promise<void> {
   const now = new Date().toISOString();
-  await setDocumentStatus(documentId, TableName, "PARSING", now, false);
+  await startStage(documentId, TableName, "PARSING", now);
 
   if (IMAGE_MIME_TYPES.has(mimeType)) {
     // Only the magic bytes are checked here; the embed stage reads the whole image.
