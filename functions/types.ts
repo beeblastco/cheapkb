@@ -147,12 +147,6 @@ export interface QueryResult {
   source?: { bucket: string; key: string };
 }
 
-export interface ResultGroup {
-  document: QueryResult;
-  chunks: QueryResult[];
-  maxScore: number;
-}
-
 export interface Tag {
   name: string;
   color: TagColor;

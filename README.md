@@ -14,6 +14,7 @@ API: https://api.cheapkb.beeblast.co/v1
 - Search with natural language, an image, or combined text and image
 - Filter results by document metadata
 - Track processing status, usage, and plan allowance
+- Search from Claude Code, Broods, or any MCP 2026-07-28 client
 - Replace, retry, edit, and delete uploaded content
 - Keep each user's content and search results isolated
 
@@ -43,7 +44,27 @@ Copy [.env.example](.env.example) to `.env` and provide the required values. See
 
 ## API
 
-The `/v1` API supports uploads, search, documents, tags, account usage, and read-only account details. All routes require a Shoo bearer token. See [OpenAPI](docs/openapi.yaml) for request and response examples.
+The `/v1` API supports uploads, search, documents, tags, account usage, account details, and the MCP key. All routes except `/mcp` require a Shoo bearer token. See [OpenAPI](docs/openapi.yaml) for request and response examples.
+
+## MCP
+
+Claude Code, Broods and other MCP clients can search and add to your knowledge base. The server speaks MCP 2026-07-28 only, so clients that still need the 2025 `initialize` handshake, such as Codex 0.166, can't connect yet. Create an MCP key in the web app under Settings, then:
+
+```bash
+claude mcp add --transport http cheapkb <API_URL>/mcp --header "Authorization: Bearer <MCP_KEY>"
+```
+
+For Broods, run `broods env set CHEAPKB_MCP_KEY` and add:
+
+```ts
+defineMcp({
+  name: "cheapkb",
+  url: "<API_URL>/mcp",
+  headers: { Authorization: "Bearer ${CHEAPKB_MCP_KEY}" },
+});
+```
+
+Tools: `search`, `list_documents`, `get_document` and `add_document`. `add_document` takes files up to about 4 MB, since a Lambda request is capped at 6 MB and PDFs and images travel as base64; add larger files in the web app.
 
 ## Verify changes
 

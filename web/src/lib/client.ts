@@ -6,8 +6,6 @@ import {
   DEFAULT_TAG_COLOR,
   TAG_COLORS,
   type Document,
-  type QueryResult,
-  type ResultGroup,
   type ShooIdentity,
   type Tag,
   type TagColor,
@@ -71,7 +69,6 @@ export async function apiCall(
   body?: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   if (!token) throw new Error("Not signed in");
-  const apiUrl = import.meta.env.VITE_API_URL ?? "";
   const options: RequestInit = {
     method: method,
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -84,7 +81,7 @@ export async function apiCall(
 
   let response: Response;
   try {
-    response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, options);
+    response = await fetch(`${apiUrl()}${path}`, options);
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
       throw new Error("The server took too long to respond. Please retry.");
@@ -146,6 +143,13 @@ export async function extractMetadata(
   }
 }
 
+/** Returns when the caller's MCP key was created, or null when there is none. */
+export async function getMcpKey(token: string): Promise<string | null> {
+  const data = await apiCall(token, "GET", "/account/mcp-key");
+
+  return typeof data.createdAt === "string" ? data.createdAt : null;
+}
+
 export async function getUsageSummary(token: string): Promise<UsageSummary> {
   const data = await apiCall(token, "GET", "/account/usage");
 
@@ -177,6 +181,19 @@ export async function listTags(token: string): Promise<Tag[]> {
   const data = await apiCall(token, "GET", "/tags");
 
   return Array.isArray(data.tags) ? (data.tags as Tag[]).map(normalizeTag) : [];
+}
+
+export async function revokeMcpKey(token: string): Promise<void> {
+  await apiCall(token, "DELETE", "/account/mcp-key");
+}
+
+/** Creates the caller's MCP key, replacing any previous one. The key is only returned here. */
+export async function rotateMcpKey(
+  token: string,
+): Promise<{ apiKey: string; createdAt: string }> {
+  const data = await apiCall(token, "POST", "/account/mcp-key");
+
+  return { apiKey: String(data.apiKey), createdAt: String(data.createdAt) };
 }
 
 /**
@@ -285,6 +302,11 @@ export async function uploadDocument(
   // The S3 event queues the file for indexing; the document poll reports progress.
 
   return metadata.documentId;
+}
+
+/** The configured API base URL without a trailing slash, read at call time. */
+export function apiUrl(): string {
+  return (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 }
 
 /** Counts documents the server marks as in flight, so a bulk sync can wait for
@@ -407,23 +429,6 @@ export function getUserProfile(identity: ShooIdentity): UserProfile {
       picture: "",
     };
   }
-}
-
-/** Groups query results by document, sorted by each document's best score. */
-export function groupResults(results: QueryResult[]): ResultGroup[] {
-  const groups = new Map<string, ResultGroup>();
-  for (const result of results) {
-    const group = groups.get(result.documentId) ?? {
-      document: result,
-      chunks: [],
-      maxScore: 0,
-    };
-    group.chunks.push(result);
-    group.maxScore = Math.max(group.maxScore, result.score || 0);
-    groups.set(result.documentId, group);
-  }
-
-  return [...groups.values()].sort((a, b) => b.maxScore - a.maxScore);
 }
 
 export function isActiveStatus(status: string): boolean {

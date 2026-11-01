@@ -1,9 +1,8 @@
+import { AccountMenu } from "@/components/AccountMenu";
 import { DocumentDialog } from "@/components/DocumentDialog";
 import { DocumentsCard } from "@/components/DocumentsCard";
-import { Header } from "@/components/Header";
 import { Notices, type Notice } from "@/components/Notices";
-import { QueryCard } from "@/components/QueryCard";
-import { UsageCard } from "@/components/UsageCard";
+import { SettingsDialog, type SettingsTab } from "@/components/SettingsDialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -37,7 +36,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 const NOTICE_MS = 6000;
 const POLL_MS = 3000;
 
-/** Root component: signed-out screen, or the documents, usage and query workspace. */
+/** Root component: signed-out screen, or the documents workspace with its settings. */
 export default function App(): React.JSX.Element {
   const [identity, setIdentity] = useState<ShooIdentity | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -51,6 +50,7 @@ export default function App(): React.JSX.Element {
   > | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const documentsRef = useRef(documents);
   const noticesRef = useRef(notices);
   const documentRequest = useRef(0);
@@ -104,7 +104,7 @@ export default function App(): React.JSX.Element {
     [identity?.token],
   );
 
-  // Loads usage on sign-in and after uploads, queries and deletes.
+  // Loads usage on sign-in and after uploads and deletes.
   const refreshUsage = useCallback(async (): Promise<void> => {
     if (!identity?.token) return;
     const requestId = usageRequest.current + 1;
@@ -370,41 +370,38 @@ export default function App(): React.JSX.Element {
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-dvh flex-col lg:h-dvh lg:overflow-hidden">
-        <Header
-          identity={identity}
+      <main className="flex min-h-dvh flex-col p-3 lg:h-dvh lg:overflow-hidden">
+        <DocumentsCard
+          accountMenu={
+            <AccountMenu
+              identity={identity}
+              onOpenSettings={setSettingsTab}
+              onSignOut={signOut}
+            />
+          }
           usage={usage}
-          onSignOut={signOut}
-          onDeleteAllData={deleteAllData}
+          onOpenUsage={() => setSettingsTab("usage")}
+          documents={documents}
+          loading={loadingDocuments}
+          token={identity.token}
+          setDocuments={setDocuments}
+          loadDocuments={loadDocuments}
+          notify={notify}
+          onDelete={deleteDocument}
+          onDeleteSelected={deleteDocuments}
+          onReindex={reindexDocument}
+          onView={showDocument}
+          onUsageChange={refreshUsage}
+          tagVocabulary={tagVocabulary}
         />
-        <main className="flex min-h-0 w-full flex-1 flex-col">
-          <div className="mx-auto grid min-h-0 w-full max-w-380 flex-1 items-stretch gap-3 p-3 lg:grid-cols-12">
-            <div className="min-h-0 min-w-0 lg:col-span-8 xl:col-span-9">
-              <DocumentsCard
-                documents={documents}
-                loading={loadingDocuments}
-                token={identity.token}
-                setDocuments={setDocuments}
-                loadDocuments={loadDocuments}
-                notify={notify}
-                onDelete={deleteDocument}
-                onDeleteSelected={deleteDocuments}
-                onReindex={reindexDocument}
-                onView={showDocument}
-                onUsageChange={refreshUsage}
-                tagVocabulary={tagVocabulary}
-              />
-            </div>
-            <div className="flex min-h-0 flex-col gap-3 min-w-0 lg:col-span-4 xl:col-span-3">
-              <UsageCard summary={usage} />
-              <QueryCard
-                request={request}
-                onView={showDocument}
-                onUsageChange={refreshUsage}
-              />
-            </div>
-          </div>
-        </main>
+        <SettingsDialog
+          notify={notify}
+          onDeleteAllData={deleteAllData}
+          onTabChange={setSettingsTab}
+          tab={settingsTab}
+          token={identity.token}
+          usage={usage}
+        />
         <DocumentDialog
           colorOf={tagVocabulary.colorOf}
           data={selectedDocumentData}
@@ -413,7 +410,7 @@ export default function App(): React.JSX.Element {
           onClose={closeDocument}
         />
         <Notices notices={notices} onDismiss={dismissNotice} />
-      </div>
+      </main>
     </TooltipProvider>
   );
 }

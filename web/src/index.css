@@ -140,6 +140,15 @@
 }
 
 :root {
+  /* Snippet token colors for sugar-high in Settings › Connect agent. */
+  --sh-class: oklch(0.5 0.13 250);
+  --sh-identifier: var(--foreground);
+  --sh-sign: var(--muted-foreground);
+  --sh-property: oklch(0.5 0.13 250);
+  --sh-entity: oklch(0.55 0.12 190);
+  --sh-string: oklch(0.55 0.13 150);
+  --sh-keyword: oklch(0.6 0.17 45);
+  --sh-comment: var(--muted-foreground);
   --background: oklch(1 0 0);
   --foreground: oklch(0.147 0.004 49.25);
   --card: oklch(1 0 0);
@@ -194,6 +203,15 @@
 }
 
 .dark {
+  /* Snippet token colors for sugar-high in Settings › Connect agent. */
+  --sh-class: oklch(0.78 0.1 250);
+  --sh-identifier: var(--foreground);
+  --sh-sign: var(--muted-foreground);
+  --sh-property: oklch(0.78 0.1 250);
+  --sh-entity: oklch(0.8 0.1 190);
+  --sh-string: oklch(0.8 0.13 150);
+  --sh-keyword: oklch(0.75 0.15 50);
+  --sh-comment: var(--muted-foreground);
   --background: oklch(0.147 0.004 49.25);
   --foreground: oklch(0.985 0.001 106.423);
   --card: oklch(0.216 0.006 56.043);

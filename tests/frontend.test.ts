@@ -9,7 +9,6 @@ import {
   getIdentity,
   getFileMimeType,
   getUserProfile,
-  groupResults,
   mergeDocuments,
   readPendingDocuments,
   updateDocumentTags,
@@ -483,21 +482,6 @@ describe("frontend", () => {
       expect(getFileMimeType({ name: "diagram.webp", type: "" } as File)).toBe(
         "image/webp",
       );
-    });
-
-    it("groups query results by document and highest score", () => {
-      const groups = groupResults([
-        { documentId: "doc-low", chunkId: "c1", score: 0.2 },
-        { documentId: "doc-high", chunkId: "c2", score: 0.8 },
-        { documentId: "doc-high", chunkId: "c3", score: 0.6 },
-      ]);
-
-      expect(groups.map((group) => group.document.documentId)).toEqual([
-        "doc-high",
-        "doc-low",
-      ]);
-      expect(groups[0]).toMatchObject({ maxScore: 0.8 });
-      expect(groups[0].chunks).toHaveLength(2);
     });
   });
 
