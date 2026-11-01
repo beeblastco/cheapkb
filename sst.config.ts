@@ -963,7 +963,8 @@ export default $config({
     const mcpFn = new sst.aws.Function("Mcp", {
       handler: "./functions/mcp/index.handler",
       runtime: "nodejs22.x",
-      timeout: "30 seconds",
+      // Matches AdminUpdate: a large retag outlives the 30 s API wait and must finish its cleanup.
+      timeout: "60 seconds",
       memory: "256 MB",
       description: "Stateless MCP 2026-07-28 server for agents",
       environment: embedEnv,
