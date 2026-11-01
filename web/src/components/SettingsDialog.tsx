@@ -51,7 +51,10 @@ export function SettingsDialog({
   token: string;
 }): React.JSX.Element {
   const [deletingData, setDeletingData] = useState(false);
-  const [keyCreatedAt, setKeyCreatedAt] = useState<string | null>(null);
+  // undefined until the key status loads, so a failed load never offers "Create key".
+  const [keyCreatedAt, setKeyCreatedAt] = useState<string | null | undefined>(
+    undefined,
+  );
   const [newKey, setNewKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const keyRequest = useRef(0);
@@ -128,6 +131,7 @@ export function SettingsDialog({
       onOpenChange={(next) => {
         if (next) return;
         onTabChange(null);
+        setKeyCreatedAt(undefined);
         setNewKey("");
       }}
       open={open}
@@ -192,9 +196,11 @@ export function SettingsDialog({
               ) : null}
               <div className="flex items-center gap-2">
                 <p className="flex-1 text-muted-foreground">
-                  {keyCreatedAt
-                    ? `Active key created ${formatDate(keyCreatedAt)}`
-                    : "No key yet"}
+                  {keyCreatedAt === undefined
+                    ? "Loading key status"
+                    : keyCreatedAt
+                      ? `Active key created ${formatDate(keyCreatedAt)}`
+                      : "No key yet"}
                 </p>
                 {keyCreatedAt ? (
                   <>
@@ -223,7 +229,7 @@ export function SettingsDialog({
                 ) : (
                   <Button
                     className="cursor-pointer"
-                    disabled={savingKey}
+                    disabled={savingKey || keyCreatedAt === undefined}
                     onClick={rotateKey}
                     size="sm"
                     variant="outline"
