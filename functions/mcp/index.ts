@@ -100,6 +100,8 @@ async function verifyMcpKey(apiKey: string): Promise<string | null> {
     new GetCommand({
       TableName: AccountsTableName,
       Key: { pk: `ACCOUNT#${userId}`, sk: "MCP_KEY" },
+      // A rotate or revoke must apply to the very next call.
+      ConsistentRead: true,
     }),
   );
 
