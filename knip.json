@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["functions/*/*.ts", "scripts/*.ts", "tests/**/*.test.ts"],
+      "project": ["functions/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+    },
+    "web": {
+      "project": ["src/**/*.{ts,tsx,css}"],
+      "ignoreIssues": {
+        "src/components/ui/*.tsx": ["exports", "types", "duplicates"]
+      }
+    }
+  }
+}

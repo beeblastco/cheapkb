@@ -33,7 +33,7 @@ Set `POSTHOG_KEY` (a PostHog project token) to send product analytics; `POSTHOG_
 
 ## CI
 
-Merges to `main` deploy through GitHub Actions in the `production` environment, only after the Check, Secrets scan and Proofs jobs pass. The production stage creates a `github-deploy` IAM role that trusts GitHub's OIDC provider for this repository's `production` environment only; the deploy job assumes it with short-lived tokens.
+Merges to `main` deploy through GitHub Actions in the `production` environment, only after the Check, Secrets scan and Proofs jobs pass. Besides lint, knip, format, typecheck and tests, Check builds the web app, fails when its JavaScript moves past `scripts/bundle-budgets.json`, and boots the build in headless Chromium against a mocked API, failing on page errors, CSP violations, missing rows or React renders that move off `scripts/render-budgets.json`. The production stage creates a `github-deploy` IAM role that trusts GitHub's OIDC provider for this repository's `production` environment only; the deploy job assumes it with short-lived tokens.
 
 Run the first production deploy locally, since it creates that role. Then set `AWS_ACCOUNT_ID` as a repository secret and the role ARN (the `deployRoleArn` output) as the `AWS_DEPLOY_ROLE_ARN` variable.
 

@@ -70,6 +70,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useNowMinute } from "@/hooks/use-now-minute";
 import type { TagVocabulary } from "@/hooks/use-tags";
 import {
   countProcessingDocuments,
@@ -84,6 +85,7 @@ import {
   validateUploadFile,
   writePendingDocuments,
 } from "@/lib/client";
+import { posthog } from "@/lib/posthog";
 import type {
   Document,
   Tag,
@@ -92,6 +94,8 @@ import type {
   UsageSummary,
 } from "@/lib/types";
 import { formatBytes, formatPercent } from "@/lib/utils";
+import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog";
+import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import {
   type Column,
   type ColumnDef,
@@ -121,10 +125,22 @@ import {
   Tag as TagIcon,
   Trash2,
 } from "lucide-react";
-import posthog from "posthog-js/dist/module.no-external";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 const PAGE_SIZE = 50;
+// One tooltip and one delete dialog serve every row through detached triggers,
+// so a page of 50 rows mounts 200 fewer popup roots.
+const ROW_TOOLTIP = TooltipPrimitive.createHandle<string>();
+const DELETE_DIALOG = AlertDialogPrimitive.createHandle<string>();
 const PROCESSING_POLL_MS = 5000;
 // A file the server still refuses waits this long, a few times, before it fails.
 const PROCESSING_RETRY_MS = 30000;
@@ -201,6 +217,10 @@ const DOCUMENT_COLUMNS: ColumnDef<typeof TABLE_FEATURES, DocumentTableRow>[] = [
   },
   { id: "actions", enableSorting: false },
 ];
+
+// Rows get stable props, so a poll or keystroke re-renders only the rows that changed.
+const MemoDocumentRow = memo(DocumentRow);
+const MemoUploadRow = memo(UploadRow);
 
 type DocumentTableRow =
   | { document: Document; kind: "document" }
@@ -298,6 +318,22 @@ export function DocumentsCard({
     },
     [setDocuments, token],
   );
+
+  // Row callbacks are shared by every row and keyed by id, so memoized rows stay memoized.
+  const removeItem = useCallback((id: string): void => {
+    setItems((current) => current.filter((item) => item.id !== id));
+    setSelectedItemId((current) => (current === id ? null : current));
+  }, []);
+
+  const selectRow = useCallback((rowId: string, selected: boolean): void => {
+    setRowSelection((current) => {
+      const next = { ...current };
+      if (selected) next[rowId] = true;
+      else delete next[rowId];
+
+      return next;
+    });
+  }, []);
 
   const addFiles = useCallback(
     async (files: File[]): Promise<void> => {
@@ -414,6 +450,8 @@ export function DocumentsCard({
     };
   }, [addFiles]);
 
+  // Filters in a background render, so typing never waits on the table.
+  const deferredQuery = useDeferredValue(query);
   const allRows = useMemo<DocumentTableRow[]>(
     () => [
       ...items.map((item) => ({ item: item, kind: "upload" as const })),
@@ -426,7 +464,7 @@ export function DocumentsCard({
   );
   // Counts follow the search, so each tab shows how many rows it would list.
   const statusCounts = useMemo(() => {
-    const search = query.trim().toLowerCase();
+    const search = deferredQuery.trim().toLowerCase();
     const counts: Record<StatusFilter, number> = {
       all: 0,
       failed: 0,
@@ -442,7 +480,7 @@ export function DocumentsCard({
     }
 
     return counts;
-  }, [allRows, query]);
+  }, [allRows, deferredQuery]);
   const tableData = useMemo(
     () =>
       statusFilter === "all"
@@ -451,8 +489,8 @@ export function DocumentsCard({
     [allRows, statusFilter],
   );
   const table = useTable({
-    // Polling replaces the data every few seconds; the clamp effect below keeps
-    // the page valid instead of jumping back to page 1.
+    // Polling replaces the data every few seconds; the clamp below keeps the
+    // page valid instead of jumping back to page 1.
     autoResetPageIndex: false,
     columns: DOCUMENT_COLUMNS,
     data: tableData,
@@ -470,11 +508,18 @@ export function DocumentsCard({
     globalFilterFn: (row, _columnId, value) =>
       getSearchValue(row.original).includes(String(value).trim().toLowerCase()),
     onGlobalFilterChange: setQuery,
-    onPaginationChange: setPagination,
+    // A page change mounts 50 rows; the transition keeps the click responsive.
+    onPaginationChange: (updater): void => {
+      startTransition(() => setPagination(updater));
+    },
     onRowSelectionChange: setRowSelection,
-    onSortingChange: setSorting,
+    // A new sort starts from the top; polling alone keeps the page.
+    onSortingChange: (updater): void => {
+      setSorting(updater);
+      setPagination(firstPage);
+    },
     state: {
-      globalFilter: query,
+      globalFilter: deferredQuery,
       pagination: pagination,
       rowSelection: rowSelection,
       sorting: sorting,
@@ -482,6 +527,11 @@ export function DocumentsCard({
   });
   const totalCount = table.getFilteredRowModel().rows.length;
   const pageCount = table.getPageCount();
+  // A poll or delete can shrink the list under the current page; step back in render.
+  const lastPageIndex = Math.max(0, pageCount - 1);
+  if (pagination.pageIndex > lastPageIndex) {
+    setPagination({ ...pagination, pageIndex: lastPageIndex });
+  }
   const visible = table.getRowModel().rows;
   const selectedDocumentIds = table
     .getSelectedRowModel()
@@ -503,25 +553,6 @@ export function DocumentsCard({
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
-
-  useEffect(() => {
-    setRowSelection({});
-  }, [query, statusFilter]);
-
-  // A new search or sort starts from the top; polling alone keeps the page.
-  useEffect(() => {
-    setPagination((current) =>
-      current.pageIndex === 0 ? current : { ...current, pageIndex: 0 },
-    );
-  }, [query, sorting, statusFilter]);
-
-  useEffect(() => {
-    if (pageCount === 0 || pagination.pageIndex < pageCount) return;
-    setPagination((current) => ({
-      ...current,
-      pageIndex: Math.max(0, pageCount - 1),
-    }));
-  }, [pageCount, pagination.pageIndex]);
 
   /** Deletes the selected documents, drops the selected staged uploads, and keeps
    * failed documents selected. Wired to the bulk delete confirm. */
@@ -691,6 +722,20 @@ export function DocumentsCard({
     }
   }
 
+  /** Search input handler: a new search starts from the top with nothing selected. */
+  function changeQuery(next: string): void {
+    setQuery(next);
+    setRowSelection((current) => (Object.keys(current).length ? {} : current));
+    setPagination(firstPage);
+  }
+
+  /** Status tab handler: a new filter starts from the top with nothing selected. */
+  function changeStatusFilter(next: StatusFilter): void {
+    setStatusFilter(next);
+    setRowSelection((current) => (Object.keys(current).length ? {} : current));
+    setPagination(firstPage);
+  }
+
   /** Clears every row on this page, including rows that turned unselectable
    * (DELETING, SYNCING) after they were picked; v9's deselect skips those. */
   function clearPageSelection(): void {
@@ -704,11 +749,6 @@ export function DocumentsCard({
 
   function isStillQueued(itemId: string): boolean {
     return itemsRef.current.some((current) => current.id === itemId);
-  }
-
-  function removeItem(id: string): void {
-    setItems((current) => current.filter((item) => item.id !== id));
-    if (selectedItemId === id) setSelectedItemId(null);
   }
 
   function updateItem(id: string, values: Partial<UploadQueueItem>): void {
@@ -732,7 +772,9 @@ export function DocumentsCard({
               <p className="font-semibold">cheapkb</p>
             </div>
             <Tabs
-              onValueChange={(value) => setStatusFilter(value as StatusFilter)}
+              onValueChange={(value) =>
+                changeStatusFilter(value as StatusFilter)
+              }
               value={statusFilter}
             >
               <TabsList>
@@ -753,7 +795,7 @@ export function DocumentsCard({
             <InputGroup className="ml-auto max-w-xs">
               <InputGroupInput
                 aria-label="Search documents"
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => changeQuery(event.target.value)}
                 placeholder="Search"
                 value={query}
               />
@@ -886,6 +928,7 @@ export function DocumentsCard({
               <TableBody>
                 {loading && !documents.length && !items.length ? (
                   Array.from({ length: 4 }).map((_, index) => (
+                    // oxlint-disable-next-line react/no-array-index-key -- four static placeholder rows that never reorder
                     <TableRow key={index}>
                       <TableCell colSpan={7}>
                         <Skeleton className="h-8 w-full" />
@@ -896,29 +939,26 @@ export function DocumentsCard({
                   visible.map((row) => {
                     const { original } = row;
                     return original.kind === "upload" ? (
-                      <UploadRow
+                      <MemoUploadRow
                         colorOf={colorOf}
                         item={original.item}
                         key={row.id}
-                        onEdit={() => setSelectedItemId(original.item.id)}
-                        onRemove={() => removeItem(original.item.id)}
-                        onSelectedChange={(checked) =>
-                          row.toggleSelected(checked)
-                        }
+                        onEdit={setSelectedItemId}
+                        onRemove={removeItem}
+                        onSelectedChange={selectRow}
+                        rowId={row.id}
                         selected={row.getIsSelected()}
                       />
                     ) : (
-                      <DocumentRow
+                      <MemoDocumentRow
                         colorOf={colorOf}
                         document={original.document}
                         key={row.id}
-                        onDelete={onDelete}
                         onEditTags={setEditingDocumentId}
                         onReindex={onReindex}
-                        onSelectedChange={(checked) =>
-                          row.toggleSelected(checked)
-                        }
+                        onSelectedChange={selectRow}
                         onView={onView}
+                        rowId={row.id}
                         selected={row.getIsSelected()}
                       />
                     );
@@ -995,6 +1035,39 @@ export function DocumentsCard({
         </CardFooter>
       </Card>
 
+      <Tooltip handle={ROW_TOOLTIP}>
+        {({ payload }) => <TooltipContent>{payload}</TooltipContent>}
+      </Tooltip>
+
+      <AlertDialog handle={DELETE_DIALOG}>
+        {({ payload }) => (
+          <AlertDialogContent>
+            <CloseWhenGone
+              gone={
+                !documents.some((document) => document.documentId === payload)
+              }
+            />
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this document?</AlertDialogTitle>
+              <AlertDialogDescription>
+                The source, parsed content, chunks, and vectors will be removed.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (payload) void onDelete(payload);
+                }}
+                variant="destructive"
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
+
       <UploadMetadataSheet
         colorOf={colorOf}
         item={selectedItem}
@@ -1036,49 +1109,60 @@ function ActionButton({
   onClick: () => void;
 }): React.JSX.Element {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            aria-label={label}
-            disabled={disabled}
-            onClick={onClick}
-            size="icon-sm"
-            variant="ghost"
-          />
-        }
-      >
-        {children}
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
+    <TooltipTrigger
+      handle={ROW_TOOLTIP}
+      payload={label}
+      render={
+        <Button
+          aria-label={label}
+          disabled={disabled}
+          onClick={onClick}
+          size="icon-sm"
+          variant="ghost"
+        />
+      }
+    >
+      {children}
+    </TooltipTrigger>
   );
 }
 
 /** Table row for a stored document, with view, tag, reindex and delete actions. */
+/** Closes the shared delete dialog when a poll removes the document it was opened for. */
+function CloseWhenGone({ gone }: { gone: boolean }): null {
+  useEffect(() => {
+    if (gone) DELETE_DIALOG.close();
+  }, [gone]);
+
+  return null;
+}
+
 function DocumentRow({
   colorOf,
   document,
-  onDelete,
   onEditTags,
   onReindex,
   onSelectedChange,
   onView,
+  rowId,
   selected,
 }: {
   colorOf: (name: string) => TagColor;
   document: Document;
-  onDelete: (documentId: string) => Promise<boolean>;
   onEditTags: (documentId: string) => void;
   onReindex: (documentId: string) => void;
-  onSelectedChange: (selected?: boolean) => void;
+  onSelectedChange: (rowId: string, selected: boolean) => void;
   onView: (documentId: string) => void;
+  rowId: string;
   selected: boolean;
 }): React.JSX.Element {
+  // Only rows whose actions unlock with time re-render on the minute tick.
+  const now = useNowMinute(
+    isActiveStatus(document.status) || document.status === "UPDATING",
+  );
   const updatedAt = Date.parse(document.updatedAt ?? document.createdAt ?? "");
   const stalled =
-    isActiveStatus(document.status) &&
-    Date.now() - updatedAt > STALLED_AFTER_MS;
+    isActiveStatus(document.status) && now - updatedAt > STALLED_AFTER_MS;
   return (
     <TableRow
       aria-label={`View ${document.title || document.documentId}`}
@@ -1101,7 +1185,7 @@ function DocumentRow({
           aria-label={`Select ${document.title || document.documentId}`}
           checked={selected}
           disabled={document.status === "DELETING"}
-          onCheckedChange={onSelectedChange}
+          onCheckedChange={(checked) => onSelectedChange(rowId, checked)}
         />
       </TableCell>
       <TableCell className="max-w-0">
@@ -1136,7 +1220,7 @@ function DocumentRow({
       >
         <div className="flex justify-end gap-1">
           <ActionButton
-            disabled={!canEditTags(document)}
+            disabled={!canEditTags(document, now)}
             label="Edit tags"
             onClick={() => onEditTags(document.documentId)}
           >
@@ -1149,44 +1233,25 @@ function DocumentRow({
           >
             <RefreshCw />
           </ActionButton>
-          <AlertDialog>
-            <Tooltip>
-              <AlertDialogTrigger
+          <AlertDialogTrigger
+            handle={DELETE_DIALOG}
+            payload={document.documentId}
+            render={
+              <TooltipTrigger
+                handle={ROW_TOOLTIP}
+                payload="Delete"
                 render={
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        aria-label="Delete document"
-                        size="icon-sm"
-                        variant="ghost"
-                      />
-                    }
+                  <Button
+                    aria-label="Delete document"
+                    size="icon-sm"
+                    variant="ghost"
                   />
                 }
-              >
-                <Trash2 />
-              </AlertDialogTrigger>
-              <TooltipContent>Delete</TooltipContent>
-            </Tooltip>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete this document?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  The source, parsed content, chunks, and vectors will be
-                  removed.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => onDelete(document.documentId)}
-                  variant="destructive"
-                >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+              />
+            }
+          >
+            <Trash2 />
+          </AlertDialogTrigger>
         </div>
       </TableCell>
     </TableRow>
@@ -1215,16 +1280,18 @@ function DocumentTagsSheet({
   tagError: string | null;
   tags: Tag[];
 }): React.JSX.Element | null {
-  const [value, setValue] = useState<string[]>([]);
+  const [value, setValue] = useState<string[]>(document?.tags ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [seededDocument, setSeededDocument] = useState(document);
 
   // Re-seed when a different document is opened, so the picker starts from that
   // document's stored tags rather than the previous one's edits.
-  useEffect(() => {
+  if (seededDocument !== document) {
+    setSeededDocument(document);
     setValue(document?.tags ?? []);
     setError("");
-  }, [document]);
+  }
 
   if (!document) return null;
 
@@ -1359,7 +1426,7 @@ function TagList({
   colorOf: (name: string) => TagColor;
   tags: string[];
 }): React.JSX.Element {
-  if (!tags.length) return <span className="text-muted-foreground">—</span>;
+  if (!tags.length) return <span className="text-muted-foreground">-</span>;
 
   return (
     <div className="flex gap-1 overflow-hidden">
@@ -1472,13 +1539,15 @@ function UploadRow({
   onEdit,
   onRemove,
   onSelectedChange,
+  rowId,
   selected,
 }: {
   colorOf: (name: string) => TagColor;
   item: UploadQueueItem;
-  onEdit: () => void;
-  onRemove: () => void;
-  onSelectedChange: (selected?: boolean) => void;
+  onEdit: (id: string) => void;
+  onRemove: (id: string) => void;
+  onSelectedChange: (rowId: string, selected: boolean) => void;
+  rowId: string;
   selected: boolean;
 }): React.JSX.Element {
   return (
@@ -1486,11 +1555,11 @@ function UploadRow({
       aria-label={`Edit ${item.title}`}
       className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
-      onClick={onEdit}
+      onClick={() => onEdit(item.id)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        onEdit();
+        onEdit(item.id);
       }}
       role="button"
       tabIndex={0}
@@ -1503,7 +1572,7 @@ function UploadRow({
           aria-label={`Select ${item.title}`}
           checked={selected}
           disabled={item.state === "SYNCING"}
-          onCheckedChange={onSelectedChange}
+          onCheckedChange={(checked) => onSelectedChange(rowId, checked)}
         />
       </TableCell>
       <TableCell className="max-w-0">
@@ -1529,8 +1598,8 @@ function UploadRow({
           />
         </div>
       </TableCell>
-      <TableCell>—</TableCell>
-      <TableCell>—</TableCell>
+      <TableCell>-</TableCell>
+      <TableCell>-</TableCell>
       <TableCell
         className="max-w-0"
         onClick={(event) => event.stopPropagation()}
@@ -1540,14 +1609,14 @@ function UploadRow({
           <ActionButton
             disabled={item.state === "SYNCING"}
             label="Edit metadata"
-            onClick={onEdit}
+            onClick={() => onEdit(item.id)}
           >
             <Pencil />
           </ActionButton>
           <ActionButton
             disabled={item.state === "SYNCING"}
             label="Remove file"
-            onClick={onRemove}
+            onClick={() => onRemove(item.id)}
           >
             <Trash2 />
           </ActionButton>
@@ -1557,17 +1626,22 @@ function UploadRow({
   );
 }
 
-function canEditTags(document: Document): boolean {
+function canEditTags(document: Document, now: number): boolean {
   if (EDITABLE_TAG_STATUSES.has(document.status)) return true;
   if (document.status !== "UPDATING") return false;
 
-  return Date.now() - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
+  return now - Date.parse(document.updatedAt ?? "") > EDIT_LEASE_TTL_MS;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+/** Moves the table back to its first page; the same state when already there. */
+function firstPage(current: PaginationState): PaginationState {
+  return current.pageIndex === 0 ? current : { ...current, pageIndex: 0 };
 }
 
 /** Lowercased text the table's global filter matches a row against. */

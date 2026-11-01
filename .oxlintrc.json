@@ -49,6 +49,17 @@
         "shadcn/require-static-classes": "error",
         "shadcn/no-unknown-classes": "error",
         "react/exhaustive-deps": "warn",
+        "react/exhaustive-effect-dependencies": "error",
+        "react/immutability": "error",
+        "react/memo-dependencies": "error",
+        "react/no-array-index-key": "error",
+        "react/no-deriving-state-in-effects": "error",
+        "react/no-unstable-nested-components": "error",
+        "react/purity": "error",
+        "react/refs": "error",
+        "react/set-state-in-effect": "error",
+        "react/set-state-in-render": "error",
+        "react/static-components": "error",
         "jsx-a11y/click-events-have-key-events": "warn",
         "jsx-a11y/no-static-element-interactions": "warn",
         "jsx-a11y/prefer-tag-over-role": "warn"
@@ -56,10 +67,29 @@
     },
     {
       "files": ["web/src/components/ui/**"],
+      "plugins": [
+        "eslint",
+        "typescript",
+        "unicorn",
+        "oxc",
+        "import",
+        "promise",
+        "react",
+        "jsx-a11y"
+      ],
       "rules": {
         "shadcn/no-arbitrary-values": "off",
         "shadcn/no-restyle": "off",
-        "shadcn/require-static-classes": "off"
+        "shadcn/require-static-classes": "off",
+        "react/no-array-index-key": "off"
+      }
+    },
+    {
+      "files": ["functions/**", "web/src/**"],
+      "jsPlugins": ["./scripts/oxlint-plugin.ts"],
+      "rules": {
+        "cheapkb/no-em-dash-copy": "error",
+        "cheapkb/require-suppression-reason": "error"
       }
     },
     {

@@ -36,12 +36,31 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm --prefix web ci --legacy-peer-deps
       - run: npm run lint
+      # Fails on unused files, exports and dependencies.
+      - run: npm run knip
       - run: npm run format:check
       - run: npm run build
       - run: npm test
-      - run: API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
-      # Writes the bundle size table to the job summary and fails on growth.
+      # Built with a placeholder PostHog key, like production, so the gates see the analytics chunk.
+      - run: npm run web:build
+      # Writes the bundle size table to the job summary and fails on growth, or on a shrink not yet recorded.
       - run: npm run bundle:check
+      - id: playwright
+        run: echo "version=$(jq -r .version node_modules/playwright-core/package.json)" >> "$GITHUB_OUTPUT"
+      - id: chromium-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
+      - if: steps.chromium-cache.outputs.cache-hit != 'true'
+        run: npx playwright-core install --only-shell chromium
+      - name: Install missing Chromium system libraries
+        run: |
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then npx playwright-core install-deps chromium; fi
+      # Boots the built app against a mocked API and fails on page errors, missing rows or extra renders.
+      - run: npm run perf:check
       # PRs fail on new high advisories; main still deploys. Each allowed advisory has no fixed release and only
       # reaches tooling, and its exception fails the check once GitHub names a fix or npm stops reporting it.
       - if: github.event_name == 'pull_request'

@@ -1,7 +1,7 @@
 import type { Badge } from "@/components/ui/badge";
 import { createShooAuth, type ShooAuthClient } from "@shoojs/auth";
-import posthog from "posthog-js/dist/module.no-external";
 import type React from "react";
+import { posthog } from "./posthog";
 import {
   DEFAULT_TAG_COLOR,
   TAG_COLORS,
@@ -29,6 +29,12 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_METADATA_BYTES = 1200;
 // Mirrors the upload handler's per-account cap on documents in flight.
 export const MAX_PROCESSING_DOCUMENTS = 10;
+// Built once: toLocaleString with options builds a new formatter on every call.
+const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+const DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
 const ACTIVE_STATUSES = [
   "UPLOADED",
   "QUEUED",
@@ -322,13 +328,10 @@ export function formatDate(
 ): string {
   if (!value) return "Just now";
   const date = new Date(value);
+  // format() throws on an invalid date, where toLocaleString returned this text.
+  if (Number.isNaN(date.getTime())) return "Invalid Date";
 
-  return withTime
-    ? date.toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : date.toLocaleDateString(undefined, { dateStyle: "medium" });
+  return withTime ? DATE_TIME_FORMAT.format(date) : DATE_FORMAT.format(date);
 }
 
 /** Returns the file's MIME type, falling back to its extension. */
@@ -491,18 +494,21 @@ export function mergeDocuments(
   }
 
   merged.push(...serverById.values());
-  const documents = merged.sort((a, b) =>
-    (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
-  );
+  // Every field counts: a refused replacement sets lastError without a new updatedAt.
+  // An unchanged row keeps its object, so memoized rows and open editors keep state.
+  const documents = merged
+    .map((document) => {
+      const current = currentById.get(document.documentId);
+      return current && JSON.stringify(current) === JSON.stringify(document)
+        ? current
+        : document;
+    })
+    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
   writePendingDocuments(documents, serverDocuments);
   // Polls usually change nothing; keeping the old array skips the re-render.
   const unchanged =
     documents.length === currentDocuments.length &&
-    // Every field counts: a refused replacement sets lastError without a new updatedAt.
-    documents.every(
-      (document, index) =>
-        JSON.stringify(document) === JSON.stringify(currentDocuments[index]),
-    );
+    documents.every((document, index) => document === currentDocuments[index]);
 
   return unchanged ? currentDocuments : documents;
 }

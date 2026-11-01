@@ -20,7 +20,7 @@ API: https://api.cheapkb.beeblast.co/v1
 
 ## Quickstart
 
-Prerequisites: Node.js 22.18 or later (`npm run bundle:check` runs TypeScript directly), AWS credentials, and Cohere Embed v4 access through Amazon Bedrock. The Lean proofs need [elan](https://github.com/leanprover/elan).
+Prerequisites: Node.js 22.18 or later (the `scripts/*.ts` checks run TypeScript directly), AWS credentials, and Cohere Embed v4 access through Amazon Bedrock. The Lean proofs need [elan](https://github.com/leanprover/elan).
 
 ```bash
 npm ci --legacy-peer-deps
@@ -69,11 +69,14 @@ Tools: `search`, `list_documents`, `get_document`, `add_document`, `update_docum
 ## Verify changes
 
 ```bash
-npm run check   # oxlint, prettier, tsc, vitest
-API_URL=https://example.execute-api.us-east-1.amazonaws.com/v1 npm --prefix web run build
-npm run bundle:check
+npm run check   # oxlint, knip, prettier, tsc, vitest
+npm run web:build      # the CI build: placeholder API URL and PostHog key
+npm run bundle:check   # initial and total JS against scripts/bundle-budgets.json
+npm run perf:check     # boots the build in headless Chromium, renders against scripts/render-budgets.json
 cd proofs && lake build && lake exe vectors   # Lean proofs and the vectors the tests use
 ```
+
+`perf:check` needs Chromium: run `npx playwright-core install --only-shell chromium` once, or set `CHROME_PATH`. When a size or render change is intended, re-record with `npm run bundle:record` or `npm run perf:record` and say why in the PR.
 
 The safety of the upload and tag caps, embedding counter, storage accounting, billing, rate limits and document lifecycle is proved in Lean 4. See [Proofs](proofs/README.md).
 

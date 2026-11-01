@@ -505,7 +505,7 @@ async function embedItems(
     const hasText = items.some((item) => !item.imageBase64);
     const modality =
       hasImage && hasText ? "mixed" : hasImage ? "image" : "text";
-    const embeddings = await invokeEmbeddingModel(
+    const { embeddings, billing } = await invokeEmbeddingModel(
       bedrock,
       buildEmbeddingRequest(items),
       items[0].metadata.userId,
@@ -513,6 +513,7 @@ async function embedItems(
       "ingest",
       modality,
     );
+    await billing;
     for (let index = 0; index < items.length; index += 1) {
       embeddingsByChunk.set(items[index].metadata.chunkId, embeddings[index]);
     }

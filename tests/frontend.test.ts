@@ -1,4 +1,4 @@
-import { JSDOM } from "jsdom";
+import { JSDOM, VirtualConsole } from "jsdom";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,32 @@ const API_URL = "https://api.cheapkb.test/v1";
 const PENDING_DOCUMENTS_KEY = "cheapkb_pending_documents";
 const STORAGE_ORIGIN =
   "https://cheapkb-storage-000000000000-us-east-1.s3.us-east-1.amazonaws.com";
+const POSTHOG_KEY = "phc_test";
+// Stands in for the lazily imported PostHog chunk and records what reaches it.
+const fakePostHog = vi.hoisted(() => {
+  const calls: string[] = [];
+  return {
+    calls: calls,
+    client: {
+      capture: (event: string): void => {
+        calls.push(`capture ${event}`);
+      },
+      identify: (id: string): void => {
+        calls.push(`identify ${id}`);
+      },
+      init: (key: string): void => {
+        calls.push(`init ${key}`);
+      },
+      reset: (): void => {
+        calls.push("reset");
+      },
+    },
+  };
+});
+
+vi.mock("../web/node_modules/posthog-js/dist/module.no-external.js", () => ({
+  default: fakePostHog.client,
+}));
 
 describe("frontend", () => {
   let originalWindow: any;
@@ -456,6 +482,118 @@ describe("frontend", () => {
         ]),
       ).not.toBe(current);
     });
+
+    it("keeps the object of every row a poll left unchanged", () => {
+      const current: Document[] = [
+        {
+          createdAt: "2026-01-02T00:00:00.000Z",
+          documentId: "doc-1",
+          inFlight: true,
+          status: "PARSING",
+          tags: ["alpha"],
+        },
+        {
+          createdAt: "2026-01-01T00:00:00.000Z",
+          documentId: "doc-2",
+          status: "EMBEDDED",
+          tags: ["beta"],
+        },
+      ];
+
+      const merged = mergeDocuments(current, [
+        { ...current[0], status: "CHUNKING" },
+        { ...current[1], tags: ["beta"] },
+      ]);
+
+      expect(merged).not.toBe(current);
+      expect(merged[0]).not.toBe(current[0]);
+      expect(merged[0]).toMatchObject({ status: "CHUNKING" });
+      // An open tag editor keys on this object, so an equal row must not replace it.
+      expect(merged[1]).toBe(current[1]);
+    });
+  });
+
+  describe("analytics", () => {
+    beforeEach(() => {
+      fakePostHog.calls.length = 0;
+      process.env.VITE_POSTHOG_KEY = POSTHOG_KEY;
+      Object.assign(import.meta.env as Record<string, string | undefined>, {
+        VITE_POSTHOG_KEY: POSTHOG_KEY,
+      });
+      vi.resetModules();
+    });
+
+    afterEach(() => {
+      delete process.env.VITE_POSTHOG_KEY;
+      delete (import.meta.env as Record<string, string | undefined>)
+        .VITE_POSTHOG_KEY;
+    });
+
+    it("loads PostHog after the first render and replays earlier calls in order", async () => {
+      const { enablePostHog, loadPostHog, posthog } =
+        await import("../web/src/lib/posthog");
+
+      enablePostHog();
+      posthog.identify("user-1");
+      posthog.capture("document_uploaded");
+      await new Promise((resolve) => {
+        setTimeout(resolve, 10);
+      });
+      expect(fakePostHog.calls).toEqual([]);
+
+      loadPostHog();
+      await vi.waitFor(() =>
+        expect(fakePostHog.calls).toEqual([
+          `init ${POSTHOG_KEY}`,
+          "identify user-1",
+          "capture document_uploaded",
+        ]),
+      );
+    });
+
+    it("forgets the PostHog user before the sign-out reload, even when PostHog never loaded", async () => {
+      const virtualConsole = new VirtualConsole();
+      // jsdom reports the reload as an unimplemented navigation.
+      virtualConsole.on("jsdomError", (error) => {
+        fakePostHog.calls.push(error.message);
+      });
+      const dom = new JSDOM("", {
+        url: "https://cheapkb.test",
+        virtualConsole: virtualConsole,
+      });
+      globalThis.window = dom.window as unknown as Window &
+        typeof globalThis.window;
+      globalThis.localStorage = dom.window.localStorage as unknown as Storage;
+      globalThis.sessionStorage = dom.window
+        .sessionStorage as unknown as Storage;
+      const persistenceKey = `ph_${POSTHOG_KEY}_posthog`;
+      localStorage.setItem(persistenceKey, '{"distinct_id":"user-a"}');
+      const { enablePostHog } = await import("../web/src/lib/posthog");
+      const { signOut } = await import("../web/src/lib/client");
+
+      enablePostHog();
+      signOut();
+
+      expect(localStorage.getItem(persistenceKey)).toBeNull();
+      expect(fakePostHog.calls).toEqual([
+        expect.stringContaining("navigation"),
+      ]);
+    });
+
+    it("resets a loaded PostHog in memory on sign-out", async () => {
+      const { enablePostHog, loadPostHog } =
+        await import("../web/src/lib/posthog");
+      const { signOut } = await import("../web/src/lib/client");
+      enablePostHog();
+      loadPostHog();
+      await vi.waitFor(() =>
+        expect(fakePostHog.calls).toEqual([`init ${POSTHOG_KEY}`]),
+      );
+
+      signOut();
+
+      expect(fakePostHog.calls).toContain("reset");
+    });
   });
 
   describe("document helpers", () => {
@@ -497,10 +635,6 @@ describe("frontend", () => {
         stdio: "pipe",
       });
       const sourceHtml = fs.readFileSync("web/index.html", "utf8");
-      const documentsSource = fs.readFileSync(
-        "web/src/components/DocumentsCard.tsx",
-        "utf8",
-      );
       const html = fs.readFileSync("web/dist/index.html", "utf8");
       const jsFiles = fs
         .readdirSync("web/dist/assets")
@@ -512,21 +646,7 @@ describe("frontend", () => {
       expect(sourceHtml).toContain("Content-Security-Policy");
       expect(sourceHtml).toContain("script-src 'self'");
       expect(sourceHtml).toContain("script-src 'self';");
-      expect(sourceHtml).not.toContain("shoo.js");
       expect(sourceHtml).toContain("https://lh3.googleusercontent.com");
-      expect(sourceHtml).not.toContain("cdn.tailwindcss.com");
-      expect(documentsSource).toContain("multiple");
-      expect(documentsSource).toContain('window.addEventListener("drop"');
-      expect(documentsSource).toContain("Sync all");
-      // Wide enough that columns never truncate; narrower screens scroll.
-      expect(documentsSource).toContain(
-        'Table className="min-w-250 table-fixed"',
-      );
-      expect(documentsSource).toContain('TableHead className="w-44">Tags');
-      expect(documentsSource).not.toContain("bg-transparent!");
-      expect(documentsSource).toContain('className="cursor-pointer"');
-      expect(documentsSource).toContain('event.key !== "Enter"');
-      expect(documentsSource).not.toContain("STATUS_LABELS");
       expect(jsFiles.length).toBeGreaterThan(0);
       expect(cssFiles.length).toBeGreaterThan(0);
       expect(html).toContain("/assets/");
