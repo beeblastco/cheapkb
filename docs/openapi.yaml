@@ -13,8 +13,14 @@ info:
     Rate limits are per user per hour: upload 50, query 100, tag edit 20,
     reindex 10, account reset 3.
 servers:
-  - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
+  - url: https://api.cheapkb.beeblast.co/v1
     description: Production
+  - url: https://{api-id}.execute-api.us-east-1.amazonaws.com/v1
+    description: Self-hosted without a custom domain
+    variables:
+      api-id:
+        default: your-api-id
+        description: The API Gateway id from the apiEndpoint deploy output
 security:
   - bearerAuth: []
 

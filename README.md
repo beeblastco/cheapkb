@@ -4,7 +4,9 @@
 
 Cost-effective multimodal knowledge base on AWS. Upload documents and images, then search them with text, an image, or both.
 
-Live web app: https://ds8aejb7efd81.cloudfront.net
+Live web app: https://cheapkb.beeblast.co
+
+API: https://api.cheapkb.beeblast.co/v1
 
 ## Features
 

@@ -176,6 +176,7 @@ jobs:
       - name: Deploy production
         env:
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          DOMAIN: cheapkb.beeblast.co
           POSTHOG_KEY: ${{ vars.POSTHOG_KEY }}
           POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
         run: |
