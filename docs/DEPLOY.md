@@ -11,6 +11,16 @@ The caller account must match `AWS_ACCOUNT_ID`. The deployment output includes t
 
 The deployer owns plan configuration. Update the seeded default plan in `sst.config.ts` and deploy; existing accounts use its current price and allowance, and accounts on a removed plan fall back to it. Users cannot create or assign plans through the API.
 
+## Custom domain
+
+Set `DOMAIN` to serve production on it: the web app on `DOMAIN` and the API on `api.DOMAIN/v1`. SST creates the certificates and DNS records, so the deploy account needs a Route53 public hosted zone for `DOMAIN`. When the parent domain lives in another account, create the zone in the deploy account, then delegate to it with an NS record in the parent zone:
+
+```bash
+aws route53 create-hosted-zone --name cheapkb.example.com --caller-reference "$(date +%s)"
+```
+
+Leave `DOMAIN` unset to keep the CloudFront and API Gateway URLs. Other stages always use those. Shoo tokens are scoped to the web app origin, so moving to a domain signs every user out once.
+
 ## Bedrock
 
 `BEDROCK_EMBEDDING_MODEL` defaults to `us.cohere.embed-v4:0`. Enable access to Cohere Embed v4 in Amazon Bedrock in the deployment account before deploying; the Pipeline and Query Lambdas call it directly.
@@ -27,4 +37,4 @@ Merges to `main` deploy through GitHub Actions in the `production` environment, 
 
 Run the first production deploy locally, since it creates that role. Then set `AWS_ACCOUNT_ID` as a repository secret and the role ARN (the `deployRoleArn` output) as the `AWS_DEPLOY_ROLE_ARN` variable.
 
-CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml`, plus the optional `POSTHOG_KEY` and `POSTHOG_HOST` repository variables.
+CI does not read `.env`. Its configuration is the `env` block in `.github/workflows/deploy.yml` and the `DOMAIN` in its deploy step, plus the optional `POSTHOG_KEY` and `POSTHOG_HOST` repository variables.
