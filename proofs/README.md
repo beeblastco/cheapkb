@@ -50,7 +50,7 @@ The models take these as given rather than proving them:
 - A file is charged without the storage cap only while `isDocumentInFlight` still counts its upload 60 seconds later, which is the ingest adapter's timeout (a test pins the two together). A later first file, such as a POST that started just before its form expired, is held to the cap. A replacement counts until its 15-minute late grace ends, and one landing within a minute of that is reverted. The form is signed to expire inside its window.
 - Chunking after a reset is deterministic, so every run since then produces the same chunk count.
 - The parse guard is sound only if the whole text, blank pages and whitespace included, averages at most 16 characters per token. Long whitespace runs can exceed that, and then the guard may refuse a document the chunker would accept.
-- The vector index runs in `ENHANCED` mode, so filters apply before ranking and a caller gets up to `topK` of their own vectors. This affects result count only; `caller_isolated` holds in either mode.
+- S3 Vectors honours the `ENHANCED` query mode the query handler sends, so filters apply before ranking and a caller gets up to `topK` of their own vectors. This affects result count only; `caller_isolated` holds in either mode.
 - AWS and Cohere limits: BatchWriteItem 25 items, TransactWriteItems 100, SendMessageBatch 10, GetVectors 100, PutVectors and DeleteVectors 500, 2 KB of filterable and 40 KB of total vector metadata, 96 inputs and 20 MB per Cohere request.
 
 ## Accepted gaps

@@ -403,8 +403,6 @@ export default $config({
             Type: "AWS::S3Vectors::VectorBucket",
             Properties: { VectorBucketName: vectorBucketName },
           },
-          // AWS::S3Vectors::Index has no IndexMode property; docs/DEPLOY.md
-          // covers the ENHANCED mode that search relies on.
           VectorIndex: {
             Type: "AWS::S3Vectors::Index",
             DependsOn: "VectorBucket",

@@ -193,6 +193,8 @@ export async function handler(
         queryVector: { float32: Array.from(queryVector) },
         topK: topK,
         filter: vectorFilter,
+        // Resolve the owner filter before ranking, even on a CLASSIC index
+        queryMode: "ENHANCED",
         returnMetadata: true,
         returnDistance: true,
       }),

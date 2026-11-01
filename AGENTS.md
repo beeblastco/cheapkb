@@ -2,7 +2,7 @@ The current project name is `cheapkb`: a dirt-cheap, production-grade RAG knowle
 
 ## Core principles
 
-Weigh every feature, suggestion, dependency and AWS service against these five. Cost is the default lens, but a saving never comes out of the other four.
+Weigh every feature, suggestion, dependency and AWS service against these five. Cost is the default lens, but a saving never costs search quality, search speed or security. Background work such as ingestion may trade latency for cost.
 
 1. **Dirt cheap.** Serverless and pay-per-use only (S3 Vectors, Lambda, SQS, DynamoDB, API Gateway), with no idle cost and the free tier covering a quiet month. A new feature reuses what we already pay for before it adds a service.
 2. **Production-quality search.** Not best-in-class, but good enough for businesses under real, high traffic, never an MVP or a proof of concept. Results stay correct and complete under load, retries, duplicates and concurrent requests.

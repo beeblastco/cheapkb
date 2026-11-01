@@ -172,6 +172,9 @@ describe("query handler usage", () => {
     expect(response.statusCode).toBe(200);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
     expect(vectorsMock.commandCalls(QueryVectorsCommand)).toHaveLength(1);
+    expect(
+      vectorsMock.commandCalls(QueryVectorsCommand)[0].args[0].input.queryMode,
+    ).toBe("ENHANCED");
     const [call] = bedrockMock.commandCalls(InvokeModelCommand);
     const metadata = JSON.parse(String(call.args[0].input.requestMetadata));
     const request = JSON.parse(String(call.args[0].input.body));
