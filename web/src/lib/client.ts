@@ -1,5 +1,6 @@
 import type { Badge } from "@/components/ui/badge";
 import { createShooAuth, type ShooAuthClient } from "@shoojs/auth";
+import posthog from "posthog-js/dist/module.no-external";
 import type React from "react";
 import {
   DEFAULT_TAG_COLOR,
@@ -12,7 +13,9 @@ import {
   type UserProfile,
 } from "./types";
 
-const SHOO_CALLBACK_PATH = "/shoo/callback";
+export const SHOO_CALLBACK_PATH = "/shoo/callback";
+// Set by the sign-in callback, which loads no analytics, so the next load reports it.
+export const SIGNED_IN_KEY = "cheapkb_signed_in";
 const SHOO_PKCE_KEY = "shoo_pkce";
 const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
 const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -163,6 +166,7 @@ export async function handleSignInCallback(): Promise<boolean> {
   try {
     await shoo().handleCallback();
     localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+    sessionStorage.setItem(SIGNED_IN_KEY, "1");
     window.location.replace("/");
     return true;
   } catch {
@@ -365,6 +369,7 @@ export function getIdentity(): ShooIdentity | null {
     const claims = shoo().decodeIdentityClaims(token);
     if (!claims || claims.exp * 1000 <= Date.now()) {
       shoo().clearIdentity();
+      posthog.reset();
       return null;
     }
     return { token: token, userId: userId ?? undefined };
@@ -530,6 +535,7 @@ export function signOut(): void {
   signingOut = true;
   shoo().clearIdentity();
   localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+  posthog.reset();
   window.location.reload();
 }
 

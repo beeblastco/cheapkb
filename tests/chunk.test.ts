@@ -542,6 +542,35 @@ describe("chunk records", () => {
     ]);
   });
 
+  it("drops a late redelivery for a document that already finished indexing", async () => {
+    dynamoMock
+      .on(UpdateCommand)
+      .rejects(
+        new ConditionalCheckFailedException({ $metadata: {}, message: "done" }),
+      );
+
+    const result = await handler(
+      sqsEvent(
+        "chunk-late",
+        JSON.stringify({
+          documentId: "doc-1",
+          parsedKey: "parsed/doc-1/v1/pages.json",
+        }),
+        2,
+      ),
+    );
+
+    expect(result.batchItemFailures).toEqual([]);
+    const start = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(start.ConditionExpression).toContain(
+      "NOT #s IN (:deleting, :embedded)",
+    );
+    // No chunk is rewritten, so the document is not finished, or reported indexed, twice.
+    expect(dynamoMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    expect(dynamoMock.commandCalls(PutCommand)).toHaveLength(0);
+    expect(sqsMock.calls()).toHaveLength(0);
+  });
+
   it("drops the message when the document was deleted", async () => {
     dynamoMock
       .on(UpdateCommand)

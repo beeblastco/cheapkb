@@ -126,6 +126,35 @@ export const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 // A document the pipeline can never process, so it fails without retries.
 export class ContentError extends Error {}
 
+/** Sends one event to PostHog under the account's Shoo user id, the web app's distinct id.
+ * A no-op without POSTHOG_KEY; analytics failures never fail the pipeline. */
+export async function captureEvent(
+  userId: string,
+  event: string,
+  properties: Record<string, unknown>,
+): Promise<void> {
+  const key = process.env.POSTHOG_KEY;
+  if (!key || !userId) return;
+  try {
+    const response = await fetch(`${process.env.POSTHOG_HOST}/i/v0/e/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: key,
+        distinct_id: userId,
+        event: event,
+        properties: properties,
+      }),
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) {
+      console.warn(`[posthog] ${event} rejected with HTTP ${response.status}`);
+    }
+  } catch (err) {
+    console.warn(`[posthog] Failed to send ${event}:`, err);
+  }
+}
+
 /** Takes one token from the caller's bucket for an operation, refilling hourly.
  * Handlers reject the request when `allowed` is false. */
 export async function checkRateLimit(
@@ -617,10 +646,11 @@ export async function recordStageError(
   else if (err instanceof ContentError) lastError = err.message;
 
   try {
-    await dynamo.send(
+    const { Attributes } = await dynamo.send(
       new UpdateCommand({
         TableName: tableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ReturnValues: "ALL_OLD",
         UpdateExpression: failed
           ? "SET #s = :s, lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t"
           : "SET lastError = :e, retryCount = :r, failedStep = :f, updatedAt = :t",
@@ -636,6 +666,13 @@ export async function recordStageError(
         },
       }),
     );
+    if (failed && Attributes?.status !== "FAILED") {
+      await captureEvent(String(Attributes?.userId ?? ""), "document_failed", {
+        document_id: documentId,
+        mime_type: Attributes?.mimeType,
+        step: step,
+      });
+    }
   } catch (error) {
     if (error instanceof ConditionalCheckFailedException) return;
     throw error;
@@ -804,6 +841,32 @@ export async function setDocumentStatus(
         ":s": status,
         ":t": now,
         ...(clearError ? { ":null": null, ":zero": 0 } : {}),
+      },
+    }),
+  );
+}
+
+/** Moves a document into the parse or chunk stage. Reindex and replacement leave EMBEDDED
+ * first, so an EMBEDDED document means a late redelivery, refused like a deleted one. */
+export async function startStage(
+  documentId: string,
+  tableName: string,
+  status: "CHUNKING" | "PARSING",
+  now: string,
+): Promise<void> {
+  await dynamo.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: `DOC#${documentId}`, sk: "META" },
+      UpdateExpression: "SET #s = :s, updatedAt = :t",
+      ConditionExpression:
+        "attribute_exists(pk) AND NOT #s IN (:deleting, :embedded)",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: {
+        ":deleting": "DELETING",
+        ":embedded": "EMBEDDED",
+        ":s": status,
+        ":t": now,
       },
     }),
   );

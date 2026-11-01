@@ -24,6 +24,10 @@ Completed or failed documents can be replaced. Existing content remains searchab
 
 The web app has no semantic search panel. Search your content from Claude Code, Codex, Broods or another MCP client, or call `POST /query` with text, one supported image up to 5 MiB, or both.
 
+## Analytics
+
+When the deployment sets a PostHog key, the app records which actions you take (sign in, upload, search, delete, reindex, delete all data) and the errors you see, under your account. Titles, search text and document content are never sent.
+
 ## Development
 
 Point the dev server at a non-production stage. Production rejects tokens issued to localhost.

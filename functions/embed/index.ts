@@ -16,6 +16,7 @@ import type { SQSBatchResponse, SQSEvent, SQSRecord } from "aws-lambda";
 import { encode } from "gpt-tokenizer";
 import type { EmbedMessage } from "../types";
 import {
+  captureEvent,
   dynamo,
   embeddingDimension,
   embeddingModel,
@@ -696,6 +697,11 @@ async function markEmbedded(documentId: string): Promise<void> {
         },
       }),
     );
+    await captureEvent(doc?.userId ?? "", "document_indexed", {
+      chunk_count: expected,
+      document_id: documentId,
+      mime_type: doc?.mimeType,
+    });
   } catch (err) {
     if ((err as Error).name !== "ConditionalCheckFailedException") {
       throw err;

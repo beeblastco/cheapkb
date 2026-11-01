@@ -121,6 +121,7 @@ import {
   Tag as TagIcon,
   Trash2,
 } from "lucide-react";
+import posthog from "posthog-js/dist/module.no-external";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 50;
@@ -646,6 +647,11 @@ export function DocumentsCard({
               current.filter((currentItem) => currentItem.id !== item.id),
             );
             succeeded += 1;
+            posthog.capture("document_uploaded", {
+              has_tags: item.tags.length > 0,
+              mime_type: queued.mimeType,
+              size_bytes: item.file.size,
+            });
           } catch (error) {
             // Another tab or a pending replacement can still hit the cap.
             const attempts = retries.get(item.id) ?? 0;

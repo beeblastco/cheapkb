@@ -14,12 +14,14 @@ import type {
 import { decode, encode } from "gpt-tokenizer";
 import type { EmbedMessage } from "../types";
 import {
+  captureEvent,
   ContentError,
   deleteDocumentChunkRecords,
   dynamo,
   getDocument,
   recordStageError,
   setDocumentStatus,
+  startStage,
 } from "../utils";
 
 const s3 = new S3Client({});
@@ -68,7 +70,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       await chunkDocument(documentId, parsedKey, body.reindexedAt);
     } catch (err) {
       if (err instanceof ConditionalCheckFailedException) {
-        console.log(`[chunk] Document ${documentId} was deleted, dropping`);
+        console.log(
+          `[chunk] Document ${documentId} was deleted or already indexed, dropping`,
+        );
         continue;
       }
       // A failed error write retries only this record, so the records already
@@ -170,7 +174,7 @@ async function chunkDocument(
   reindexedAt: string | undefined,
 ): Promise<void> {
   const now = new Date().toISOString();
-  await setDocumentStatus(documentId, TableName, "CHUNKING", now, false);
+  await startStage(documentId, TableName, "CHUNKING", now);
   const doc = await getDocument(documentId, dynamo, TableName);
   const previousCount = doc?.chunkCount ?? 0;
   // A re-parse after a reindex carries no reindexedAt, so META's is used when it has one.
@@ -329,10 +333,11 @@ async function markEmbeddedIfDone(
 ): Promise<void> {
   const now = new Date().toISOString();
   try {
-    await dynamo.send(
+    const { Attributes } = await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ReturnValues: "ALL_OLD",
         UpdateExpression: "SET #s = :s, updatedAt = :t",
         ConditionExpression:
           "attribute_exists(pk) AND embeddedCount >= :count AND #s <> :deleting",
@@ -345,6 +350,13 @@ async function markEmbeddedIfDone(
         },
       }),
     );
+    if (Attributes?.status !== "EMBEDDED") {
+      await captureEvent(String(Attributes?.userId ?? ""), "document_indexed", {
+        chunk_count: chunkCount,
+        document_id: documentId,
+        mime_type: Attributes?.mimeType,
+      });
+    }
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }
