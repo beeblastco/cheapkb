@@ -80,6 +80,24 @@ describe("query tenant filter", () => {
       "Unsupported filter",
     );
   });
+
+  it("keeps filters within the 100 constraints S3 Vectors accepts", () => {
+    const values = (count: number): string[] =>
+      Array.from({ length: count }, (_, index) => `v${index}`);
+
+    expect(() =>
+      buildFilter({ tags: { $in: values(98) } }, "owner"),
+    ).not.toThrow();
+    expect(() => buildFilter({ tags: { $in: values(99) } }, "owner")).toThrow(
+      "at most 98 values",
+    );
+    expect(() =>
+      buildFilter(
+        { tags: { $in: values(50) }, authors: { $in: values(49) } },
+        "owner",
+      ),
+    ).toThrow("at most 98 values");
+  });
 });
 
 describe("query handler usage", () => {
@@ -172,6 +190,9 @@ describe("query handler usage", () => {
     expect(response.statusCode).toBe(200);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(1);
     expect(vectorsMock.commandCalls(QueryVectorsCommand)).toHaveLength(1);
+    expect(
+      vectorsMock.commandCalls(QueryVectorsCommand)[0].args[0].input.queryMode,
+    ).toBe("ENHANCED");
     const [call] = bedrockMock.commandCalls(InvokeModelCommand);
     const metadata = JSON.parse(String(call.args[0].input.requestMetadata));
     const request = JSON.parse(String(call.args[0].input.body));
