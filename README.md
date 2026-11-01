@@ -62,7 +62,7 @@ defineMcp({
 });
 ```
 
-Tools: `search`, `list_documents`, `get_document` and `add_document`.
+Tools: `search`, `list_documents`, `get_document` and `add_document`. `add_document` takes files up to about 4 MB, since a Lambda request is capped at 6 MB and PDFs and images travel as base64; add larger files in the web app.
 
 ## Verify changes
 

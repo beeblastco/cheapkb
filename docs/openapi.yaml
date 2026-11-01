@@ -451,7 +451,8 @@ paths:
         token instead of a Shoo token. Tools: search (same limits and usage
         charge as POST /query), list_documents, get_document, and add_document
         (same caps, rate limit and charges as POST /upload; empty, non-base64
-        or oversized content is refused before the document is created).
+        or oversized content is refused before the document is created; the
+        6 MB Lambda request cap limits it to files of about 4 MB).
         subscriptions/listen returns 405.
       tags: [mcp]
       security:

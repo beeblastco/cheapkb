@@ -268,7 +268,7 @@ function createServer(
     {
       title: "Add document",
       description:
-        "Add a file to the user's cheapkb. Text and Markdown go in as-is; PDF and images as base64. A file with the same name and type replaces the old one. Indexing runs in the background; check it with get_document.",
+        "Add a file to the user's cheapkb. Text and Markdown go in as-is; PDF and images as base64. Up to about 4 MB per file; larger files go through the web app. A file with the same name and type replaces the old one. Indexing runs in the background; check it with get_document.",
       inputSchema: z.object({
         filename: z
           .string()
