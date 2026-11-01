@@ -64,12 +64,12 @@ export async function handler(
   const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
 
-  const { allowed, remaining } = await checkRateLimit(
-    userId,
-    RateLimitsTableName,
-    "UPLOAD",
-    50,
-    50,
+  // Both limits are read at once; the rate limit still answers first.
+  const [{ allowed, remaining }, { allowed: usageAllowed }] = await Promise.all(
+    [
+      checkRateLimit(userId, RateLimitsTableName, "UPLOAD", 50, 50),
+      checkUsageLimit(userId, AccountsTableName),
+    ],
   );
   if (!allowed) {
     return {
@@ -84,10 +84,6 @@ export async function handler(
     };
   }
 
-  const { allowed: usageAllowed } = await checkUsageLimit(
-    userId,
-    AccountsTableName,
-  );
   if (!usageAllowed) {
     return {
       statusCode: 429,

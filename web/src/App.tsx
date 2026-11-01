@@ -1,8 +1,4 @@
-import { AccountMenu } from "@/components/AccountMenu";
-import { DocumentDialog } from "@/components/DocumentDialog";
-import { DocumentsCard } from "@/components/DocumentsCard";
 import { Notices, type Notice } from "@/components/Notices";
-import { SettingsDialog, type SettingsTab } from "@/components/SettingsDialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -11,8 +7,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { useTags } from "@/hooks/use-tags";
 import {
   apiCall,
   getIdentity,
@@ -22,15 +16,15 @@ import {
   isActiveStatus,
   mergeDocuments,
   readPendingDocuments,
+  SHOO_CALLBACK_PATH,
   SIGNED_IN_KEY,
-  signOut,
   startSignIn,
   watchSession,
   writePendingDocuments,
 } from "@/lib/client";
+import { loadPostHog, posthog } from "@/lib/posthog";
 import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
 import { LogIn } from "lucide-react";
-import posthog from "posthog-js/dist/module.no-external";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const NOTICE_MS = 6000;
@@ -38,7 +32,10 @@ const POLL_MS = 3000;
 
 /** Root component: signed-out screen, or the documents workspace with its settings. */
 export default function App(): React.JSX.Element {
-  const [identity, setIdentity] = useState<ShooIdentity | null>(null);
+  // Read up front so a signed-in user never sees the sign-in card first.
+  const [identity, setIdentity] = useState<ShooIdentity | null>(() =>
+    window.location.pathname === SHOO_CALLBACK_PATH ? null : getIdentity(),
+  );
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(
@@ -50,10 +47,15 @@ export default function App(): React.JSX.Element {
   > | null>(null);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  // Imported once signed in, so signed-out visitors never download the workspace.
+  // Not React.lazy: Suspense holds a revealed boundary back by up to 300 ms.
+  const [workspace, setWorkspace] = useState<
+    typeof import("@/components/Workspace") | null
+  >(null);
   const documentsRef = useRef(documents);
   const noticesRef = useRef(notices);
   const documentRequest = useRef(0);
+  const documentsRequest = useRef(0);
   const usageRequest = useRef(0);
   const hadInflight = useRef(false);
   const hasInflight = documents.some(
@@ -98,9 +100,6 @@ export default function App(): React.JSX.Element {
     [dismissNotice],
   );
 
-  // Lifted above DocumentsCard so the detail panel can color tags too.
-  const tagVocabulary = useTags(identity?.token ?? "");
-
   const request = useCallback(
     (
       method: string,
@@ -112,35 +111,43 @@ export default function App(): React.JSX.Element {
   );
 
   // Loads usage on sign-in and after uploads and deletes.
-  const refreshUsage = useCallback(async (): Promise<void> => {
-    if (!identity?.token) return;
-    const requestId = usageRequest.current + 1;
-    usageRequest.current = requestId;
-    try {
-      const data = await getUsageSummary(identity.token);
-      if (requestId !== usageRequest.current) return;
-      setUsage(data);
-    } catch (error) {
-      if (requestId !== usageRequest.current) return;
-      notify("Couldn't load usage", (error as Error).message, refreshUsage);
-    }
-  }, [identity?.token, notify]);
-
-  const loadDocuments = useCallback(
-    async (showLoading = false): Promise<void> => {
+  const refreshUsage = useCallback(
+    async function refresh(): Promise<void> {
       if (!identity?.token) return;
+      const requestId = usageRequest.current + 1;
+      usageRequest.current = requestId;
+      try {
+        const data = await getUsageSummary(identity.token);
+        if (requestId !== usageRequest.current) return;
+        setUsage(data);
+      } catch (error) {
+        if (requestId !== usageRequest.current) return;
+        notify("Couldn't load usage", (error as Error).message, refresh);
+      }
+    },
+    [identity?.token, notify],
+  );
+
+  // Polls and reloads can overlap; only the newest response is applied.
+  const loadDocuments = useCallback(
+    async function load(showLoading = false): Promise<void> {
+      if (!identity?.token) return;
+      const requestId = documentsRequest.current + 1;
+      documentsRequest.current = requestId;
       if (showLoading) setLoadingDocuments(true);
       try {
         const data = await request("GET", "/documents");
+        if (requestId !== documentsRequest.current) return;
         setDocuments((current) =>
           mergeDocuments(current, (data.documents as Document[]) || []),
         );
       } catch (error) {
+        if (requestId !== documentsRequest.current) return;
         notify("Couldn't load documents", (error as Error).message, () =>
-          loadDocuments(true),
+          load(true),
         );
       } finally {
-        setLoadingDocuments(false);
+        if (requestId === documentsRequest.current) setLoadingDocuments(false);
       }
     },
     [identity?.token, notify, request],
@@ -180,10 +187,23 @@ export default function App(): React.JSX.Element {
   }, [notify]);
 
   useEffect(() => {
+    if (!identity?.token) return;
+    import("@/components/Workspace")
+      .then(setWorkspace)
+      .catch((error: Error) => {
+        // Neither screen mounts now, so analytics is released here to report this error.
+        loadPostHog();
+        notify("Couldn't load the app", error.message);
+      });
+  }, [identity?.token, notify]);
+
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- loads documents from the API when the session changes
     if (identity?.token) loadDocuments(true);
   }, [identity?.token, loadDocuments]);
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- loads usage from the API when the session changes
     refreshUsage();
   }, [refreshUsage]);
 
@@ -216,11 +236,11 @@ export default function App(): React.JSX.Element {
   }, [loadDocuments, refreshUsage]);
 
   /** Clears the detail dialog; a request still in flight is ignored. */
-  function closeDocument(): void {
+  const closeDocument = useCallback((): void => {
     documentRequest.current += 1;
     setSelectedDocument(null);
     setSelectedDocumentData(null);
-  }
+  }, []);
 
   async function deleteAllData(): Promise<void> {
     try {
@@ -239,60 +259,60 @@ export default function App(): React.JSX.Element {
    * Marks a document as deleting and deletes it; on failure it restores the row.
    * Returns false instead of throwing, so bulk deletes can collect failures.
    */
-  async function deleteDocument(
-    documentId: string,
-    refresh = true,
-  ): Promise<boolean> {
-    const now = new Date().toISOString();
-    const deletedSnapshot = documentsRef.current.find(
-      (document) => document.documentId === documentId,
-    );
-    setDocuments((current) =>
-      current.map((document) => {
-        return document.documentId === documentId
-          ? {
-              ...document,
-              lastError: null,
-              status: "DELETING",
-              updatedAt: now,
-            }
-          : document;
-      }),
-    );
-    try {
-      await request("DELETE", `/documents/${encodeURIComponent(documentId)}`);
-      posthog.capture("document_deleted", {
-        mime_type: deletedSnapshot?.mimeType,
-        status: deletedSnapshot?.status,
-      });
-      if (refresh) {
-        await loadDocuments();
-        refreshUsage();
-      }
-      return true;
-    } catch (error) {
-      const { message } = error as Error;
-      const { current } = documentsRef;
-      let restored: Document[];
-      if (!deletedSnapshot) {
-        restored = current;
-      } else if (
-        current.some((document) => document.documentId === documentId)
-      ) {
-        restored = current.map((document) => {
+  const deleteDocument = useCallback(
+    async (documentId: string, refresh = true): Promise<boolean> => {
+      const now = new Date().toISOString();
+      const deletedSnapshot = documentsRef.current.find(
+        (document) => document.documentId === documentId,
+      );
+      setDocuments((current) =>
+        current.map((document) => {
           return document.documentId === documentId
-            ? deletedSnapshot
+            ? {
+                ...document,
+                lastError: null,
+                status: "DELETING",
+                updatedAt: now,
+              }
             : document;
+        }),
+      );
+      try {
+        await request("DELETE", `/documents/${encodeURIComponent(documentId)}`);
+        posthog.capture("document_deleted", {
+          mime_type: deletedSnapshot?.mimeType,
+          status: deletedSnapshot?.status,
         });
-      } else {
-        restored = [deletedSnapshot, ...current];
+        if (refresh) {
+          await loadDocuments();
+          refreshUsage();
+        }
+        return true;
+      } catch (error) {
+        const { message } = error as Error;
+        const { current } = documentsRef;
+        let restored: Document[];
+        if (!deletedSnapshot) {
+          restored = current;
+        } else if (
+          current.some((document) => document.documentId === documentId)
+        ) {
+          restored = current.map((document) => {
+            return document.documentId === documentId
+              ? deletedSnapshot
+              : document;
+          });
+        } else {
+          restored = [deletedSnapshot, ...current];
+        }
+        setDocuments(restored);
+        writePendingDocuments(restored);
+        notify("Delete failed", message);
+        return false;
       }
-      setDocuments(restored);
-      writePendingDocuments(restored);
-      notify("Delete failed", message);
-      return false;
-    }
-  }
+    },
+    [loadDocuments, notify, refreshUsage, request],
+  );
 
   /** Deletes documents one at a time and returns the ids that failed. */
   async function deleteDocuments(documentIds: string[]): Promise<string[]> {
@@ -311,58 +331,65 @@ export default function App(): React.JSX.Element {
   }
 
   /** Queues a document for reindexing and rolls the table back on failure. */
-  async function reindexDocument(documentId: string): Promise<void> {
-    const previous = documentsRef.current;
-    setDocuments((current) =>
-      current.map((document) => {
-        return document.documentId === documentId
-          ? { ...document, inFlight: true, lastError: null, status: "QUEUED" }
-          : document;
-      }),
-    );
-    try {
-      await request(
-        "POST",
-        `/documents/${encodeURIComponent(documentId)}/reindex`,
+  const reindexDocument = useCallback(
+    async (documentId: string): Promise<void> => {
+      const previous = documentsRef.current;
+      setDocuments((current) =>
+        current.map((document) => {
+          return document.documentId === documentId
+            ? { ...document, inFlight: true, lastError: null, status: "QUEUED" }
+            : document;
+        }),
       );
-      posthog.capture("document_reindexed");
-      await loadDocuments();
-    } catch (error) {
-      setDocuments(previous);
-      notify("Reindex failed", (error as Error).message);
-    }
-  }
+      try {
+        await request(
+          "POST",
+          `/documents/${encodeURIComponent(documentId)}/reindex`,
+        );
+        posthog.capture("document_reindexed");
+        await loadDocuments();
+      } catch (error) {
+        setDocuments(previous);
+        notify("Reindex failed", (error as Error).message);
+      }
+    },
+    [loadDocuments, notify, request],
+  );
 
   /** Opens the detail dialog for a document and loads its full record. Used by row and
    * citation clicks; a newer call wins over an older one still in flight. */
-  async function showDocument(documentId: string): Promise<void> {
-    const requestId = documentRequest.current + 1;
-    documentRequest.current = requestId;
-    const document = documentsRef.current.find(
-      (current) => current.documentId === documentId,
-    );
-    setSelectedDocument(
-      document || { documentId: documentId, status: "", title: documentId },
-    );
-    setSelectedDocumentData(null);
-    try {
-      const data = await request(
-        "GET",
-        `/documents/${encodeURIComponent(documentId)}`,
+  const showDocument = useCallback(
+    async (documentId: string): Promise<void> => {
+      const requestId = documentRequest.current + 1;
+      documentRequest.current = requestId;
+      const document = documentsRef.current.find(
+        (current) => current.documentId === documentId,
       );
-      if (requestId === documentRequest.current) {
-        setSelectedDocumentData(data);
+      setSelectedDocument(
+        document || { documentId: documentId, status: "", title: documentId },
+      );
+      setSelectedDocumentData(null);
+      try {
+        const data = await request(
+          "GET",
+          `/documents/${encodeURIComponent(documentId)}`,
+        );
+        if (requestId === documentRequest.current) {
+          setSelectedDocumentData(data);
+        }
+      } catch (error) {
+        if (requestId === documentRequest.current) {
+          closeDocument();
+          notify("Couldn't load document details", (error as Error).message);
+        }
       }
-    } catch (error) {
-      if (requestId === documentRequest.current) {
-        closeDocument();
-        notify("Couldn't load document details", (error as Error).message);
-      }
-    }
-  }
+    },
+    [closeDocument, notify, request],
+  );
 
   async function signIn(): Promise<void> {
-    posthog.capture("sign_in_started", undefined, {
+    // Handed to PostHog before the redirect, which would drop a queued event.
+    await posthog.captureNow("sign_in_started", undefined, {
       send_instantly: true,
       transport: "sendBeacon",
     });
@@ -382,74 +409,59 @@ export default function App(): React.JSX.Element {
     );
   }
 
+  // Nothing shows until the workspace chunk arrives, except a failure to load it.
+  if (!workspace) {
+    return <Notices notices={notices} onDismiss={dismissNotice} />;
+  }
+
+  const { default: Workspace } = workspace;
+
   return (
-    <TooltipProvider>
-      <main className="flex min-h-dvh flex-col p-3 lg:h-dvh lg:overflow-hidden">
-        <DocumentsCard
-          accountMenu={
-            <AccountMenu
-              identity={identity}
-              onOpenSettings={setSettingsTab}
-              onSignOut={signOut}
-            />
-          }
-          usage={usage}
-          onOpenUsage={() => setSettingsTab("usage")}
-          documents={documents}
-          loading={loadingDocuments}
-          token={identity.token}
-          setDocuments={setDocuments}
-          loadDocuments={loadDocuments}
-          notify={notify}
-          onDelete={deleteDocument}
-          onDeleteSelected={deleteDocuments}
-          onReindex={reindexDocument}
-          onView={showDocument}
-          onUsageChange={refreshUsage}
-          tagVocabulary={tagVocabulary}
-        />
-        <SettingsDialog
-          notify={notify}
-          onDeleteAllData={deleteAllData}
-          onTabChange={setSettingsTab}
-          tab={settingsTab}
-          token={identity.token}
-          usage={usage}
-        />
-        <DocumentDialog
-          colorOf={tagVocabulary.colorOf}
-          data={selectedDocumentData}
-          document={selectedDocument}
-          loading={loadingDocument}
-          onClose={closeDocument}
-        />
-        <Notices notices={notices} onDismiss={dismissNotice} />
-      </main>
-    </TooltipProvider>
+    <Workspace
+      closeDocument={closeDocument}
+      deleteAllData={deleteAllData}
+      deleteDocument={deleteDocument}
+      deleteDocuments={deleteDocuments}
+      dismissNotice={dismissNotice}
+      documents={documents}
+      identity={identity}
+      loadDocuments={loadDocuments}
+      loadingDocument={loadingDocument}
+      loadingDocuments={loadingDocuments}
+      notices={notices}
+      notify={notify}
+      refreshUsage={refreshUsage}
+      reindexDocument={reindexDocument}
+      selectedDocument={selectedDocument}
+      selectedDocumentData={selectedDocumentData}
+      setDocuments={setDocuments}
+      showDocument={showDocument}
+      usage={usage}
+    />
   );
 }
 
 /** Signed-out screen with the Google sign-in button, shown until a token exists. */
 function Guest({ onSignIn }: { onSignIn: () => void }): React.JSX.Element {
+  useEffect(loadPostHog, []);
+
   return (
-    <TooltipProvider>
-      <div className="flex min-h-dvh flex-col">
-        <main className="flex flex-1 items-center justify-center px-4">
-          <Card className="w-full max-w-sm">
-            <CardHeader>
-              <CardTitle>Sign in</CardTitle>
-              <CardDescription>
-                Continue to your private knowledge base.
-              </CardDescription>
-            </CardHeader>
-            <CardFooter>
-              <Button className="w-full cursor-pointer" onClick={onSignIn}>
-                <LogIn data-icon="inline-start" /> Continue with Google
-              </Button>
-            </CardFooter>
-          </Card>
-        </main>
-      </div>
-    </TooltipProvider>
+    <div className="flex min-h-dvh flex-col">
+      <main className="flex flex-1 items-center justify-center px-4">
+        <Card className="w-full max-w-sm">
+          <CardHeader>
+            <CardTitle>Sign in</CardTitle>
+            <CardDescription>
+              Continue to your private knowledge base.
+            </CardDescription>
+          </CardHeader>
+          <CardFooter>
+            <Button className="w-full cursor-pointer" onClick={onSignIn}>
+              <LogIn data-icon="inline-start" /> Continue with Google
+            </Button>
+          </CardFooter>
+        </Card>
+      </main>
+    </div>
   );
 }

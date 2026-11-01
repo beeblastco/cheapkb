@@ -82,7 +82,8 @@ export function useTags(token: string): TagVocabulary {
     [queryClient, queryKey],
   );
 
-  const createMutation = useMutation({
+  // mutateAsync is stable, unlike the result object useMutation returns each render.
+  const { mutateAsync: mutateCreate } = useMutation({
     mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "create" }) =>
       createTagRequest(token, variables.name, variables.color),
@@ -99,7 +100,7 @@ export function useTags(token: string): TagVocabulary {
     onSettled: settle,
   });
 
-  const recolorMutation = useMutation({
+  const { mutateAsync: mutateRecolor } = useMutation({
     mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "recolor" }) =>
       updateTagColorRequest(token, variables.name, variables.color),
@@ -114,7 +115,7 @@ export function useTags(token: string): TagVocabulary {
     onSettled: settle,
   });
 
-  const deleteMutation = useMutation({
+  const { mutateAsync: mutateDelete } = useMutation({
     mutationKey: mutationKey,
     mutationFn: (variables: TagMutation & { type: "delete" }) =>
       deleteTagRequest(token, variables.name),
@@ -140,26 +141,26 @@ export function useTags(token: string): TagVocabulary {
 
   const createTag = useCallback(
     (name: string, color: TagColor = DEFAULT_TAG_COLOR) =>
-      createMutation.mutateAsync({ type: "create", name: name, color: color }),
-    [createMutation],
+      mutateCreate({ type: "create", name: name, color: color }),
+    [mutateCreate],
   );
 
   const recolorTag = useCallback(
     async (name: string, color: TagColor) => {
-      await recolorMutation.mutateAsync({
+      await mutateRecolor({
         type: "recolor",
         name: name,
         color: color,
       });
     },
-    [recolorMutation],
+    [mutateRecolor],
   );
 
   const deleteTag = useCallback(
     async (name: string) => {
-      await deleteMutation.mutateAsync({ type: "delete", name: name });
+      await mutateDelete({ type: "delete", name: name });
     },
-    [deleteMutation],
+    [mutateDelete],
   );
 
   return {

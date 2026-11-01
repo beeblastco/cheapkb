@@ -30,7 +30,8 @@ vi.mock("../functions/utils", async (importOriginal) => ({
   recordUsage: vi.fn(async () => {}),
 }));
 
-import { recordUsage } from "../functions/utils";
+import type { UsageSummary } from "../functions/types";
+import { checkUsageLimit, recordUsage } from "../functions/utils";
 import { buildFilter, handler as queryHandler } from "../functions/query/index";
 import { bedrockEmbeddings, jsonApiEvent } from "./helpers/events";
 
@@ -272,5 +273,64 @@ describe("query handler usage", () => {
 
     expect(response.statusCode).toBe(400);
     expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);
+  });
+
+  it("starts the usage check before the rate limit write lands", async () => {
+    let rateWritesAtUsageCheck = -1;
+    vi.mocked(checkUsageLimit).mockImplementationOnce(async () => {
+      rateWritesAtUsageCheck = dynamoMock.commandCalls(PutCommand).length;
+      return { allowed: true, summary: {} as UsageSummary };
+    });
+
+    const response = await queryHandler(jsonApiEvent({ query: "hello" }));
+
+    expect(response.statusCode).toBe(200);
+    expect(rateWritesAtUsageCheck).toBe(0);
+  });
+
+  it("answers the rate limit first when both limits refuse", async () => {
+    dynamoMock
+      .on(GetCommand)
+      .resolves({ Item: { tokens: 0, lastRefill: new Date().toISOString() } });
+    vi.mocked(checkUsageLimit).mockResolvedValueOnce({
+      allowed: false,
+      summary: {} as UsageSummary,
+    });
+
+    const response = await queryHandler(jsonApiEvent({ query: "hello" }));
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers?.["X-RateLimit-Remaining"]).toBe("0");
+    expect(JSON.parse(response.body!).error).toBe(
+      "Rate limit exceeded. Try again later.",
+    );
+    expect(bedrockMock.commandCalls(InvokeModelCommand)).toHaveLength(0);
+  });
+
+  it("searches while the embed usage write lands, and waits for it on failure", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    let billed = false;
+    let billedAtSearch = true;
+    dynamoMock.on(UpdateCommand).callsFake(async () => {
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      billed = true;
+      return {};
+    });
+    vectorsMock.on(QueryVectorsCommand).callsFake(async () => {
+      billedAtSearch = billed;
+      throw new Error("search unavailable");
+    });
+
+    const response = await queryHandler(jsonApiEvent({ query: "hello" }));
+    consoleError.mockRestore();
+
+    expect(response.statusCode).toBe(500);
+    expect(billedAtSearch).toBe(false);
+    expect(billed).toBe(true);
+    expect(recordUsage).not.toHaveBeenCalled();
   });
 });

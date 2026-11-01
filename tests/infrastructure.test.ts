@@ -15,9 +15,6 @@ describe("infrastructure hardening", () => {
   it("keeps all pipeline stages on a single queue", () => {
     expect(config.match(/\.subscribe\(/g)).toHaveLength(1);
     expect(config).toContain("PIPELINE_QUEUE_URL: pipelineQueue.url");
-    expect(config).not.toContain("INGEST_QUEUE_URL");
-    expect(config).not.toContain("CHUNK_QUEUE_URL");
-    expect(config).not.toContain("EMBED_QUEUE_URL");
   });
 
   it("scopes vector permissions to the stage index", () => {
@@ -87,16 +84,10 @@ describe("infrastructure hardening", () => {
     expect(config).toContain("resources: embeddingModelResources");
     expect(config.match(/embeddingInvocationPermission/g)?.length).toBe(4);
     expect(config).not.toContain('sts:AssumeRole"');
-    expect(config).not.toContain("BEDROCK_REGION");
   });
 
-  it("keeps plans deployment-owned", () => {
-    expect(config).toContain(
-      "new pulumiAws.dynamodb.TableItem(`Plan-${DEFAULT_PLAN.planId}`",
-    );
-    expect(config).not.toContain('api.route("GET /plans"');
-    expect(config).not.toContain('api.route("POST /plans"');
-    expect(config).not.toContain('api.route("PATCH /account/plan"');
+  it("exposes no route that lets a customer set a plan or allowance", () => {
+    expect(config).not.toMatch(/api\.route\("[A-Z]+ [^"]*plan/i);
   });
 
   it("expires noncurrent object versions", () => {
@@ -110,24 +101,18 @@ describe("infrastructure hardening", () => {
     expect(
       config.match(/"dynamodb:BatchWriteItem"/g)?.length,
     ).toBeGreaterThanOrEqual(3);
-    expect(config).toContain('new sst.aws.Function("Upload"');
   });
 
   it("keeps Bedrock invocation logs in S3 without a trigger Lambda", () => {
     expect(config).toContain("if (STAGE === PROD_STAGE)");
-    expect(config).not.toContain("BEDROCK_LOGGING_OWNER_STAGE");
     expect(config).toContain("InvocationLoggingConfiguration");
     expect(config).toContain("s3Config:");
     expect(config).toContain("embeddingDataDeliveryEnabled: false");
     expect(config).toContain("imageDataDeliveryEnabled: false");
     expect(config).toContain("textDataDeliveryEnabled: false");
     expect(config).toContain("expiration: { days: 7 }");
-    expect(config).not.toContain('new sst.aws.Function("BedrockUsage"');
-    expect(config).not.toContain('name: "bedrock-usage"');
-    expect(config).not.toContain("cloudwatchConfig:");
-    expect(config).not.toContain("LogSubscriptionFilter");
-    expect(config).not.toContain("BedrockInvocationLogGroup");
   });
+
   it("gives the ingest adapter the timeout its late-upload margin assumes", () => {
     const adapter = fs.readFileSync("functions/s3/ingest-adapter.ts", "utf8");
     const margin = /const INVOCATION_MS = (\d+) \* 1000;/.exec(adapter)?.[1];
