@@ -954,7 +954,7 @@ export default $config({
       },
     });
 
-    // Runs the search, list and get handlers in process, so it needs their permissions.
+    // Runs the search, list, get and upload handlers in process, so it needs their permissions.
     const mcpFn = new sst.aws.Function("Mcp", {
       handler: "./functions/mcp/index.handler",
       runtime: "nodejs22.x",

@@ -443,7 +443,7 @@ paths:
   /mcp:
     post:
       operationId: mcp
-      summary: MCP endpoint for Claude Code, Codex, Broods and other MCP clients
+      summary: MCP endpoint for Claude Code, Broods and other MCP clients
       description: |
         Stateless MCP server for protocol 2026-07-28 only (server/discover, no
         session). A 2025-era initialize is refused as an unsupported version.

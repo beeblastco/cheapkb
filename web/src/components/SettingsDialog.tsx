@@ -32,11 +32,10 @@ import { Copy, KeyRound, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { parse, render } from "sugar-high/core";
 import * as shell from "sugar-high/lang/shell";
-import * as toml from "sugar-high/lang/toml";
 import * as typescript from "sugar-high/lang/typescript";
 
-// Only the three grammars the setup snippets use, not sugar-high's full registry.
-const LANGUAGES = { shell: shell, toml: toml, typescript: typescript };
+// Only the grammars the setup snippets use, not sugar-high's full registry.
+const LANGUAGES = { shell: shell, typescript: typescript };
 
 export type SettingsTab = "usage" | "agent" | "account";
 
@@ -247,9 +246,6 @@ export function SettingsDialog({
                   <TabsTrigger className="cursor-pointer" value="claude">
                     Claude Code
                   </TabsTrigger>
-                  <TabsTrigger className="cursor-pointer" value="codex">
-                    Codex
-                  </TabsTrigger>
                   <TabsTrigger className="cursor-pointer" value="broods">
                     Broods
                   </TabsTrigger>
@@ -260,21 +256,6 @@ export function SettingsDialog({
                       lang="shell"
                       onCopy={copy}
                       text={`claude mcp add --transport http cheapkb ${mcpUrl} \\\n  --header "Authorization: Bearer ${shownKey}"`}
-                    />
-                  </div>
-                </TabsContent>
-                <TabsContent value="codex">
-                  <div className="flex flex-col gap-2">
-                    <CodeLine
-                      lang="shell"
-                      onCopy={copy}
-                      text={`export CHEAPKB_MCP_KEY=${shownKey}`}
-                    />
-                    <CodeLine
-                      lang="toml"
-                      note="~/.codex/config.toml"
-                      onCopy={copy}
-                      text={`[mcp_servers.cheapkb]\nurl = "${mcpUrl}"\nbearer_token_env_var = "CHEAPKB_MCP_KEY"`}
                     />
                   </div>
                 </TabsContent>

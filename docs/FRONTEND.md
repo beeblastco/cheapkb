@@ -7,7 +7,7 @@ Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pi
 Open Settings from the avatar menu, or the usage line in the footer. It has three tabs:
 
 - **Usage**: percent of the plan used, reset date and storage.
-- **Connect agent**: create, rotate or revoke your MCP key and copy the setup for Claude Code, Codex or Broods. The key is shown once. See [MCP](../README.md#mcp).
+- **Connect agent**: create, rotate or revoke your MCP key and copy the setup for Claude Code or Broods. The key is shown once. See [MCP](../README.md#mcp).
 - **Account**: **Delete all my data**, which deletes every document, image and tag in the account and resets storage to 0. Usage already spent in the current cycle stays.
 
 ## Documents
@@ -22,7 +22,7 @@ Completed or failed documents can be replaced. Existing content remains searchab
 
 ## Search
 
-The web app has no semantic search panel. Search your content from Claude Code, Codex, Broods or another MCP client, or call `POST /query` with text, one supported image up to 5 MiB, or both.
+The web app has no semantic search panel. Search your content from Claude Code, Broods or another MCP 2026-07-28 client, or call `POST /query` with text, one supported image up to 5 MiB, or both.
 
 ## Analytics
 

@@ -12,7 +12,7 @@ Live web app: https://ds8aejb7efd81.cloudfront.net
 - Search with natural language, an image, or combined text and image
 - Filter results by document metadata
 - Track processing status, usage, and plan allowance
-- Search from Claude Code, Codex, Broods, or any MCP client
+- Search from Claude Code, Broods, or any MCP 2026-07-28 client
 - Replace, retry, edit, and delete uploaded content
 - Keep each user's content and search results isolated
 
@@ -46,18 +46,10 @@ The `/v1` API supports uploads, search, documents, tags, account usage, account 
 
 ## MCP
 
-Claude Code, Codex, Broods and other MCP clients can search and add to your knowledge base. The server speaks MCP 2026-07-28 only. Create an MCP key in the web app under Settings, then:
+Claude Code, Broods and other MCP clients can search and add to your knowledge base. The server speaks MCP 2026-07-28 only, so clients that still need the 2025 `initialize` handshake, such as Codex 0.166, can't connect yet. Create an MCP key in the web app under Settings, then:
 
 ```bash
 claude mcp add --transport http cheapkb <API_URL>/mcp --header "Authorization: Bearer <MCP_KEY>"
-```
-
-For Codex, add this to `~/.codex/config.toml` and export `CHEAPKB_MCP_KEY`:
-
-```toml
-[mcp_servers.cheapkb]
-url = "<API_URL>/mcp"
-bearer_token_env_var = "CHEAPKB_MCP_KEY"
 ```
 
 For Broods, run `broods env set CHEAPKB_MCP_KEY` and add:
