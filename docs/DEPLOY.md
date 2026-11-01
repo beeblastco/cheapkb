@@ -17,6 +17,17 @@ The deployer owns plan configuration. Update the seeded default plan in `sst.con
 
 Production keeps short-lived Bedrock diagnostic logs in S3.
 
+## S3 Vectors
+
+The vector index must run in `ENHANCED` mode, so the ownership filter is resolved before the similarity search. Vector buckets created after September 30, 2026 default to it. CloudFormation cannot set the mode yet, so an older deployment switches once; it is in place, free, and needs no re-ingest:
+
+```bash
+aws s3vectors update-index-mode --vector-bucket-name <bucket> --index-name <index> --index-mode ENHANCED
+aws s3vectors put-vector-bucket-default-index-mode --vector-bucket-name <bucket> --default-index-mode ENHANCED
+```
+
+The second command keeps a replaced index in `ENHANCED` mode. The production index and bucket were switched on November 1, 2026.
+
 ## CI
 
 Merges to `main` deploy through GitHub Actions in the `production` environment, only after the Check, Secrets scan and Proofs jobs pass. The production stage creates a `github-deploy` IAM role that trusts GitHub's OIDC provider for this repository's `production` environment only; the deploy job assumes it with short-lived tokens.

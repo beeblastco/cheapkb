@@ -1,4 +1,14 @@
-The current project name is `cheapkb`. Focus on cheap solution for RAG, priority features and engineering way to make it cheaps, trade off with latency and critical speed (S3 Vector, Lambda batch, SQS, DynamoDB), all covered by the free tier.
+The current project name is `cheapkb`: a dirt-cheap RAG knowledge base that is still a production product, not an MVP or a proof of concept.
+
+## Core principles
+
+Weigh every feature, suggestion, dependency and AWS service against these five. A change that wins on one and loses on another needs a stated reason.
+
+1. **Dirt cheap.** Serverless and pay-per-use only (S3 Vectors, Lambda, SQS, DynamoDB, API Gateway), with no idle cost and the free tier covering a quiet month. A new feature reuses what we already pay for before it adds a service. Saving money must not cost search quality, speed or security.
+2. **Production-quality search.** It does not have to be the best, but it must be good enough for businesses under real, high traffic. Results stay correct and complete under load, retries, duplicates and concurrent requests.
+3. **Fast and scalable.** We use managed search services as they are and do not hand-tune the search engine, so speed comes from our own code and backend: lean handlers, few round trips, batching, and runtimes that cold-start and deploy fast. Everything scales out with no capacity planning.
+4. **One-prompt setup.** A new user deploys and searches from a single prompt or command, with no manual console steps and safe defaults. Connecting from the web app, the API or an agent works immediately.
+5. **Secure and private per customer.** Every customer's documents, vectors and metadata are isolated and encrypted. No request, filter, index or log can show one customer another's data. This is a hard constraint: never trade it for cost, speed or convenience.
 
 IaC using sst. Configure the target AWS account with the `AWS_ACCOUNT_ID` env var and your AWS credentials (a named profile or access keys). When `AWS_ACCOUNT_ID` is set, `sst.config.ts` refuses to deploy to any other account.
 
