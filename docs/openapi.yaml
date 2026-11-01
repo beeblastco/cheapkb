@@ -580,6 +580,7 @@ components:
           default: 10
         filters:
           type: object
+          description: At most 98 values in total across all filters. Each plain value or operator counts as one, and each `$in` value counts as one.
           properties:
             documentId:
               $ref: "#/components/schemas/FilterValue"
@@ -609,7 +610,7 @@ components:
             $in:
               type: array
               items: {}
-              maxItems: 100
+              maxItems: 98
 
     QueryResponse:
       type: object

@@ -14,6 +14,8 @@ CheapKB tracks these costs:
 | Embedding model   | Input tokens ÷ 1,000,000 × `EMBEDDING_INPUT_PRICE_PER_1M_TOKENS` |
 | Storage           | Stored source-file GiB × time × `$0.023` per GiB-month           |
 
+Search filters by owner before ranking, so a user with few documents gets up to `topK` results and pays the per-result charge on each.
+
 The progress bar uses their combined cost in the current billing cycle:
 
 ```text
