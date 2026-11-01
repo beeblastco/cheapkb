@@ -49,8 +49,8 @@ describe("infrastructure hardening", () => {
     }
   });
 
-  it("grants vector writes only to the embed and update functions", () => {
-    expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(2);
+  it("grants vector writes only to the embed and update functions, and MCP, which runs update", () => {
+    expect(config.match(/"s3vectors:PutVectors"/g)).toHaveLength(3);
   });
 
   it("writes no chunk objects and reads them only for legacy search results", () => {

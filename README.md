@@ -48,7 +48,7 @@ The `/v1` API supports uploads, search, documents, tags, account usage, account 
 
 ## MCP
 
-Claude Code, Broods and other MCP clients can search and add to your knowledge base. The server speaks MCP 2026-07-28 only, so clients that still need the 2025 `initialize` handshake, such as Codex 0.166, can't connect yet. Create an MCP key in the web app under Settings, then:
+Claude Code, Broods and other MCP clients can do what you do in the web app: search, add, retag, reindex and delete documents, manage tags, and read usage. The server speaks MCP 2026-07-28 only, so clients that still need the 2025 `initialize` handshake, such as Codex 0.166, can't connect yet. Create an MCP key in the web app under Settings, then:
 
 ```bash
 claude mcp add --transport http cheapkb <API_URL>/mcp --header "Authorization: Bearer <MCP_KEY>"
@@ -64,7 +64,7 @@ defineMcp({
 });
 ```
 
-Tools: `search`, `list_documents`, `get_document` and `add_document`. `add_document` takes files up to about 4 MB, since a Lambda request is capped at 6 MB and PDFs and images travel as base64; add larger files in the web app.
+Tools: `search`, `list_documents`, `get_document`, `add_document`, `update_document_tags`, `reindex_document`, `delete_document`, `list_tags`, `create_tag`, `update_tag`, `delete_tag` and `get_usage`. Deleting all data and managing the MCP key stay in the web app, so an agent, or text inside a document, can't wipe the account or lock you out. `add_document` takes files up to about 4 MB, since a Lambda request is capped at 6 MB and PDFs and images travel as base64; add larger files in the web app.
 
 ## Verify changes
 
