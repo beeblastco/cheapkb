@@ -33,6 +33,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { groupResults } from "@/lib/client";
 import type { QueryResult } from "@/lib/types";
 import { ArrowUp, ImagePlus, X } from "lucide-react";
+import posthog from "posthog-js/dist/module.no-external";
 import { useRef, useState } from "react";
 
 const TOP_K_OPTIONS = [
@@ -115,17 +116,25 @@ export function QueryCard({
         ...(image ? { image: image.dataUri } : {}),
         topK: Number(topK),
       });
+      const results = (data.results as QueryResult[]) || [];
+      posthog.capture("search_performed", {
+        has_image: Boolean(image),
+        has_text: Boolean(question),
+        result_count: results.length,
+        top_k: Number(topK),
+      });
       setTurns((current) => [
         ...current,
         {
           error: "",
           id: crypto.randomUUID(),
           question: displayQuestion,
-          results: (data.results as QueryResult[]) || [],
+          results: results,
         },
       ]);
       onUsageChange();
     } catch (requestError) {
+      posthog.capture("error_shown", { title: "Search failed" });
       setTurns((current) => [
         ...current,
         {

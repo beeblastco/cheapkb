@@ -18,10 +18,12 @@ import {
   apiCall,
   getIdentity,
   getUsageSummary,
+  getUserProfile,
   handleSignInCallback,
   isActiveStatus,
   mergeDocuments,
   readPendingDocuments,
+  SIGNED_IN_KEY,
   signOut,
   startSignIn,
   watchSession,
@@ -29,6 +31,7 @@ import {
 } from "@/lib/client";
 import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
 import { LogIn } from "lucide-react";
+import posthog from "posthog-js/dist/module.no-external";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const NOTICE_MS = 6000;
@@ -49,6 +52,7 @@ export default function App(): React.JSX.Element {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
   const documentsRef = useRef(documents);
+  const noticesRef = useRef(notices);
   const documentRequest = useRef(0);
   const usageRequest = useRef(0);
   const loadingDocument =
@@ -57,6 +61,10 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+
+  useEffect(() => {
+    noticesRef.current = notices;
+  }, [notices]);
 
   const dismissNotice = useCallback((id: string): void => {
     setNotices((current) => current.filter((notice) => notice.id !== id));
@@ -67,6 +75,11 @@ export default function App(): React.JSX.Element {
   const notify = useCallback(
     (title: string, message: string, retry?: () => void): void => {
       const id = crypto.randomUUID();
+      // Polls repeat a failure every few seconds; count it once while it is shown.
+      const shown = noticesRef.current.some(
+        (notice) => notice.title === title && notice.message === message,
+      );
+      if (!shown) posthog.capture("error_shown", { title: title });
       setNotices((current) => [
         ...current.filter(
           (notice) => notice.title !== title || notice.message !== message,
@@ -141,6 +154,17 @@ export default function App(): React.JSX.Element {
       const currentIdentity = getIdentity();
       setIdentity(currentIdentity);
       if (currentIdentity?.token) {
+        if (currentIdentity.userId) {
+          const profile = getUserProfile(currentIdentity);
+          posthog.identify(currentIdentity.userId, {
+            email: profile.email,
+            name: profile.name,
+          });
+          if (sessionStorage.getItem(SIGNED_IN_KEY)) {
+            sessionStorage.removeItem(SIGNED_IN_KEY);
+            posthog.capture("user_signed_in");
+          }
+        }
         setDocuments(readPendingDocuments());
         watchSession();
       }
@@ -187,6 +211,7 @@ export default function App(): React.JSX.Element {
   async function deleteAllData(): Promise<void> {
     try {
       await request("DELETE", "/account/data");
+      posthog.capture("account_data_deleted");
       await loadDocuments();
       refreshUsage();
     } catch (error) {
@@ -222,6 +247,10 @@ export default function App(): React.JSX.Element {
     );
     try {
       await request("DELETE", `/documents/${encodeURIComponent(documentId)}`);
+      posthog.capture("document_deleted", {
+        mime_type: deletedSnapshot?.mimeType,
+        status: deletedSnapshot?.status,
+      });
       if (refresh) {
         await loadDocuments();
         refreshUsage();
@@ -282,6 +311,7 @@ export default function App(): React.JSX.Element {
         "POST",
         `/documents/${encodeURIComponent(documentId)}/reindex`,
       );
+      posthog.capture("document_reindexed");
       await loadDocuments();
     } catch (error) {
       setDocuments(previous);
@@ -318,6 +348,10 @@ export default function App(): React.JSX.Element {
   }
 
   async function signIn(): Promise<void> {
+    posthog.capture("sign_in_started", undefined, {
+      send_instantly: true,
+      transport: "sendBeacon",
+    });
     try {
       await startSignIn();
     } catch {

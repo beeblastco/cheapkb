@@ -80,6 +80,40 @@ describe("dead-letter sweeper", () => {
     );
   });
 
+  it("reports the failed document to PostHog under its owner", async () => {
+    process.env.POSTHOG_KEY = "phc_test";
+    process.env.POSTHOG_HOST = "https://eu.i.posthog.com";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}"));
+    dynamoMock
+      .on(UpdateCommand)
+      .resolves({ Attributes: { userId: "user-1", mimeType: "image/png" } });
+    queueOnce("pipeline-dlq", {
+      stage: "embed",
+      documentId: "doc-1",
+      sweeps: 1,
+    });
+
+    await handler();
+
+    const [[url, init]] = fetchMock.mock.calls;
+    expect(url).toBe("https://eu.i.posthog.com/i/v0/e/");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      api_key: "phc_test",
+      distinct_id: "user-1",
+      event: "document_failed",
+      properties: {
+        document_id: "doc-1",
+        mime_type: "image/png",
+        step: "EMBEDDING",
+      },
+    });
+    fetchMock.mockRestore();
+    delete process.env.POSTHOG_KEY;
+    delete process.env.POSTHOG_HOST;
+  });
+
   it("drops the message of a document that already failed", async () => {
     dynamoMock.on(GetCommand).resolves({
       Item: { status: "FAILED", updatedAt: "2026-01-01T00:00:00.000Z" },
