@@ -60,8 +60,10 @@ export default $config({
       actions: ["bedrock:InvokeModel"],
       resources: embeddingModelResources,
     };
+    const domain = stageDomain(STAGE);
 
     const api = new sst.aws.ApiGatewayV2("Api", {
+      domain: domain ? { name: `api.${domain}`, path: "v1" } : undefined,
       cors: {
         allowOrigins: ["*"],
         allowHeaders: [
@@ -87,6 +89,8 @@ export default $config({
         },
       },
     });
+    const apiOrigin = api.url.apply((url) => new URL(url).origin);
+    const apiUrl = pulumi.interpolate`${apiOrigin}/v1`;
 
     // Browsers ignore frame-ancestors in a <meta> CSP, so framing and
     // transport rules are sent as headers from CloudFront.
@@ -114,13 +118,14 @@ export default $config({
     // Deploy the frontend to an S3 bucket served by a CloudFront distribution
     const web = new sst.aws.StaticSite("Web", {
       path: "web",
+      domain: domain,
       build: {
         command: "npm ci --legacy-peer-deps --ignore-scripts && npm run build",
         output: "dist",
       },
       environment: {
-        VITE_API_URL: pulumi.interpolate`${api.url}/v1`,
-        VITE_API_ORIGIN: api.url,
+        VITE_API_URL: apiUrl,
+        VITE_API_ORIGIN: apiOrigin,
         VITE_STORAGE_ORIGIN: storageOrigin,
         VITE_POSTHOG_KEY: process.env.POSTHOG_KEY ?? "",
         VITE_POSTHOG_HOST:
@@ -1253,9 +1258,15 @@ export default $config({
     }
 
     return {
-      apiEndpoint: api.url,
+      apiEndpoint: apiUrl,
       webEndpoint: web.url,
       deployRoleArn: deployRoleArn,
     };
   },
 });
+
+/** Production serves the web app on DOMAIN and the API on api.DOMAIN/v1, from a
+ * Route53 hosted zone for DOMAIN in the account. Other stages keep the AWS URLs. */
+function stageDomain(stage: string): string | undefined {
+  return stage === PROD_STAGE ? process.env.DOMAIN || undefined : undefined;
+}
