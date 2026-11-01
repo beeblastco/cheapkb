@@ -16,3 +16,10 @@ export function formatBytes(bytes: number): string {
   );
   return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 }
+
+/** Formats a usage percentage, showing "<1%" rather than a misleading "0%". */
+export function formatPercent(pct: number): string {
+  if (pct > 0 && pct < 1) return "<1%";
+
+  return `${Math.min(pct, 100).toFixed(0)}%`;
+}

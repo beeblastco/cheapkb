@@ -55,6 +55,13 @@ export default function App(): React.JSX.Element {
   const noticesRef = useRef(notices);
   const documentRequest = useRef(0);
   const usageRequest = useRef(0);
+  const hadInflight = useRef(false);
+  const hasInflight = documents.some(
+    (document) =>
+      document.inFlight ||
+      isActiveStatus(document.status) ||
+      (document.status === "DELETING" && !document.lastError),
+  );
   const loadingDocument =
     selectedDocument !== null && selectedDocumentData === null;
 
@@ -180,26 +187,33 @@ export default function App(): React.JSX.Element {
     refreshUsage();
   }, [refreshUsage]);
 
-  // Polls while anything is in flight, skipping hidden tabs and catching up
-  // as soon as the tab is shown again.
+  // Polls while anything is in flight, skipping hidden tabs.
   useEffect(() => {
-    const hasInflight = documents.some(
-      (document) =>
-        document.inFlight ||
-        isActiveStatus(document.status) ||
-        (document.status === "DELETING" && !document.lastError),
-    );
     if (!hasInflight) return;
     function poll(): void {
       if (!window.document.hidden) loadDocuments(false);
     }
     const timer = window.setInterval(poll, POLL_MS);
-    window.document.addEventListener("visibilitychange", poll);
-    return () => {
-      window.clearInterval(timer);
-      window.document.removeEventListener("visibilitychange", poll);
-    };
-  }, [documents, loadDocuments]);
+    return () => window.clearInterval(timer);
+  }, [hasInflight, loadDocuments]);
+
+  // Storage is counted after S3 receives the file, so usage reloads once processing settles.
+  useEffect(() => {
+    if (hadInflight.current && !hasInflight) refreshUsage();
+    hadInflight.current = hasInflight;
+  }, [hasInflight, refreshUsage]);
+
+  // Catches up when the tab is shown again, including documents an agent added over MCP.
+  useEffect(() => {
+    function catchUp(): void {
+      if (window.document.hidden) return;
+      loadDocuments(false);
+      refreshUsage();
+    }
+    window.document.addEventListener("visibilitychange", catchUp);
+    return () =>
+      window.document.removeEventListener("visibilitychange", catchUp);
+  }, [loadDocuments, refreshUsage]);
 
   /** Clears the detail dialog; a request still in flight is ignored. */
   function closeDocument(): void {

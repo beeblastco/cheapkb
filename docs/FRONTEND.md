@@ -6,7 +6,7 @@ Sign in with Google through [shoo.dev](https://shoo.dev). The app bundles the pi
 
 Open Settings from the avatar menu, or the usage line in the footer. It has three tabs:
 
-- **Usage**: percent of the plan used, reset date and storage.
+- **Usage**: percent of the plan used (`<1%` for any small nonzero spend), reset date and storage. It reloads once uploads finish processing, since storage is counted after S3 receives the file, and whenever the tab is shown again, which also picks up documents an agent added over MCP.
 - **Connect agent**: create, rotate or revoke your MCP key and copy the setup for Claude Code or Broods. The key is shown once. See [MCP](../README.md#mcp).
 - **Account**: **Delete all my data**, which deletes every document, image and tag in the account and resets storage to 0. Usage already spent in the current cycle stays.
 

@@ -91,7 +91,7 @@ import type {
   UploadQueueItem,
   UsageSummary,
 } from "@/lib/types";
-import { formatBytes } from "@/lib/utils";
+import { formatBytes, formatPercent } from "@/lib/utils";
 import {
   type Column,
   type ColumnDef,
@@ -955,7 +955,7 @@ export function DocumentsCard({
             variant="ghost"
           >
             {usage
-              ? `${Math.min(usage.pctUsed, 100).toFixed(0)}% of ${usage.planLabel} plan used`
+              ? `${formatPercent(usage.pctUsed)} of ${usage.planLabel} plan used`
               : "Usage"}
           </Button>
           <CardDescription className="ml-auto">
