@@ -7,7 +7,7 @@ import {
   SQSClient,
 } from "@aws-sdk/client-sqs";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { dynamo, getDocument, SETTLED_STATUSES } from "../utils";
+import { captureEvent, dynamo, getDocument, SETTLED_STATUSES } from "../utils";
 
 const sqs = new SQSClient({});
 const lambda = new LambdaClient({});
@@ -66,10 +66,11 @@ async function drain(
 async function markFailed(documentId: string, step: string): Promise<void> {
   const now = new Date().toISOString();
   try {
-    await dynamo.send(
+    const { Attributes } = await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ReturnValues: "ALL_NEW",
         UpdateExpression:
           "SET #s = :failed, lastError = :e, failedStep = :f, updatedAt = :t",
         ConditionExpression:
@@ -86,6 +87,11 @@ async function markFailed(documentId: string, step: string): Promise<void> {
         },
       }),
     );
+    await captureEvent(String(Attributes?.userId ?? ""), "document_failed", {
+      document_id: documentId,
+      mime_type: Attributes?.mimeType,
+      step: step,
+    });
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }

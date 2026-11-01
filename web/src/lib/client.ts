@@ -1,5 +1,6 @@
 import type { Badge } from "@/components/ui/badge";
 import { createShooAuth, type ShooAuthClient } from "@shoojs/auth";
+import posthog from "posthog-js/dist/module.no-external";
 import type React from "react";
 import {
   DEFAULT_TAG_COLOR,
@@ -14,7 +15,7 @@ import {
   type UserProfile,
 } from "./types";
 
-const SHOO_CALLBACK_PATH = "/shoo/callback";
+export const SHOO_CALLBACK_PATH = "/shoo/callback";
 const SHOO_PKCE_KEY = "shoo_pkce";
 const SHOO_PKCE_BACKUP_KEY = "shoo_pkce_backup";
 const SHOO_PKCE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -525,6 +526,7 @@ export function signOut(): void {
   signingOut = true;
   shoo().clearIdentity();
   localStorage.removeItem(SHOO_PKCE_BACKUP_KEY);
+  posthog.reset();
   window.location.reload();
 }
 

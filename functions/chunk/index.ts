@@ -14,6 +14,7 @@ import type {
 import { decode, encode } from "gpt-tokenizer";
 import type { EmbedMessage } from "../types";
 import {
+  captureEvent,
   ContentError,
   deleteDocumentChunkRecords,
   dynamo,
@@ -329,10 +330,11 @@ async function markEmbeddedIfDone(
 ): Promise<void> {
   const now = new Date().toISOString();
   try {
-    await dynamo.send(
+    const { Attributes } = await dynamo.send(
       new UpdateCommand({
         TableName: TableName,
         Key: { pk: `DOC#${documentId}`, sk: "META" },
+        ReturnValues: "ALL_OLD",
         UpdateExpression: "SET #s = :s, updatedAt = :t",
         ConditionExpression:
           "attribute_exists(pk) AND embeddedCount >= :count AND #s <> :deleting",
@@ -345,6 +347,13 @@ async function markEmbeddedIfDone(
         },
       }),
     );
+    if (Attributes?.status !== "EMBEDDED") {
+      await captureEvent(String(Attributes?.userId ?? ""), "document_indexed", {
+        chunk_count: chunkCount,
+        document_id: documentId,
+        mime_type: Attributes?.mimeType,
+      });
+    }
   } catch (error) {
     if (!(error instanceof ConditionalCheckFailedException)) throw error;
   }

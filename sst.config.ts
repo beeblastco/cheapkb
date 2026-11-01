@@ -116,6 +116,9 @@ export default $config({
         VITE_API_URL: pulumi.interpolate`${api.url}/v1`,
         VITE_API_ORIGIN: api.url,
         VITE_STORAGE_ORIGIN: storageOrigin,
+        VITE_POSTHOG_KEY: process.env.POSTHOG_KEY ?? "",
+        VITE_POSTHOG_HOST:
+          process.env.POSTHOG_HOST || "https://eu.i.posthog.com",
       },
       transform: {
         cdn: (c) => {
@@ -318,6 +321,8 @@ export default $config({
       EMBEDDING_INPUT_PRICE_PER_1M_TOKENS:
         process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12",
       DEPLOYMENT_STAGE: STAGE,
+      POSTHOG_KEY: process.env.POSTHOG_KEY ?? "",
+      POSTHOG_HOST: process.env.POSTHOG_HOST || "https://eu.i.posthog.com",
       APP_ORIGIN: $dev ? "http://localhost:5173" : web.url,
     };
 
