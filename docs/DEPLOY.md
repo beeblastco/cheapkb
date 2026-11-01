@@ -19,14 +19,12 @@ Production keeps short-lived Bedrock diagnostic logs in S3.
 
 ## S3 Vectors
 
-The vector index must run in `ENHANCED` mode, so the ownership filter is resolved before the similarity search. Vector buckets created after September 30, 2026 default to it. CloudFormation cannot set the mode yet, so an older deployment switches once; it is in place, free, and needs no re-ingest:
+Search relies on the `ENHANCED` index mode (see [ARCHITECTURE](ARCHITECTURE.md#search-flow)), which vector buckets created after September 30, 2026 use by default. CloudFormation cannot set it, so a deployment created before then upgrades once. The switch is in place, free and needs no re-ingest, and the second command keeps a replaced index in `ENHANCED` mode. The commands show production; another stage's bucket is `cheapkb-<stage>-vecs-<account_id>-<region>` and its index is the stage name.
 
 ```bash
-aws s3vectors update-index-mode --vector-bucket-name <bucket> --index-name <index> --index-mode ENHANCED
-aws s3vectors put-vector-bucket-default-index-mode --vector-bucket-name <bucket> --default-index-mode ENHANCED
+aws s3vectors update-index-mode --vector-bucket-name cheapkb-vecs-<account_id>-<region> --index-name default --index-mode ENHANCED
+aws s3vectors put-vector-bucket-default-index-mode --vector-bucket-name cheapkb-vecs-<account_id>-<region> --default-index-mode ENHANCED
 ```
-
-The second command keeps a replaced index in `ENHANCED` mode. The production index and bucket were switched on November 1, 2026.
 
 ## CI
 

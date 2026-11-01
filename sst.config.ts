@@ -403,8 +403,8 @@ export default $config({
             Type: "AWS::S3Vectors::VectorBucket",
             Properties: { VectorBucketName: vectorBucketName },
           },
-          // CloudFormation has no index mode yet; new buckets default to ENHANCED
-          // pre-filtering, and docs/DEPLOY.md switches older ones once.
+          // AWS::S3Vectors::Index has no IndexMode property; docs/DEPLOY.md
+          // covers the ENHANCED mode that search relies on.
           VectorIndex: {
             Type: "AWS::S3Vectors::Index",
             DependsOn: "VectorBucket",
