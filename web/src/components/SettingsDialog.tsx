@@ -255,17 +255,15 @@ export function SettingsDialog({
                   </TabsTrigger>
                 </TabsList>
                 <TabsContent value="claude">
-                  {" "}
                   <div className="flex flex-col gap-2">
                     <CodeLine
                       lang="shell"
                       onCopy={copy}
                       text={`claude mcp add --transport http cheapkb ${mcpUrl} \\\n  --header "Authorization: Bearer ${shownKey}"`}
-                    />{" "}
-                  </div>{" "}
+                    />
+                  </div>
                 </TabsContent>
                 <TabsContent value="codex">
-                  {" "}
                   <div className="flex flex-col gap-2">
                     <CodeLine
                       lang="shell"
@@ -277,11 +275,10 @@ export function SettingsDialog({
                       note="~/.codex/config.toml"
                       onCopy={copy}
                       text={`[mcp_servers.cheapkb]\nurl = "${mcpUrl}"\nbearer_token_env_var = "CHEAPKB_MCP_KEY"`}
-                    />{" "}
-                  </div>{" "}
+                    />
+                  </div>
                 </TabsContent>
                 <TabsContent value="broods">
-                  {" "}
                   <div className="flex flex-col gap-2">
                     <CodeLine
                       lang="shell"
@@ -292,8 +289,8 @@ export function SettingsDialog({
                       lang="typescript"
                       onCopy={copy}
                       text={`defineMcp({\n  name: "cheapkb",\n  url: "${mcpUrl}",\n  headers: { Authorization: "Bearer \${CHEAPKB_MCP_KEY}" },\n});`}
-                    />{" "}
-                  </div>{" "}
+                    />
+                  </div>
                 </TabsContent>
               </Tabs>
             </div>

@@ -179,7 +179,7 @@ async function verifyMcpKey(apiKey: string): Promise<string | null> {
   return result.Item?.keyHash === hashMcpKey(apiKey) ? userId : null;
 }
 
-/** Builds the per-request server with the three read-only tools, bound to the key's user. */
+/** Builds the per-request server with the search, read and add tools, bound to the key's user. */
 function createServer(
   event: APIGatewayProxyEventV2,
   userId: string,
