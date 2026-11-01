@@ -34,7 +34,7 @@ const FILTER_KEYS = new Set([
   "year",
 ]);
 const FILTER_OPERATORS = new Set(["$eq", "$gte", "$lte", "$in"]);
-// S3 Vectors counts each condition and each $in value; more is a ValidationException
+// S3 Vectors caps a filter at 100 constraints, counting each $in value
 const MAX_FILTER_CONSTRAINTS = 100;
 const IMAGE_DATA_URI =
   /^data:(image\/(?:gif|jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
@@ -195,7 +195,7 @@ export async function handler(
         queryVector: { float32: Array.from(queryVector) },
         topK: topK,
         filter: vectorFilter,
-        // Resolve the owner filter before ranking, even on a CLASSIC index
+        // Filter by owner before ranking, even on a CLASSIC index
         queryMode: "ENHANCED",
         returnMetadata: true,
         returnDistance: true,
