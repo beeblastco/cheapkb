@@ -580,6 +580,24 @@ describe("frontend", () => {
       ]);
     });
 
+    it("drops calls queued before a reset, so the signed-out user is never identified again", async () => {
+      const { enablePostHog, loadPostHog, posthog } =
+        await import("../web/src/lib/posthog");
+
+      enablePostHog();
+      posthog.identify("user-a");
+      posthog.reset();
+      posthog.capture("sign_in_started");
+      loadPostHog();
+
+      await vi.waitFor(() =>
+        expect(fakePostHog.calls).toEqual([
+          `init ${POSTHOG_KEY}`,
+          "capture sign_in_started",
+        ]),
+      );
+    });
+
     it("resets a loaded PostHog in memory on sign-out", async () => {
       const { enablePostHog, loadPostHog } =
         await import("../web/src/lib/posthog");

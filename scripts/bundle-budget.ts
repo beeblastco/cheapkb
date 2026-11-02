@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { JSDOM } from "jsdom";
 
 const DIST_DIR = "web/dist";
 const ASSETS_DIR = join(DIST_DIR, "assets");
@@ -106,16 +107,14 @@ function formatBytes(bytes: number): string {
 
 // The module script and modulepreload links in index.html, as dist paths.
 function readInitialScripts(html: string): string[] {
-  const files: string[] = [];
-  for (const [tag] of html.matchAll(/<(?:script|link)\b[^>]*>/g)) {
-    if (!tag.startsWith("<script") && !/\brel="modulepreload"/.test(tag)) {
-      continue;
-    }
-    const source = /\b(?:src|href)="([^"]+)"/.exec(tag);
-    if (source) files.push(join(DIST_DIR, source[1]));
-  }
+  const { document } = new JSDOM(html).window;
+  const tags = document.querySelectorAll(
+    "script[src], link[rel=modulepreload][href]",
+  );
 
-  return files;
+  return Array.from(tags, (tag) =>
+    join(DIST_DIR, tag.getAttribute("src") ?? tag.getAttribute("href") ?? ""),
+  );
 }
 
 /** Adds up one size measure (raw or gzip) over a list of built files. */

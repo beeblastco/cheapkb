@@ -13,6 +13,8 @@ const released = new Promise<void>((resolve) => {
 });
 let client: Promise<PostHog | null> | undefined;
 let loadedClient: PostHog | null = null;
+// Bumped by reset, so calls queued for the previous user are dropped, not replayed.
+let generation = 0;
 
 /** The PostHog calls the app makes; calls before PostHog loads wait for it, in order.
  * captureNow loads it at once and waits at most a second; reset never waits. */
@@ -41,6 +43,7 @@ export const posthog = {
   // Forgets the user on this browser at once, loaded or not, so the next visitor is never linked to them.
   reset: (): void => {
     if (!POSTHOG_KEY) return;
+    generation += 1;
     localStorage.removeItem(PERSISTENCE_KEY);
     loadedClient?.reset();
   },
@@ -82,8 +85,10 @@ async function importPostHog(): Promise<PostHog | null> {
   }
 }
 
-/** Runs a call once PostHog has loaded; a no-op when analytics is off. */
+/** Runs a call once PostHog has loaded, unless a reset came in between; a no-op
+ * when analytics is off. */
 async function withPostHog(call: (loaded: PostHog) => void): Promise<void> {
+  const queuedIn = generation;
   const loaded = await client;
-  if (loaded) call(loaded);
+  if (loaded && queuedIn === generation) call(loaded);
 }

@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { JSDOM } from "jsdom";
 import { chromium, type Browser, type Page, type Route } from "playwright-core";
 import type { Document, Tag, UsageSummary } from "../functions/types.ts";
 
@@ -111,7 +112,11 @@ if (!existsSync(join(DIST_DIR, "index.html"))) {
   console.error("web/dist/index.html is missing; run the web build first.");
   process.exit(2);
 }
-if (!readFileSync(join(DIST_DIR, "index.html"), "utf8").includes(API_ORIGIN)) {
+// The CI build preconnects to the API origin it was built for.
+const preconnect = new JSDOM(
+  readFileSync(join(DIST_DIR, "index.html"), "utf8"),
+).window.document.querySelector("link[rel=preconnect]");
+if (preconnect?.getAttribute("href") !== API_ORIGIN) {
   console.error(`Build the web app with API_URL=${API_ORIGIN}/v1 first.`);
   process.exit(2);
 }

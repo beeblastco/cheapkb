@@ -1283,12 +1283,13 @@ function DocumentTagsSheet({
   const [value, setValue] = useState<string[]>(document?.tags ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [seededDocument, setSeededDocument] = useState(document);
+  const seedKey = JSON.stringify([document?.documentId, document?.tags ?? []]);
+  const [seededKey, setSeededKey] = useState(seedKey);
 
-  // Re-seed when a different document is opened, so the picker starts from that
-  // document's stored tags rather than the previous one's edits.
-  if (seededDocument !== document) {
-    setSeededDocument(document);
+  // Re-seed when another document opens or its stored tags change; a poll that
+  // only updates its status or dates keeps the unsaved edits.
+  if (seededKey !== seedKey) {
+    setSeededKey(seedKey);
     setValue(document?.tags ?? []);
     setError("");
   }
