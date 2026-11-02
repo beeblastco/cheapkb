@@ -1162,6 +1162,13 @@ function DocumentRow({
   rowId: string;
   selected: boolean;
 }): React.JSX.Element {
+  // Flashes once when the document finishes indexing on screen; rows that load indexed stay still.
+  const [lastStatus, setLastStatus] = useState(document.status);
+  const [landed, setLanded] = useState(false);
+  if (lastStatus !== document.status) {
+    setLastStatus(document.status);
+    setLanded(document.status === "EMBEDDED");
+  }
   // Only rows whose actions unlock with time re-render on the minute tick.
   const now = useNowMinute(
     isActiveStatus(document.status) || document.status === "UPDATING",
@@ -1174,6 +1181,7 @@ function DocumentRow({
       aria-label={`View ${document.title || document.documentId}`}
       className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
+      landed={landed}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -1585,11 +1593,19 @@ function UploadRow({
       <TableCell className="max-w-0">
         <div className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-medium">{item.title}</span>
-          <span className="shrink-0 text-muted-foreground">
-            {item.state === "EXTRACTING" || item.state === "SYNCING"
-              ? item.progress
-              : `${getFileMimeType(item.file)} · ${formatBytes(item.file.size)}`}
-          </span>
+          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
+            // Keyed by the step, so each new step fades in once.
+            <span
+              className="shrink-0 text-muted-foreground animate-in fade-in-0 slide-in-from-bottom-1 motion-reduce:animate-none"
+              key={item.progress}
+            >
+              {item.progress}
+            </span>
+          ) : (
+            <span className="shrink-0 text-muted-foreground">
+              {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+            </span>
+          )}
         </div>
       </TableCell>
       <TableCell className="max-w-0">

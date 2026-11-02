@@ -32,6 +32,18 @@
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+  /* A document row that just finished indexing flashes the brand color once. */
+  --animate-land: land 0.7s ease-out;
+
+  @keyframes land {
+    from {
+      background-color: color-mix(
+        in oklch,
+        var(--color-primary) 40%,
+        transparent
+      );
+    }
+  }
 
   @keyframes accordion-down {
     from {

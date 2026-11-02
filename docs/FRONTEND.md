@@ -36,7 +36,7 @@ PostHog starts loading once the first screen has rendered, and events from befor
 
 The first screen downloads only what it shows. A signed-out visitor gets the sign-in card; the workspace (documents and settings) and its libraries load as separate chunks once you are signed in, and pdf.js only when you add a PDF. A stored session is read before the first paint, so a signed-in user never sees the sign-in card first. Third-party libraries live in long-cached `vendor` and `vendor-workspace` chunks, so a deploy that changes only app code re-downloads about 30 kB of compressed JavaScript. The page also opens its connection to the API while the JavaScript downloads.
 
-Before the stylesheet or any JavaScript arrives, `index.html` paints the card frame with the brand, the frame both the sign-in screen and the workspace render, so the screen fills in under it without moving. Nothing animates while it waits: a loading state says what it is waiting for.
+Before the stylesheet or any JavaScript arrives, `index.html` paints the card frame with the brand, the frame both the sign-in screen and the workspace render, so the screen fills in under it without moving. Nothing animates while it waits: a loading state says what it is waiting for. Motion plays once on a change and stops: each new upload step fades in, and a row flashes once when its document finishes indexing. Reduced motion turns both off.
 
 ## Development
 
