@@ -1162,8 +1162,8 @@ function DocumentRow({
   rowId: string;
   selected: boolean;
 }): React.JSX.Element {
-  // Flashes when indexing finishes on screen: an indexing status becomes EMBEDDED with a new
-  // updatedAt. Rollbacks keep the old updatedAt; tag edits and deletes are not indexing.
+  // Flashes when indexing finishes on screen: an indexing status becomes EMBEDDED with a newer
+  // updatedAt. Rollbacks restore an older one; tag edits and deletes are not indexing.
   const [seen, setSeen] = useState({
     status: document.status,
     updatedAt: document.updatedAt,
@@ -1177,7 +1177,7 @@ function DocumentRow({
     setLanded(
       document.status === "EMBEDDED" &&
         isActiveStatus(seen.status) &&
-        seen.updatedAt !== document.updatedAt,
+        Date.parse(document.updatedAt ?? "") > Date.parse(seen.updatedAt ?? ""),
     );
   }
   // Only rows whose actions unlock with time re-render on the minute tick.
