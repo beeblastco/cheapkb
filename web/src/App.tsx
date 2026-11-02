@@ -27,6 +27,7 @@ import { loadPostHog, posthog } from "@/lib/posthog";
 import type { Document, ShooIdentity, UsageSummary } from "@/lib/types";
 import { LogIn } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 const NOTICE_MS = 6000;
 const POLL_MS = 3000;
@@ -410,9 +411,13 @@ export default function App(): React.JSX.Element {
     );
   }
 
-  // Nothing shows until the workspace chunk arrives, except a failure to load it.
+  // Until the workspace chunk arrives only notices show. They render outside #root,
+  // so it stays empty and the boot shell keeps its frame on screen.
   if (!workspace) {
-    return <Notices notices={notices} onDismiss={dismissNotice} />;
+    return createPortal(
+      <Notices notices={notices} onDismiss={dismissNotice} />,
+      document.body,
+    );
   }
 
   const { default: Workspace } = workspace;
@@ -448,7 +453,7 @@ function Guest({ onSignIn }: { onSignIn: () => void }): React.JSX.Element {
   useEffect(loadPostHog, []);
 
   return (
-    <main className="flex h-dvh flex-col px-3 pt-3">
+    <main className="flex min-h-dvh flex-col px-3 pt-3">
       <Card className="flex-1" variant="page">
         <CardHeader>
           <div className="flex h-9 items-center gap-2">

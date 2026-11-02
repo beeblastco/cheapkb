@@ -63,7 +63,8 @@ export function SettingsDialog({
   const [newKey, setNewKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const keyRequest = useRef(0);
-  const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
+  // Null until usage loads, so the bar reads as unknown rather than 0%.
+  const usagePct = usage ? Math.min(usage.pctUsed, 100) : null;
   const shownKey = newKey || "<MCP_KEY>";
 
   const open = tab !== null;

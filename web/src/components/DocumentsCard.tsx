@@ -272,6 +272,8 @@ export function DocumentsCard({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // Files this sync run has yet to finish, counting queued retries of failed ones.
+  const [syncLeft, setSyncLeft] = useState(0);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [query, setQuery] = useState("");
@@ -551,9 +553,6 @@ export function DocumentsCard({
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
-  const syncLeft = items.filter((item) =>
-    ["READY", "SYNCING"].includes(item.state),
-  ).length;
   // The first fetch says so instead of showing "0 documents" before it lands.
   const firstLoad = loading && !documents.length && !items.length;
 
@@ -607,6 +606,7 @@ export function DocumentsCard({
 
     syncingRef.current = true;
     setSyncing(true);
+    setSyncLeft(pending.length);
     let succeeded = 0;
     let failed = 0;
 
@@ -622,7 +622,10 @@ export function DocumentsCard({
           let counted = false;
           // Files wait their turn as READY and can be removed before a worker
           // reaches them, which now takes minutes under the processing cap.
-          if (!isStillQueued(item.id)) continue;
+          if (!isStillQueued(item.id)) {
+            setSyncLeft((left) => left - 1);
+            continue;
+          }
           updateItem(item.id, {
             error: "",
             progress: "Requesting upload URL",
@@ -681,6 +684,7 @@ export function DocumentsCard({
               current.filter((currentItem) => currentItem.id !== item.id),
             );
             succeeded += 1;
+            setSyncLeft((left) => left - 1);
             posthog.capture("document_uploaded", {
               has_tags: item.tags.length > 0,
               mime_type: queued.mimeType,
@@ -705,6 +709,7 @@ export function DocumentsCard({
               state: "FAILED",
             });
             failed += 1;
+            setSyncLeft((left) => left - 1);
           } finally {
             if (counted) uploading -= 1;
           }
@@ -767,7 +772,7 @@ export function DocumentsCard({
           <p>Drop files to add them</p>
         </div>
       ) : null}
-      <Card className="h-full min-w-0" variant="page">
+      <Card className="min-w-0 flex-1" variant="page">
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
             {/* As tall as the controls beside it, so the brand sits where the boot shell paints it. */}
