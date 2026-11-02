@@ -53,7 +53,7 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
 }
 
 /** Renders a table row with hover and selected states. A landed row flashes the brand
- * color once, for a document that just finished indexing. */
+ * color once, for a document that just finished indexing; reduced motion makes it instant. */
 function TableRow({
   className,
   landed = false,
@@ -64,7 +64,7 @@ function TableRow({
       data-slot="table-row"
       data-landed={landed || undefined}
       className={cn(
-        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted data-landed:animate-land data-landed:motion-reduce:animate-none",
+        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted data-landed:animate-land data-landed:motion-reduce:[animation-duration:0s]",
         className,
       )}
       {...props}

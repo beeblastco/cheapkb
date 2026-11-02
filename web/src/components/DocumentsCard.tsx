@@ -1162,26 +1162,22 @@ function DocumentRow({
   rowId: string;
   selected: boolean;
 }): React.JSX.Element {
-  // Flashes once when a newer indexed version arrives. A failed reindex or delete restores
-  // the last indexed version, and rows that load indexed stay still.
-  const indexed = document.status === "EMBEDDED";
+  // Flashes when indexing finishes on screen: an indexing status becomes EMBEDDED with a new
+  // updatedAt. Rollbacks keep the old updatedAt; tag edits and deletes are not indexing.
   const [seen, setSeen] = useState({
-    indexedAt: indexed ? document.updatedAt : undefined,
     status: document.status,
+    updatedAt: document.updatedAt,
   });
   const [landed, setLanded] = useState(false);
   if (
     seen.status !== document.status ||
-    (indexed && seen.indexedAt !== document.updatedAt)
+    seen.updatedAt !== document.updatedAt
   ) {
-    setSeen({
-      indexedAt: indexed ? document.updatedAt : seen.indexedAt,
-      status: document.status,
-    });
+    setSeen({ status: document.status, updatedAt: document.updatedAt });
     setLanded(
-      indexed &&
-        seen.status !== "EMBEDDED" &&
-        seen.indexedAt !== document.updatedAt,
+      document.status === "EMBEDDED" &&
+        isActiveStatus(seen.status) &&
+        seen.updatedAt !== document.updatedAt,
     );
   }
   // Only rows whose actions unlock with time re-render on the minute tick.
