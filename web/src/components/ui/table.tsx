@@ -52,13 +52,19 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
   );
 }
 
-/** Renders a table row with hover and selected states. */
-function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
+/** Renders a table row with hover and selected states. A landed row flashes the brand
+ * color once, for a document that just finished indexing; reduced motion makes it instant. */
+function TableRow({
+  className,
+  landed = false,
+  ...props
+}: React.ComponentProps<"tr"> & { landed?: boolean }) {
   return (
     <tr
       data-slot="table-row"
+      data-landed={landed || undefined}
       className={cn(
-        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
+        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted data-landed:animate-land data-landed:motion-reduce:[animation-duration:0s]",
         className,
       )}
       {...props}

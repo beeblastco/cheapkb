@@ -75,7 +75,8 @@ function WorkspaceContent({
 
   return (
     <TooltipProvider>
-      <main className="flex min-h-dvh flex-col p-3 lg:h-dvh lg:overflow-hidden">
+      {/* One screen tall when there is room for the table; on shorter screens the page scrolls. */}
+      <main className="flex min-h-dvh flex-col px-3 pt-3 [@media(min-height:30rem)]:h-dvh">
         <DocumentsCard
           accountMenu={
             <AccountMenu

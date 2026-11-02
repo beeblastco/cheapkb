@@ -43,6 +43,24 @@ export default defineConfig({
       },
     },
     {
+      // Moves the stylesheet below the boot shell, so the shell paints before the CSS
+      // arrives. Module scripts still wait for it, so React never renders unstyled.
+      name: "stylesheet-after-shell",
+      apply: "build",
+      transformIndexHtml: {
+        order: "post",
+        handler: function (html: string): string {
+          const [line, link] =
+            html.match(/\n\s*(<link rel="stylesheet"[^>]*>)/) ?? [];
+          if (!line || !link) return html;
+
+          return html
+            .replace(line, "")
+            .replace("</body>", `  ${link}\n  </body>`);
+        },
+      },
+    },
+    {
       // A static import cycle between the codeSplitting chunks can run a chunk before its
       // imports exist and blank the app at boot, so it fails the build instead.
       name: "chunk-cycle-guard",

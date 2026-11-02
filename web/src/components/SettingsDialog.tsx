@@ -17,7 +17,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   apiUrl,
@@ -64,7 +63,8 @@ export function SettingsDialog({
   const [newKey, setNewKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const keyRequest = useRef(0);
-  const usagePct = usage ? Math.min(usage.pctUsed, 100) : 0;
+  // Null until usage loads, so the bar reads as unknown rather than 0%.
+  const usagePct = usage ? Math.min(usage.pctUsed, 100) : null;
   const shownKey = newKey || "<MCP_KEY>";
 
   const open = tab !== null;
@@ -163,27 +163,24 @@ export function SettingsDialog({
           </TabsList>
 
           <TabsContent value="usage">
-            {usage ? (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-baseline justify-between">
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {formatPercent(usage.pctUsed)}
-                    <span className="ml-2 text-sm font-normal text-muted-foreground">
-                      of {usage.planLabel} plan
-                    </span>
-                  </p>
-                  <p className="text-muted-foreground tabular-nums">
-                    Resets {formatDate(usage.resetAt)}
-                  </p>
-                </div>
-                <Progress value={usagePct} />
+            {/* Dashes hold the layout until usage loads, so nothing moves when it lands. */}
+            <div className="flex flex-col gap-3">
+              <div className="flex items-baseline justify-between">
+                <p className="text-2xl font-semibold tabular-nums">
+                  {usage ? formatPercent(usage.pctUsed) : "-"}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    of {usage ? usage.planLabel : "-"} plan
+                  </span>
+                </p>
                 <p className="text-muted-foreground tabular-nums">
-                  Storage {formatBytes(usage.storageBytes)}
+                  Resets {usage ? formatDate(usage.resetAt) : "-"}
                 </p>
               </div>
-            ) : (
-              <Skeleton className="h-20 w-full" />
-            )}
+              <Progress value={usagePct} />
+              <p className="text-muted-foreground tabular-nums">
+                Storage {usage ? formatBytes(usage.storageBytes) : "-"}
+              </p>
+            </div>
           </TabsContent>
 
           <TabsContent value="agent">

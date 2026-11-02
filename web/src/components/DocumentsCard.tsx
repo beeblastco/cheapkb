@@ -54,8 +54,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -274,6 +272,8 @@ export function DocumentsCard({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // Files this sync run has yet to finish, counting queued retries of failed ones.
+  const [syncLeft, setSyncLeft] = useState(0);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
   const [query, setQuery] = useState("");
@@ -553,6 +553,8 @@ export function DocumentsCard({
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
+  // The first fetch says so instead of showing "0 documents" before it lands.
+  const firstLoad = loading && !documents.length && !items.length;
 
   /** Deletes the selected documents, drops the selected staged uploads, and keeps
    * failed documents selected. Wired to the bulk delete confirm. */
@@ -604,6 +606,7 @@ export function DocumentsCard({
 
     syncingRef.current = true;
     setSyncing(true);
+    setSyncLeft(pending.length);
     let succeeded = 0;
     let failed = 0;
 
@@ -619,7 +622,10 @@ export function DocumentsCard({
           let counted = false;
           // Files wait their turn as READY and can be removed before a worker
           // reaches them, which now takes minutes under the processing cap.
-          if (!isStillQueued(item.id)) continue;
+          if (!isStillQueued(item.id)) {
+            setSyncLeft((left) => left - 1);
+            continue;
+          }
           updateItem(item.id, {
             error: "",
             progress: "Requesting upload URL",
@@ -633,7 +639,7 @@ export function DocumentsCard({
               MAX_PROCESSING_DOCUMENTS
             ) {
               updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
+                progress: "Waiting for a processing slot",
               });
               await delay(PROCESSING_POLL_MS);
               // The app's poll pauses in hidden tabs, so only then does the wait refresh the list.
@@ -678,6 +684,7 @@ export function DocumentsCard({
               current.filter((currentItem) => currentItem.id !== item.id),
             );
             succeeded += 1;
+            setSyncLeft((left) => left - 1);
             posthog.capture("document_uploaded", {
               has_tags: item.tags.length > 0,
               mime_type: queued.mimeType,
@@ -690,7 +697,7 @@ export function DocumentsCard({
             if (code === "PROCESSING_LIMIT" && attempts < PROCESSING_RETRIES) {
               retries.set(item.id, attempts + 1);
               updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
+                progress: "Waiting for a processing slot",
               });
               await delay(PROCESSING_RETRY_MS);
               pending.push(item);
@@ -702,6 +709,7 @@ export function DocumentsCard({
               state: "FAILED",
             });
             failed += 1;
+            setSyncLeft((left) => left - 1);
           } finally {
             if (counted) uploading -= 1;
           }
@@ -764,10 +772,11 @@ export function DocumentsCard({
           <p>Drop files to add them</p>
         </div>
       ) : null}
-      <Card className="h-full min-w-0">
+      <Card className="min-w-0 flex-1" variant="page">
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2">
+            {/* As tall as the controls beside it, so the brand sits where the boot shell paints it. */}
+            <div className="flex h-9 items-center gap-2">
               <img alt="" className="size-6" src="/icon.svg" />
               <p className="font-semibold">cheapkb</p>
             </div>
@@ -804,7 +813,6 @@ export function DocumentsCard({
               </InputGroupAddon>
             </InputGroup>
             <div className="flex items-center gap-2">
-              {loading ? <Spinner /> : null}
               {selectedCount ? (
                 <AlertDialog>
                   <AlertDialogTrigger
@@ -815,12 +823,10 @@ export function DocumentsCard({
                       />
                     }
                   >
-                    {deletingSelected ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <Trash2 data-icon="inline-start" />
-                    )}
-                    Delete selected ({selectedCount})
+                    <Trash2 data-icon="inline-start" />
+                    {deletingSelected
+                      ? `Deleting ${selectedCount}`
+                      : `Delete selected (${selectedCount})`}
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -858,12 +864,10 @@ export function DocumentsCard({
                 disabled={!readyCount || syncing || deletingSelected}
                 onClick={syncAll}
               >
-                {syncing ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <RefreshCw data-icon="inline-start" />
-                )}
-                Sync all{readyCount ? ` (${readyCount})` : ""}
+                <RefreshCw data-icon="inline-start" />
+                {syncing
+                  ? `Syncing, ${syncLeft} left`
+                  : `Sync all${readyCount ? ` (${readyCount})` : ""}`}
               </Button>
               {accountMenu}
             </div>
@@ -926,15 +930,14 @@ export function DocumentsCard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !documents.length && !items.length ? (
-                  Array.from({ length: 4 }).map((_, index) => (
-                    // oxlint-disable-next-line react/no-array-index-key -- four static placeholder rows that never reorder
-                    <TableRow key={index}>
-                      <TableCell colSpan={7}>
-                        <Skeleton className="h-8 w-full" />
-                      </TableCell>
-                    </TableRow>
-                  ))
+                {firstLoad ? (
+                  <TableRow>
+                    <TableCell colSpan={7}>
+                      <span className="text-muted-foreground">
+                        Loading documents
+                      </span>
+                    </TableCell>
+                  </TableRow>
                 ) : visible.length ? (
                   visible.map((row) => {
                     const { original } = row;
@@ -987,7 +990,8 @@ export function DocumentsCard({
             </Table>
           </div>
         </CardContent>
-        <CardFooter>
+        {/* Tall enough for the paging buttons, so they appear without moving the footer. */}
+        <CardFooter className="min-h-10">
           <Button
             className="cursor-pointer"
             onClick={onOpenUsage}
@@ -1001,7 +1005,9 @@ export function DocumentsCard({
           <CardDescription className="ml-auto">
             {totalCount
               ? `${pagination.pageIndex * PAGE_SIZE + 1}–${Math.min((pagination.pageIndex + 1) * PAGE_SIZE, totalCount)} of ${totalCount}`
-              : "0 documents"}
+              : firstLoad
+                ? "Loading documents"
+                : "0 documents"}
             {deleteMessage ? ` · ${deleteMessage}` : ""}
           </CardDescription>
           {pageCount > 1 ? (
@@ -1156,6 +1162,24 @@ function DocumentRow({
   rowId: string;
   selected: boolean;
 }): React.JSX.Element {
+  // Flashes when indexing finishes on screen: an indexing status becomes EMBEDDED with a newer
+  // updatedAt. Rollbacks restore an older one; tag edits and deletes are not indexing.
+  const [seen, setSeen] = useState({
+    status: document.status,
+    updatedAt: document.updatedAt,
+  });
+  const [landed, setLanded] = useState(false);
+  if (
+    seen.status !== document.status ||
+    seen.updatedAt !== document.updatedAt
+  ) {
+    setSeen({ status: document.status, updatedAt: document.updatedAt });
+    setLanded(
+      document.status === "EMBEDDED" &&
+        isActiveStatus(seen.status) &&
+        Date.parse(document.updatedAt ?? "") > Date.parse(seen.updatedAt ?? ""),
+    );
+  }
   // Only rows whose actions unlock with time re-render on the minute tick.
   const now = useNowMinute(
     isActiveStatus(document.status) || document.status === "UPDATING",
@@ -1168,6 +1192,11 @@ function DocumentRow({
       aria-label={`View ${document.title || document.documentId}`}
       className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
+      landed={landed}
+      // Cleared once played, so moving the row (a sort) cannot replay the flash.
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget) setLanded(false);
+      }}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -1579,25 +1608,26 @@ function UploadRow({
       <TableCell className="max-w-0">
         <div className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-medium">{item.title}</span>
-          <span className="shrink-0 text-muted-foreground">
-            {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
-          </span>
+          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
+            // Keyed by the step, so each new step fades in once.
+            <span
+              className="shrink-0 text-muted-foreground animate-in fade-in-0 slide-in-from-bottom-1 motion-reduce:animate-none"
+              key={item.progress}
+            >
+              {item.progress}
+            </span>
+          ) : (
+            <span className="shrink-0 text-muted-foreground">
+              {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+            </span>
+          )}
         </div>
       </TableCell>
       <TableCell className="max-w-0">
         <TagList colorOf={colorOf} tags={item.tags} />
       </TableCell>
       <TableCell className="max-w-0">
-        <div className="flex items-center gap-2">
-          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
-            <Spinner />
-          ) : null}
-          <StatusBadge
-            error={item.error}
-            label={item.state}
-            variant="outline"
-          />
-        </div>
+        <StatusBadge error={item.error} label={item.state} variant="outline" />
       </TableCell>
       <TableCell>-</TableCell>
       <TableCell>-</TableCell>
