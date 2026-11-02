@@ -41,6 +41,8 @@ CheapKB accepts PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Image files
 
 Documents and images use the same search experience. Content indexed with different embedding models is kept separate because vectors from different models are not compatible.
 
+Search and upload read the rate and usage limits at once, and a search writes its embedding charge while S3 Vectors runs, so neither waits on DynamoDB one call at a time. Browsers may cache the API's CORS preflight for a day (Chromium keeps it 2 hours), so repeat calls skip that round trip.
+
 ## Updates, replacement, and deletion
 
 Editing a completed or failed document updates its searchable tags without uploading the file again. Names, authors, and other metadata are set during upload. An edit cannot start while a replacement upload is pending. A document cannot be deleted while an edit is still writing to it. If an account reset or an S3 removal deletes it anyway, the edit removes the vectors it rewrote. Tags live only in the document record and the vectors, so an edit makes no S3 requests.

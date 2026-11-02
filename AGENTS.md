@@ -36,10 +36,27 @@ Don't try to add custom gap an stuff as the current shadcn/ui already include th
 
 ## Checks and automation
 
-- Run `npm run check` (oxlint, prettier, tsc, vitest) before calling work done. After a web build, `npm run bundle:check` compares the shipped JavaScript with `scripts/bundle-budgets.json`; re-record with `npm run bundle:record` only for intended growth, and say why in the PR.
+- Run `npm run check` (oxlint, knip, prettier, tsc, vitest) before calling work done. After `npm run web:build`, `npm run bundle:check` fails when the initial JavaScript (what `index.html` loads) or the total moves past `scripts/bundle-budgets.json` either way, and `npm run perf:check` boots the build in headless Chromium and fails on page errors or React renders that move off `scripts/render-budgets.json`. Re-record with `npm run bundle:record` or `npm run perf:record` and say why in the PR.
 - `.oxlintrc.json` runs `@shadcn/lint` on `web/src`: style shadcn components through their variants and sizes, not by overriding their color, spacing or typography. `web/src/components/ui/**` is exempt.
 - `.oxlintrc.json` also enforces `eqeqeq`, `radix`, `no-empty`, `no-implicit-coercion`, `no-plusplus`, `prefer-destructuring`, `import/no-duplicates` and the promise rules. `no-await-in-loop` stays off: pagination, retries, ordered side effects and free-tier throttling are sequential on purpose, so parallelize only when the iterations are independent.
+- In `web/src` the React Compiler rules (`set-state-in-effect`, `purity`, `refs`, `immutability` and others) are errors. `scripts/oxlint-plugin.ts` bans em dashes in copy and needs a reason on every `oxlint-disable` or `@ts-expect-error` (`-- reason` or a comment above). Unused disable directives fail lint, and `npm run knip` fails on unused files, exports and dependencies.
 - `.codeant/configuration.json` turns off CodeAnt's antipattern scan, since oxlint now owns those rules. Its security, secrets, dependency, IaC and docstring scans stay on.
 - `npm install` sets `core.hooksPath` to `.githooks`, whose pre-commit runs gitleaks, oxlint and prettier on staged files. `.claude/settings.json` formats and lints every file an agent edits.
 - Editing a source line a proof is anchored to fails `tests/proofs.test.ts`. Update the model in `proofs/Proofs/*.lean`, run `cd proofs && lake build && lake exe vectors`, and commit the regenerated vectors. See `proofs/README.md`.
-- CI runs three jobs on every PR and push. Check runs lint, format, typecheck, tests, the web build and the bundle budget, plus an npm audit gate on PRs whose allowed advisories expire once a fix ships. Secrets scan runs gitleaks. Proofs runs `lake build`, fails on banned words or warnings, and checks the vectors are unchanged. `main` deploys to production only after all three pass.
+- CI runs three jobs on every PR and push. Check runs lint, knip, format, typecheck, tests, the web build, the bundle budget and the render budget, plus an npm audit gate on PRs whose allowed advisories expire once a fix ships. Secrets scan runs gitleaks. Proofs runs `lake build`, fails on banned words or warnings, and checks the vectors are unchanged. `main` deploys to production only after all three pass.
+
+## Performance
+
+Performance is not negotiable. Regressions come from shipping too much JavaScript or data, re-rendering whole lists, effects that copy state into state, and continuously repainting animations.
+
+- Heavy SDKs such as PostHog and pdf.js load lazily, after first paint or on first use.
+- Effects only sync with something outside React. Derive values during render, and reset state in the handler that caused the change.
+- Rows are memoized and keep their object when a poll leaves them unchanged, so a quiet poll renders nothing.
+- The bundle and render budgets are ratchets. When growth is intended, re-record with `npm run bundle:record` or `npm run perf:record` and say why in the PR.
+
+## Tests
+
+- Test behaviour that can break: owner scoping and permission guards, billing and limits, parsing, retries and races, and the logic a bug fix changed. Assert literal expected values, not the formula restated.
+- Leave out tests for what types guarantee, trivial logic, copy, Tailwind classes, source strings, smoke runs, mock-call mirrors and deleted features.
+- Extend an existing case before adding one, and test at the lowest layer that fails on `main`. The proof vectors cover the modelled logic, so don't repeat their examples by hand.
+- A logic bug gets a failing test first. A purely visual fix gets before/after screenshots, not a test.

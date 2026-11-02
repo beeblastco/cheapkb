@@ -31,7 +31,7 @@ import {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Check, Palette, Plus, Trash2 } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 // The "create" row lives in the same item list as real tags so it is reachable
 // by keyboard. The leading NUL keeps a tag named "create:x" from colliding.
@@ -74,7 +74,9 @@ export function TagPicker({
   // Async reconciliation must read the selection as it is when the request
   // settles, not as it was when the request started.
   const valueRef = useRef(value);
-  valueRef.current = value;
+  useLayoutEffect(() => {
+    valueRef.current = value;
+  });
 
   const query = inputValue.trim();
   const lowerQuery = query.toLowerCase();

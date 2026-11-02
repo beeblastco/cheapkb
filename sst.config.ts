@@ -74,6 +74,8 @@ export default $config({
           "Mcp-Protocol-Version",
         ],
         allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        // Browsers cap this (Chromium at 2 hours), so repeat calls skip the preflight.
+        maxAge: "1 day",
       },
       transform: {
         api: (a) => {

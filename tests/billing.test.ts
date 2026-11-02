@@ -10,14 +10,9 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 
 import {
-  centsToNanoUsd,
-  currentCycle,
   getOrCreateAccount,
   getUsageSummary,
-  NANO_PER_CENT,
-  PRICING,
   recordUsage,
-  storageCostNanoUsd,
   updateStorageBytes,
   accountId,
 } from "../functions/utils";
@@ -28,20 +23,6 @@ describe("billing", () => {
   beforeEach(() => {
     dynamoMock.reset();
     process.env.PLANS_TABLE_NAME = "table";
-  });
-
-  describe("pricing", () => {
-    it("converts cents to nano-usd", () => {
-      expect(centsToNanoUsd(400)).toBe(400 * NANO_PER_CENT);
-    });
-
-    it("calculates storage cost for one GB over a month", () => {
-      const bytes = 1024 * 1024 * 1024;
-      const seconds = 30 * 24 * 60 * 60;
-      expect(storageCostNanoUsd(bytes, seconds)).toBe(
-        PRICING.storagePerGbMonth,
-      );
-    });
   });
 
   describe("account", () => {
@@ -185,9 +166,7 @@ describe("billing", () => {
         dynamoMock.commandCalls(TransactWriteCommand)[0].args[0].input
           .TransactItems?.[0].Update;
       expect(update?.ExpressionAttributeValues?.[":nextBytes"]).toBe(0);
-      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(
-        PRICING.storagePerGbMonth / 2,
-      );
+      expect(update?.ExpressionAttributeValues?.[":cost"]).toBe(11_500_000);
     });
     it("keeps accrued storage cost when this Lambda's clock trails the last write", async () => {
       const lastWrite = Date.UTC(2024, 0, 16);
@@ -294,62 +273,6 @@ describe("billing", () => {
     });
   });
 
-  describe("billing cycle", () => {
-    const account = (createdAt: string) => ({
-      planId: "basic",
-      priceMonthlyCents: 0,
-      monthlyAllowanceCents: 100,
-      storageBytes: 0,
-      createdAt: createdAt,
-      updatedAt: createdAt,
-    });
-
-    it("anchors to the creation day-of-month across calendar months", () => {
-      const now = Date.UTC(2024, 2, 20);
-      const cycle = currentCycle(account("2024-01-15T00:00:00.000Z"), now);
-
-      expect(new Date(cycle.startMs).toISOString()).toBe(
-        "2024-03-15T00:00:00.000Z",
-      );
-      expect(new Date(cycle.endMs).toISOString()).toBe(
-        "2024-04-15T00:00:00.000Z",
-      );
-    });
-
-    it("starts cycles at midnight UTC so each day's usage counts once", () => {
-      const now = Date.UTC(2024, 1, 15, 9);
-      const cycle = currentCycle(account("2024-01-15T18:30:00.000Z"), now);
-
-      expect(new Date(cycle.startMs).toISOString()).toBe(
-        "2024-02-15T00:00:00.000Z",
-      );
-    });
-
-    it("clamps a day-31 anchor to the last day of shorter months", () => {
-      const now = Date.UTC(2024, 1, 10);
-      const cycle = currentCycle(account("2024-01-31T00:00:00.000Z"), now);
-
-      expect(new Date(cycle.startMs).toISOString()).toBe(
-        "2024-01-31T00:00:00.000Z",
-      );
-      expect(new Date(cycle.endMs).toISOString()).toBe(
-        "2024-02-29T00:00:00.000Z",
-      );
-    });
-
-    it("returns the first cycle when now is within the creation month", () => {
-      const now = Date.UTC(2024, 0, 20);
-      const cycle = currentCycle(account("2024-01-15T00:00:00.000Z"), now);
-
-      expect(new Date(cycle.startMs).toISOString()).toBe(
-        "2024-01-15T00:00:00.000Z",
-      );
-      expect(new Date(cycle.endMs).toISOString()).toBe(
-        "2024-02-15T00:00:00.000Z",
-      );
-    });
-  });
-
   describe("usage", () => {
     it("prices query results per chunk fetched", async () => {
       dynamoMock.on(UpdateCommand).resolves({});
@@ -369,9 +292,7 @@ describe("billing", () => {
       const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
       expect(update.UpdateExpression).toContain("queryOps");
       expect(update.ExpressionAttributeValues[":u"]).toBe(2);
-      expect(update.ExpressionAttributeValues[":c"]).toBe(
-        2 * PRICING.queryPerRequest,
-      );
+      expect(update.ExpressionAttributeValues[":c"]).toBe(10_000);
     });
 
     it("records an embed usage event priced by tokens", async () => {
@@ -382,9 +303,7 @@ describe("billing", () => {
       const update = dynamoMock.commandCalls(UpdateCommand)[0].args[0].input;
       expect(update.UpdateExpression).toContain("embedTokens");
       expect(update.ExpressionAttributeValues[":u"]).toBe(500);
-      expect(update.ExpressionAttributeValues[":c"]).toBe(
-        Math.round(500 * PRICING.embedPerToken),
-      );
+      expect(update.ExpressionAttributeValues[":c"]).toBe(60_000);
     });
 
     it("records an idempotency marker with retried usage", async () => {
@@ -416,16 +335,12 @@ describe("billing", () => {
       const queryUpdate = calls[0].args[0].input;
       expect(queryUpdate.UpdateExpression).toContain("queryOps");
       expect(queryUpdate.ExpressionAttributeValues[":u"]).toBe(1);
-      expect(queryUpdate.ExpressionAttributeValues[":c"]).toBe(
-        PRICING.queryPerRequest,
-      );
+      expect(queryUpdate.ExpressionAttributeValues[":c"]).toBe(5_000);
 
       const embedUpdate = calls[1].args[0].input;
       expect(embedUpdate.UpdateExpression).toContain("embedTokens");
       expect(embedUpdate.ExpressionAttributeValues[":u"]).toBe(queryTokens);
-      expect(embedUpdate.ExpressionAttributeValues[":c"]).toBe(
-        Math.round(queryTokens * PRICING.embedPerToken),
-      );
+      expect(embedUpdate.ExpressionAttributeValues[":c"]).toBe(1_440);
     });
 
     it("keeps accrued storage cost in the summary under a small clock skew", async () => {

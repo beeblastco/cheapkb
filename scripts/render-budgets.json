@@ -1,0 +1,37 @@
+{
+  "recordedAt": "2026-11-01T21:50:22.156Z",
+  "scenarios": {
+    "signed-out-boot": {
+      "commits": 1,
+      "fibers": 12
+    },
+    "signed-in-boot": {
+      "commits": 7,
+      "fibers": 4385
+    },
+    "changed-poll": {
+      "commits": 2,
+      "fibers": 319
+    },
+    "search-type": {
+      "commits": 16,
+      "fibers": 2260
+    },
+    "select-all-on": {
+      "commits": 2,
+      "fibers": 2174
+    },
+    "select-all-off": {
+      "commits": 2,
+      "fibers": 2163
+    },
+    "document-open": {
+      "commits": 10,
+      "fibers": 376
+    },
+    "document-close": {
+      "commits": 6,
+      "fibers": 177
+    }
+  }
+}

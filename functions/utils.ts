@@ -89,7 +89,7 @@ export const SETTLED_STATUSES = new Set([
 ]);
 
 const NANO_PER_USD = 1_000_000_000;
-export const NANO_PER_CENT = NANO_PER_USD / 100;
+const NANO_PER_CENT = NANO_PER_USD / 100;
 
 const EMBEDDING_INPUT_PRICE_PER_1M_TOKENS = (() => {
   const raw = process.env.EMBEDDING_INPUT_PRICE_PER_1M_TOKENS ?? "0.12";
@@ -102,7 +102,7 @@ const EMBEDDING_INPUT_PRICE_PER_TOKEN =
 
 // queryPerResult was priced at one S3 GET per result; only legacy vectors still need one,
 // and the rate is kept so the cost basis stays conservative.
-export const PRICING = {
+const PRICING = {
   queryPerRequest: 5_000,
   queryPerResult: 400,
   uploadPerRequest: 2_000,
@@ -467,7 +467,11 @@ export async function getUsageSummary(
   userId: string,
   tableName: string,
 ): Promise<UsageSummary> {
-  const account = await getOrCreateAccount(userId, tableName);
+  // The plan is still read fresh on every call, alongside the account it does not depend on.
+  const [account, plan] = await Promise.all([
+    getOrCreateAccount(userId, tableName),
+    getDefaultPlan(),
+  ]);
   const storageUpdatedAt = Date.parse(account.storageCostUpdatedAt ?? "");
   const nowMs = skewTolerantNow(storageUpdatedAt);
   const cycle = currentCycle(account, nowMs);
@@ -492,10 +496,9 @@ export async function getUsageSummary(
         (nowMs - cycle.startMs) / 1000,
       );
   const totalSpentNano = spentNano + storageNano;
-  const plan = await getDefaultPlan();
   const priceMonthlyCents = plan?.priceMonthlyCents ?? 0;
   const monthlyAllowanceCents = plan?.monthlyAllowanceCents ?? 0;
-  const allowanceNano = centsToNanoUsd(monthlyAllowanceCents);
+  const allowanceNano = monthlyAllowanceCents * NANO_PER_CENT;
 
   return {
     planId: plan?.planId ?? defaultPlanId(),
@@ -514,8 +517,8 @@ export async function getUsageSummary(
   };
 }
 
-/** Calls the Cohere embedding model, bills its input tokens to the user and returns
- * one vector per input. Used by the embed stage and the query handler. */
+/** Calls the Cohere embedding model and returns one vector per input, plus the started
+ * write that bills its input tokens. The embed stage and the query handler await it. */
 export async function invokeEmbeddingModel(
   bedrock: BedrockRuntimeClient,
   body: Record<string, unknown>,
@@ -523,7 +526,7 @@ export async function invokeEmbeddingModel(
   accountsTableName: string,
   operation: "ingest" | "query",
   modality: "image" | "mixed" | "text",
-): Promise<number[][]> {
+): Promise<{ embeddings: number[][]; billing: Promise<void> }> {
   let inputTokenCount: number | undefined;
   const command = new InvokeModelCommand({
     modelId: embeddingModel(),
@@ -562,29 +565,39 @@ export async function invokeEmbeddingModel(
     },
   );
   const response = await bedrock.send(command);
-  if (inputTokenCount) {
-    await recordUsage(userId, accountsTableName, "embed", inputTokenCount);
-  } else {
+  const billing = inputTokenCount
+    ? recordUsage(userId, accountsTableName, "embed", inputTokenCount)
+    : Promise.resolve();
+  if (!inputTokenCount) {
     console.warn(
       `[${operation}] Bedrock response omitted its input token count`,
       { requestId: response.$metadata.requestId },
     );
   }
-  const payload = JSON.parse(
-    new TextDecoder().decode(response.body),
-  ) as CohereEmbeddingResponse;
-  const embeddings = Array.isArray(payload.embeddings)
-    ? payload.embeddings
-    : payload.embeddings?.float;
-  const dimension = embeddingDimension();
-  if (
-    !embeddings?.length ||
-    embeddings.some((embedding) => embedding.length !== dimension)
-  ) {
-    throw new Error(`Cohere Embed v4 returned an invalid ${dimension}D vector`);
+  let embeddings: number[][] | undefined;
+  try {
+    const payload = JSON.parse(
+      new TextDecoder().decode(response.body),
+    ) as CohereEmbeddingResponse;
+    embeddings = Array.isArray(payload.embeddings)
+      ? payload.embeddings
+      : payload.embeddings?.float;
+    const dimension = embeddingDimension();
+    if (
+      !embeddings?.length ||
+      embeddings.some((embedding) => embedding.length !== dimension)
+    ) {
+      throw new Error(
+        `Cohere Embed v4 returned an invalid ${dimension}D vector`,
+      );
+    }
+  } catch (error) {
+    // Bedrock bills a bad response too, so its usage write lands before the error.
+    await billing;
+    throw error;
   }
 
-  return embeddings;
+  return { embeddings: embeddings, billing: billing };
 }
 
 /** Lists every chunk record of a document, following DynamoDB pagination.
@@ -1006,10 +1019,6 @@ export async function updateStorageBytes(
 
 export function accountId(pk: string): string {
   return pk.replace("ACCOUNT#", "");
-}
-
-export function centsToNanoUsd(cents: number): number {
-  return cents * NANO_PER_CENT;
 }
 
 export function chunkId(sk: string): string {

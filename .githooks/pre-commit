@@ -15,7 +15,7 @@ fi
 
 lintable=$(echo "$staged" | grep -E '\.(ts|tsx|js|mjs)$' || true)
 if [ -n "$lintable" ]; then
-  echo "$lintable" | xargs npx oxlint --no-error-on-unmatched-pattern
+  echo "$lintable" | xargs npx oxlint --no-error-on-unmatched-pattern --report-unused-disable-directives-severity=error
 fi
 
 formattable=$(echo "$staged" | grep -E '\.(ts|tsx|js|mjs|json|md|yml|yaml|css|html)$' || true)

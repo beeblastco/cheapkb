@@ -65,13 +65,12 @@ export async function handler(
 ): Promise<APIGatewayProxyStructuredResultV2> {
   const { userId, response: authError } = extractUserId(event);
   if (authError) return authError;
-  const { allowed: rateAllowed, remaining } = await checkRateLimit(
-    userId,
-    env("RATE_LIMITS_TABLE_NAME"),
-    "QUERY",
-    100,
-    100,
-  );
+  // Both limits are read at once; the rate limit still answers first.
+  const [{ allowed: rateAllowed, remaining }, { allowed: usageAllowed }] =
+    await Promise.all([
+      checkRateLimit(userId, env("RATE_LIMITS_TABLE_NAME"), "QUERY", 100, 100),
+      checkUsageLimit(userId, env("ACCOUNTS_TABLE_NAME")),
+    ]);
   if (!rateAllowed) {
     return {
       statusCode: 429,
@@ -82,10 +81,6 @@ export async function handler(
       body: JSON.stringify({ error: "Rate limit exceeded. Try again later." }),
     };
   }
-  const { allowed: usageAllowed } = await checkUsageLimit(
-    userId,
-    env("ACCOUNTS_TABLE_NAME"),
-  );
   if (!usageAllowed) {
     return {
       statusCode: 429,
@@ -180,7 +175,10 @@ export async function handler(
     }
     const queryText = query?.trim() ?? "";
     const inputModality = image ? (queryText ? "mixed" : "image") : "text";
-    const [queryVector] = await invokeEmbeddingModel(
+    const {
+      embeddings: [queryVector],
+      billing,
+    } = await invokeEmbeddingModel(
       bedrock,
       buildEmbeddingRequest(queryText, image),
       userId,
@@ -188,20 +186,26 @@ export async function handler(
       "query",
       inputModality,
     );
-    const searchResponse = await vectors.send(
-      new QueryVectorsCommand({
-        vectorBucketName: env("VECTOR_BUCKET_NAME"),
-        indexName: env("VECTOR_INDEX_NAME"),
-        queryVector: { float32: Array.from(queryVector) },
-        topK: topK,
-        filter: vectorFilter,
-        // Filter by owner before ranking, even on a CLASSIC index
-        queryMode: "ENHANCED",
-        returnMetadata: true,
-        returnDistance: true,
-      }),
-    );
-    const matches = searchResponse.vectors ?? [];
+    // The embed usage write overlaps the search; both settle before either error is thrown.
+    const [billed, search] = await Promise.allSettled([
+      billing,
+      vectors.send(
+        new QueryVectorsCommand({
+          vectorBucketName: env("VECTOR_BUCKET_NAME"),
+          indexName: env("VECTOR_INDEX_NAME"),
+          queryVector: { float32: Array.from(queryVector) },
+          topK: topK,
+          filter: vectorFilter,
+          // Filter by owner before ranking, even on a CLASSIC index
+          queryMode: "ENHANCED",
+          returnMetadata: true,
+          returnDistance: true,
+        }),
+      ),
+    ]);
+    if (billed.status === "rejected") throw billed.reason;
+    if (search.status === "rejected") throw search.reason;
+    const matches = search.value.vectors ?? [];
     // Vectors carry their full chunk text. Only legacy vectors, cut to 500
     // characters, point at a chunk object that still holds the full text.
     const chunks = await Promise.all(
