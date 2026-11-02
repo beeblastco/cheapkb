@@ -54,8 +54,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -553,6 +551,11 @@ export function DocumentsCard({
   const readyCount = items.filter((item) =>
     ["READY", "FAILED"].includes(item.state),
   ).length;
+  const syncLeft = items.filter((item) =>
+    ["READY", "SYNCING"].includes(item.state),
+  ).length;
+  // The first fetch says so instead of showing "0 documents" before it lands.
+  const firstLoad = loading && !documents.length && !items.length;
 
   /** Deletes the selected documents, drops the selected staged uploads, and keeps
    * failed documents selected. Wired to the bulk delete confirm. */
@@ -633,7 +636,7 @@ export function DocumentsCard({
               MAX_PROCESSING_DOCUMENTS
             ) {
               updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
+                progress: "Waiting for a processing slot",
               });
               await delay(PROCESSING_POLL_MS);
               // The app's poll pauses in hidden tabs, so only then does the wait refresh the list.
@@ -690,7 +693,7 @@ export function DocumentsCard({
             if (code === "PROCESSING_LIMIT" && attempts < PROCESSING_RETRIES) {
               retries.set(item.id, attempts + 1);
               updateItem(item.id, {
-                progress: "Waiting for earlier files to finish processing",
+                progress: "Waiting for a processing slot",
               });
               await delay(PROCESSING_RETRY_MS);
               pending.push(item);
@@ -764,10 +767,11 @@ export function DocumentsCard({
           <p>Drop files to add them</p>
         </div>
       ) : null}
-      <Card className="h-full min-w-0">
+      <Card className="h-full min-w-0" variant="page">
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2">
+            {/* As tall as the controls beside it, so the brand sits where the boot shell paints it. */}
+            <div className="flex h-9 items-center gap-2">
               <img alt="" className="size-6" src="/icon.svg" />
               <p className="font-semibold">cheapkb</p>
             </div>
@@ -804,7 +808,6 @@ export function DocumentsCard({
               </InputGroupAddon>
             </InputGroup>
             <div className="flex items-center gap-2">
-              {loading ? <Spinner /> : null}
               {selectedCount ? (
                 <AlertDialog>
                   <AlertDialogTrigger
@@ -815,12 +818,10 @@ export function DocumentsCard({
                       />
                     }
                   >
-                    {deletingSelected ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <Trash2 data-icon="inline-start" />
-                    )}
-                    Delete selected ({selectedCount})
+                    <Trash2 data-icon="inline-start" />
+                    {deletingSelected
+                      ? `Deleting ${selectedCount}`
+                      : `Delete selected (${selectedCount})`}
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
@@ -858,12 +859,10 @@ export function DocumentsCard({
                 disabled={!readyCount || syncing || deletingSelected}
                 onClick={syncAll}
               >
-                {syncing ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <RefreshCw data-icon="inline-start" />
-                )}
-                Sync all{readyCount ? ` (${readyCount})` : ""}
+                <RefreshCw data-icon="inline-start" />
+                {syncing
+                  ? `Syncing, ${syncLeft} left`
+                  : `Sync all${readyCount ? ` (${readyCount})` : ""}`}
               </Button>
               {accountMenu}
             </div>
@@ -926,15 +925,14 @@ export function DocumentsCard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !documents.length && !items.length ? (
-                  Array.from({ length: 4 }).map((_, index) => (
-                    // oxlint-disable-next-line react/no-array-index-key -- four static placeholder rows that never reorder
-                    <TableRow key={index}>
-                      <TableCell colSpan={7}>
-                        <Skeleton className="h-8 w-full" />
-                      </TableCell>
-                    </TableRow>
-                  ))
+                {firstLoad ? (
+                  <TableRow>
+                    <TableCell colSpan={7}>
+                      <span className="text-muted-foreground">
+                        Loading documents
+                      </span>
+                    </TableCell>
+                  </TableRow>
                 ) : visible.length ? (
                   visible.map((row) => {
                     const { original } = row;
@@ -987,7 +985,8 @@ export function DocumentsCard({
             </Table>
           </div>
         </CardContent>
-        <CardFooter>
+        {/* Tall enough for the paging buttons, so they appear without moving the footer. */}
+        <CardFooter className="min-h-10">
           <Button
             className="cursor-pointer"
             onClick={onOpenUsage}
@@ -1001,7 +1000,9 @@ export function DocumentsCard({
           <CardDescription className="ml-auto">
             {totalCount
               ? `${pagination.pageIndex * PAGE_SIZE + 1}–${Math.min((pagination.pageIndex + 1) * PAGE_SIZE, totalCount)} of ${totalCount}`
-              : "0 documents"}
+              : firstLoad
+                ? "Loading documents"
+                : "0 documents"}
             {deleteMessage ? ` · ${deleteMessage}` : ""}
           </CardDescription>
           {pageCount > 1 ? (
@@ -1580,7 +1581,9 @@ function UploadRow({
         <div className="flex min-w-0 items-baseline gap-2">
           <span className="truncate font-medium">{item.title}</span>
           <span className="shrink-0 text-muted-foreground">
-            {getFileMimeType(item.file)} · {formatBytes(item.file.size)}
+            {item.state === "EXTRACTING" || item.state === "SYNCING"
+              ? item.progress
+              : `${getFileMimeType(item.file)} · ${formatBytes(item.file.size)}`}
           </span>
         </div>
       </TableCell>
@@ -1588,16 +1591,7 @@ function UploadRow({
         <TagList colorOf={colorOf} tags={item.tags} />
       </TableCell>
       <TableCell className="max-w-0">
-        <div className="flex items-center gap-2">
-          {item.state === "EXTRACTING" || item.state === "SYNCING" ? (
-            <Spinner />
-          ) : null}
-          <StatusBadge
-            error={item.error}
-            label={item.state}
-            variant="outline"
-          />
-        </div>
+        <StatusBadge error={item.error} label={item.state} variant="outline" />
       </TableCell>
       <TableCell>-</TableCell>
       <TableCell>-</TableCell>

@@ -1,13 +1,13 @@
 {
-  "recordedAt": "2026-11-01T21:50:22.156Z",
+  "recordedAt": "2026-11-02T19:37:37.353Z",
   "scenarios": {
     "signed-out-boot": {
       "commits": 1,
-      "fibers": 12
+      "fibers": 15
     },
     "signed-in-boot": {
       "commits": 7,
-      "fibers": 4385
+      "fibers": 4359
     },
     "changed-poll": {
       "commits": 2,
@@ -27,7 +27,7 @@
     },
     "document-open": {
       "commits": 10,
-      "fibers": 376
+      "fibers": 399
     },
     "document-close": {
       "commits": 6,

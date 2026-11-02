@@ -1,12 +1,13 @@
 import { Notices, type Notice } from "@/components/Notices";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
-  Card,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import {
   apiCall,
   getIdentity,
@@ -441,27 +442,36 @@ export default function App(): React.JSX.Element {
   );
 }
 
-/** Signed-out screen with the Google sign-in button, shown until a token exists. */
+/** Signed-out screen with the Google sign-in button, shown until a token exists.
+ * It keeps the workspace card's frame, which the boot shell in index.html paints first. */
 function Guest({ onSignIn }: { onSignIn: () => void }): React.JSX.Element {
   useEffect(loadPostHog, []);
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <main className="flex flex-1 items-center justify-center px-4">
-        <Card className="w-full max-w-sm">
-          <CardHeader>
-            <CardTitle>Sign in</CardTitle>
-            <CardDescription>
-              Continue to your private knowledge base.
-            </CardDescription>
-          </CardHeader>
-          <CardFooter>
-            <Button className="w-full cursor-pointer" onClick={onSignIn}>
-              <LogIn data-icon="inline-start" /> Continue with Google
-            </Button>
-          </CardFooter>
-        </Card>
-      </main>
-    </div>
+    <main className="flex h-dvh flex-col px-3 pt-3">
+      <Card className="flex-1" variant="page">
+        <CardHeader>
+          <div className="flex h-9 items-center gap-2">
+            <img alt="" className="size-6" src="/icon.svg" />
+            <p className="font-semibold">cheapkb</p>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-1">
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>Sign in</EmptyTitle>
+              <EmptyDescription>
+                Continue to your private knowledge base.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button className="cursor-pointer" onClick={onSignIn}>
+                <LogIn data-icon="inline-start" /> Continue with Google
+              </Button>
+            </EmptyContent>
+          </Empty>
+        </CardContent>
+      </Card>
+    </main>
   );
 }

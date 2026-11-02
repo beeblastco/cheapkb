@@ -12,9 +12,9 @@ Open Settings from the avatar menu, or the usage line in the footer. It has thre
 
 ## Documents
 
-One toolbar holds the status filters (All, Indexed, Processing, Failed, Ready) with their counts, the search box, Add files, Sync all and the avatar menu. The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
+One toolbar holds the status filters (All, Indexed, Processing, Failed, Ready) with their counts, the search box, Add files, Sync all and the avatar menu. The workspace is one screen tall on every device: its card runs off the bottom edge and only the table scrolls, so rows arriving never move the page. The document list supports filtering, sorting, pagination, selection, tag editing, deletion, replacement, and retry.
 
-Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A failed document list or usage load has a Retry button and stays until you retry or close it. A failed detail load closes the detail panel. Every row is one line of fixed height. A document's own processing error shows on its status badge: hover it to read the error.
+Errors drop down as a notification at the top center of the screen and close after 6 seconds or with ×. A failed document list or usage load has a Retry button and stays until you retry or close it. A failed detail load closes the detail panel. Every row is one line of fixed height. While a file is read or uploaded, its row shows the current step in place of its type and size, and Sync all counts the files left. A document's own processing error shows on its status badge: hover it to read the error.
 
 Upload PDF, Markdown, text, JPEG, PNG, WebP, and GIF files. Images over 5 MiB and other files over 50 MiB are rejected before upload. Newly uploaded files remain visible while processing continues in the background.
 
@@ -35,6 +35,8 @@ PostHog starts loading once the first screen has rendered, and events from befor
 ## Loading
 
 The first screen downloads only what it shows. A signed-out visitor gets the sign-in card; the workspace (documents and settings) and its libraries load as separate chunks once you are signed in, and pdf.js only when you add a PDF. A stored session is read before the first paint, so a signed-in user never sees the sign-in card first. Third-party libraries live in long-cached `vendor` and `vendor-workspace` chunks, so a deploy that changes only app code re-downloads about 30 kB of compressed JavaScript. The page also opens its connection to the API while the JavaScript downloads.
+
+Before the stylesheet or any JavaScript arrives, `index.html` paints the card frame with the brand, the frame both the sign-in screen and the workspace render, so the screen fills in under it without moving. Nothing animates while it waits: a loading state says what it is waiting for.
 
 ## Development
 

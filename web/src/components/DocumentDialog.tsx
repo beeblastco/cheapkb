@@ -13,7 +13,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, getStatusBadgeVariant } from "@/lib/client";
 import type { Document, TagColor } from "@/lib/types";
 
@@ -42,7 +41,15 @@ export function DocumentDialog({
         [
           ["ID", detailedDocument.documentId],
           ["MIME type", detailedDocument.mimeType],
-          ["Chunks", data ? String(Number(data.chunkCount) || 0) : undefined],
+          // Only the chunk count waits on the details fetch; the list already has the rest.
+          [
+            "Chunks",
+            data
+              ? String(Number(data.chunkCount) || 0)
+              : loading
+                ? "Loading"
+                : undefined,
+          ],
           ["Uploaded", formatDate(detailedDocument.createdAt, true)],
           ["Modified", formatDate(detailedDocument.updatedAt, true)],
           [
@@ -76,22 +83,14 @@ export function DocumentDialog({
             <Badge variant={getStatusBadgeVariant(detailedDocument.status)}>
               {detailedDocument.status}
             </Badge>
-            {loading ? (
-              <FieldGroup>
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </FieldGroup>
-            ) : (
-              <FieldGroup>
-                {fields.map(([label, value]) => (
-                  <Field key={label}>
-                    <FieldLabel>{label}</FieldLabel>
-                    <FieldDescription>{value}</FieldDescription>
-                  </Field>
-                ))}
-              </FieldGroup>
-            )}
+            <FieldGroup>
+              {fields.map(([label, value]) => (
+                <Field key={label}>
+                  <FieldLabel>{label}</FieldLabel>
+                  <FieldDescription>{value}</FieldDescription>
+                </Field>
+              ))}
+            </FieldGroup>
           </SheetHeader>
         ) : null}
       </SheetContent>

@@ -75,7 +75,7 @@ function WorkspaceContent({
 
   return (
     <TooltipProvider>
-      <main className="flex min-h-dvh flex-col p-3 lg:h-dvh lg:overflow-hidden">
+      <main className="flex h-dvh flex-col px-3 pt-3">
         <DocumentsCard
           accountMenu={
             <AccountMenu
