@@ -1162,12 +1162,27 @@ function DocumentRow({
   rowId: string;
   selected: boolean;
 }): React.JSX.Element {
-  // Flashes once when the document finishes indexing on screen; rows that load indexed stay still.
-  const [lastStatus, setLastStatus] = useState(document.status);
+  // Flashes once when a newer indexed version arrives. A failed reindex or delete restores
+  // the last indexed version, and rows that load indexed stay still.
+  const indexed = document.status === "EMBEDDED";
+  const [seen, setSeen] = useState({
+    indexedAt: indexed ? document.updatedAt : undefined,
+    status: document.status,
+  });
   const [landed, setLanded] = useState(false);
-  if (lastStatus !== document.status) {
-    setLastStatus(document.status);
-    setLanded(document.status === "EMBEDDED");
+  if (
+    seen.status !== document.status ||
+    (indexed && seen.indexedAt !== document.updatedAt)
+  ) {
+    setSeen({
+      indexedAt: indexed ? document.updatedAt : seen.indexedAt,
+      status: document.status,
+    });
+    setLanded(
+      indexed &&
+        seen.status !== "EMBEDDED" &&
+        seen.indexedAt !== document.updatedAt,
+    );
   }
   // Only rows whose actions unlock with time re-render on the minute tick.
   const now = useNowMinute(
@@ -1182,6 +1197,10 @@ function DocumentRow({
       className="h-12 cursor-pointer"
       data-state={selected ? "selected" : undefined}
       landed={landed}
+      // Cleared once played, so moving the row (a sort) cannot replay the flash.
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget) setLanded(false);
+      }}
       onClick={() => onView(document.documentId)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
