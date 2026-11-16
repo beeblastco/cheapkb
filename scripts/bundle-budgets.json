@@ -1,8 +1,8 @@
 {
-  "recordedAt": "2026-11-01T21:49:54.121Z",
+  "recordedAt": "2026-11-16T07:46:07.100Z",
   "metrics": {
-    "web/initial-js": 294159,
-    "web/initial-js-gzip": 93628,
-    "web/js-total": 3701269
+    "web/initial-js": 295787,
+    "web/initial-js-gzip": 94020,
+    "web/js-total": 3771086
   }
 }
